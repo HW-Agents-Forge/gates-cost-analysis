@@ -19,7 +19,7 @@ python3 <skill-dir>/scripts/gatecost <command>
 |---|---|
 | You edited RTL in a git repository and want the cost of the edit | `diff` |
 | Work is already committed on a branch | `diff --base-ref merge-base` |
-| Compare design options before writing code | `estimate "mul 32x32"` or `estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32` |
+| Compare design options before writing code | `estimate --compare "mul 32x32" "mul 32 const=10"`, or `estimate "mul 32x32"`, or `estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32` |
 | No git: record the state, edit, compare | `snapshot`, then `diff --since-snapshot` |
 | Total size of the design and largest modules | `cost` |
 
@@ -49,11 +49,11 @@ DELTA +342 GE (+281..+410) +1.2% verdict=INCREASE confidence=medium
 
 ## When something goes wrong
 
-- `ERROR NO_BASELINE`: not a git repository and no snapshot. Use `snapshot` before editing, or pass two directories: `diff <before_dir> <after_dir>`.
+- `ERROR NO_BASELINE`: not a git repository and no snapshot. Use `snapshot` before editing, or pass two directories: `diff --before <dir> --after <dir>`.
 - `ERROR NO_SOURCES`: no RTL found from the current directory. Run from the project root or pass paths.
 - `ERROR TOP_NOT_FOUND`, or several candidate tops: pass `--top <module>`.
 - `WARN MISSING_MODULE` / `UNRESOLVED_PARAM`: a unit or parameter is unknown to the tool; the result is partial. Pass `--incdir`, `--define NAME=VALUE`, or the missing files.
-- `ERROR PYTHON_TOO_OLD`: Python 3.9 or later is required.
+- `ERROR PYTHON_TOO_OLD`: Python 3.11 or later is required.
 
 ## Limits
 

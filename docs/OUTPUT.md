@@ -119,6 +119,18 @@ ARCH min=<arch> typ=<arch> max=<arch>
 BREAKDOWN <primitive>=<count> ...
 ```
 
+`estimate --compare`:
+
+```
+COMPARE 2 alternatives basis=typ
+A <typ> GE (<min>..<max>) <expression A>
+B <typ> GE (<min>..<max>) <expression B>
+BEST <A|B> saves <GE> GE vs <other> ranges=<overlap|disjoint>
+ASSUMED ...
+```
+
+`ranges=overlap` means the preference is uncertain; the agent should say so.
+
 `snapshot`:
 
 ```

@@ -41,7 +41,7 @@ pyproject.toml              # optional: allows `pip install .` for non-agent use
 
 `scripts/gatecost` is the only entry point an agent needs. It:
 
-1. Checks the Python version; if it is too old, prints `ERROR PYTHON_TOO_OLD gatecost needs Python >= 3.9 (found X.Y)` and exits with code 3.
+1. Checks the Python version first. The launcher file itself uses only syntax valid on much older interpreters, so that the check can run and the message can be printed; if the version is too old, it prints `ERROR PYTHON_TOO_OLD gatecost needs Python >= 3.11 (found X.Y)` and exits with code 3.
 2. Inserts `<repo>/src` at the front of `sys.path`, where `<repo>` is computed from the launcher's own resolved path (so symlinks and any mount point work).
 3. Sets `sys.pycache_prefix` to a directory in the user cache (§5), so compiled bytecode is cached across invocations without creating `__pycache__` directories inside the submodule.
 4. Imports `gatecost.cli` lazily and calls `main()`.
@@ -54,9 +54,7 @@ python3 <skill-dir>/scripts/gatecost diff
 
 Requirements on the code base that the launcher relies on:
 
-- **Python 3.9 or later** and the **standard library only**. The macOS system interpreter and long-term-support Linux distributions ship such versions; requiring a newer one would make the skill fail on common agent hosts. Consequently:
-  - TOML configuration is read with `tomllib` when available (3.11+) and with a small built-in parser for the TOML subset used by `gatecost.toml` and profiles otherwise; both are tested against the same fixtures.
-  - The code base avoids syntax and library features added after 3.9 (`match`, `X | Y` type unions at runtime, `dataclass(slots=True)`, `zip(strict=True)`).
+- **Python 3.11 or later** and the **standard library only**. TOML configuration and profiles are read with the standard `tomllib`, so no TOML parser is shipped. The code base may use the language and library features of 3.11 (`match`, `X | Y` unions, `dataclass(slots=True)`, `zip(strict=True)`, `ExceptionGroup`), and must not use features newer than 3.11, so that behavior is identical across all supported interpreters. A machine with an older interpreter gets the `PYTHON_TOO_OLD` error above, with exit code 3.
 - **Start-up time.** A cold start (no bytecode cache) prints a result for a small design in under 300 ms, and a warm start in under 100 ms. Modules are imported lazily by command, and profiles are parsed on demand.
 - No dependency on the current working directory being writable.
 
@@ -76,7 +74,7 @@ An agent normally edits files in a git working tree and asks for the cost of tha
 
 1. `--base-ref <ref>`: the content of the changed files at `<ref>`.
 2. `--since-snapshot [id]`: the state recorded by `gatecost snapshot`.
-3. `<dir_a> <dir_b>`: two explicit source trees.
+3. `--before <dir> --after <dir>`: two explicit source trees.
 4. **Default: `HEAD`** when the project is a git repository. Uncommitted edits (staged or not) are compared with the last commit. For work already committed, the agent passes `--base-ref <branch-point>`; `--base-ref merge-base` is accepted as shorthand for the merge base with the repository's default branch.
 5. Otherwise, the most recent snapshot; otherwise `NO_BASELINE`.
 
@@ -145,7 +143,7 @@ Default output is the `agent` format; when invoked by an agent the `--format` op
 - **Clean submodule:** after a full workflow, `git status` in the skill directory is empty (no bytecode, cache, or snapshot files), and `git status` in the host project shows no change.
 - **Discovery:** RTL fixtures inside the skill directory are never analyzed; the host project root is chosen correctly when the skill is a submodule (with its own `.git` entry).
 - **Baselines:** each rule of §4.1, including untracked files, staged and unstaged edits, and a repository without commits; behavior when `git` is absent (simulated by an empty `PATH`).
-- **Python floor:** the test suite runs on the oldest supported interpreter; the TOML fallback parser and `tomllib` give identical configuration objects on the fixtures.
+- **Python floor:** the test suite runs on 3.11 (the oldest supported interpreter) and on the latest release, with identical results; a lint test rejects syntax and standard-library calls newer than 3.11; the launcher is syntax-checked against an old grammar so that `PYTHON_TOO_OLD` is reachable.
 - **Start-up time:** the cold and warm start budgets of §3 are enforced by a benchmark test.
 - **Read-only install:** the tool works when the skill directory and the project are read-only (it falls back to the user cache, then to no cache).
 - **Skill file:** `SKILL.md` frontmatter is valid, `description` is under the limit, the body is under its size budget, and every command shown in it is accepted by the CLI parser (so the documentation cannot drift from the tool).

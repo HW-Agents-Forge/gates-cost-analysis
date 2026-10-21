@@ -21,8 +21,8 @@ The tool is a fast, explainable estimator. It does not perform logic synthesis. 
 | G4 | Be honest about uncertainty: every figure has a range and a confidence level; unsupported constructs are reported, never silently ignored. |
 | G5 | Depend on nothing but the Python standard library. No Yosys, no synthesis tool, no compiled extension. |
 | G6 | Work with zero configuration in the common case; allow explicit configuration when needed. |
-| G8 | Be adoptable as a git submodule dropped into any agent's skills directory (`.claude/skills/`, `.github/skills/`, `.opencode/skills/`, ...) with no installation step and no write access to its own directory. |
 | G7 | Let the caller estimate the cost of a hypothetical construct before writing it. |
+| G8 | Be adoptable as a git submodule dropped into any agent's skills directory (`.claude/skills/`, `.github/skills/`, `.opencode/skills/`, ...) with no installation step and no write access to its own directory. |
 
 ## 3. Non-goals
 
@@ -41,10 +41,11 @@ The tool is a fast, explainable estimator. It does not perform logic synthesis. 
 Typical agent workflow:
 
 ```
-gatecost snapshot                 # before editing (optional if git is used)
-... agent edits RTL ...
-gatecost diff --format agent      # cost of the change
+... agent edits RTL in a git working tree ...
+gatecost diff                     # cost of the change against HEAD
 ```
+
+Outside git, the agent runs `gatecost snapshot` before editing and `gatecost diff --since-snapshot` afterwards. To weigh options before writing code, it runs `gatecost estimate`.
 
 ## 5. Architecture
 
@@ -82,7 +83,7 @@ Elaboration is demand-driven and common to both languages in structure (details 
 
 ### 5.3 Word-level IR
 
-A netlist of word-level operations, each annotated with its operand widths and source location:
+The IR is a language-neutral word-level netlist with bit-level facts. Its normative specification (nets and signal specifications, node catalogue, builder and local simplification rules, analysis passes, canonical keys, hierarchy, limits) is [`docs/IR.md`](IR.md). Summary of the operations:
 
 | Category | Operations |
 |----------|------------|
@@ -95,7 +96,7 @@ A netlist of word-level operations, each annotated with its operand widths and s
 | Memory | `MEM` (depth, width, read/write ports), `ROM` |
 | Hierarchy | instance of a module or a black box |
 
-Additional IR requirements (needed by §5.4):
+Principal IR requirements (needed by §5.4):
 
 - Each net carries a known-bit mask and value, signedness (with sign-replication tracking), a demanded-bit range, and a fanout count.
 - Operations are hash-consed at construction (structural hashing).
@@ -172,20 +173,27 @@ The "before" state of a comparison, in order of precedence:
 |------|---------|-------|
 | Git reference | `gatecost diff --base-ref <ref>` (`merge-base` is accepted as shorthand for the merge base with the default branch) | Reads blobs through the `git` executable when available; this is the only optional interaction with an external program. |
 | Snapshot | `gatecost snapshot` then `gatecost diff --since-snapshot` | Stores a copy of the relevant sources under `.gatecost/`. No external program required. |
-| Directories | `gatecost diff <dir_a> <dir_b>` | Compares two source trees. |
+| Directories | `gatecost diff --before <dir_a> --after <dir_b>` | Compares two source trees. |
 | Default | `gatecost diff` | In a git repository, compares the working tree (staged and unstaged edits, and untracked RTL files) with `HEAD`. Outside git, uses the most recent snapshot; otherwise fails with `NO_BASELINE`. |
 
 ## 8. Command-Line Interface
 
+The complete reference for commands, options, the `estimate` notation, and the configuration file is [`docs/CLI.md`](CLI.md) (normative). Summary:
+
 ```
-gatecost cost      [paths...]            # absolute cost of a design
-gatecost diff      [paths...]            # cost delta (see §7 for baselines)
-gatecost snapshot  [paths...]            # record the current state as a baseline
+gatecost diff      [PATH ...]            # cost delta (see §7 for baselines)
+gatecost cost      [PATH ...]            # absolute cost of a design
 gatecost estimate  "<expression>"        # cost of a hypothetical construct
-gatecost profiles                        # list and describe available profiles
+gatecost estimate  --rtl "<fragment>"    # cost of an RTL fragment
+gatecost estimate  --compare A B         # compare alternatives
+gatecost snapshot                        # record the current state as a baseline
+gatecost init                            # write a gatecost.toml from detected values
+gatecost profiles [show NAME]            # list or show cost profiles
+gatecost clean                           # remove caches and snapshots
+gatecost validate-output FILE            # validate a JSON result against the schema
 ```
 
-Common options: `--top <module>`, `--profile <name|path>`, `--format {agent,json,text,markdown}`, `--define NAME[=VAL]`, `--incdir <dir>`, `--budget <GE>`, `--no-cache`.
+Common options: `--top`, `--profile`, `--format {agent,json,text,markdown}`, `--define`, `--incdir`, `--filelist`, `--budget`, `--fail-on-increase`, `--max-lines`, `--no-cache`.
 
 ### 8.1 Agent output format
 
@@ -205,7 +213,7 @@ The grammar, the formats of the other commands, the verbosity options, and the i
 
 ### 8.2 `estimate`
 
-`gatecost estimate "mul 32x32"`, `gatecost estimate "mux 8:1 width 64"`, `gatecost estimate "reg 128 sync_reset enable"` return the cost of a standalone construct. A fragment of RTL (`gatecost estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32`) is also accepted. This allows an agent to compare design alternatives before writing code.
+`estimate` costs a standalone construct, either in a compact notation (`mul 32x32`, `mux 8:1 w64`, `reg 128 sync_reset enable`, sums such as `mul 16x16 + add 32`) or as an RTL fragment in Verilog/SystemVerilog or VHDL with inferred inputs and outputs. `--compare` evaluates several alternatives and reports the cheapest and whether their ranges overlap. This lets an agent weigh design options before writing code. The notation and the fragment semantics are specified in `docs/CLI.md` §3.
 
 ### 8.3 Exit codes
 
@@ -276,7 +284,7 @@ The repository **is** the agent skill. A project adopts it with `git submodule a
 
 ## 12. Performance and Caching
 
-- Target: under one second for a design of roughly 100k lines of RTL on a modern laptop, under 100 ms for a single-module change.
+- Targets on a modern laptop: a cold analysis of a design of roughly 100k lines of RTL in a few seconds; a warm `diff` of a single-module change in well under one second (under 300 ms for a design of that size); a small design in under 300 ms cold.
 - Parsing and elaboration results are cached on disk, keyed by a hash of file contents, defines, and include contents. The cache lives in `<project>/.gatecost/` or in the user cache directory, never in the tool's own directory. It is purely an optimization: removing it, or running with `--no-cache`, never changes results.
 - Start-up: under 300 ms cold and 100 ms warm for a small design, with lazy imports and a shared bytecode cache.
 - Analysis is restricted to the cone of the changed files when the baseline is a snapshot or git reference, then expanded only as far as hierarchy and parameters require.
@@ -299,15 +307,21 @@ The repository **is** the agent skill. A project adopts it with `git submodule a
 
 ## 15. Packaging and Project Conventions
 
-- Python 3.9 or later; no runtime dependencies. TOML is read with `tomllib` when available (3.11+) and otherwise with a small built-in parser of the TOML subset used by configuration files and profiles.
+- Python 3.11 or later; no runtime dependencies (TOML is read with the standard `tomllib`). The test suite runs on 3.11 and on the latest release.
 - Repository layout (also the skill layout): `SKILL.md`, `scripts/gatecost` (launcher), `src/gatecost/` with `frontend/` (`common/`, `verilog/`, `vhdl/`), `elab/`, `ir/`, `cost/`, `diff/`, `report/`, `cli/`, `profiles/`; `docs/`, `tests/`, `schema/`, `VERSION`, `LICENSE`, `README.md`, and an optional `pyproject.toml`.
 - Public Python API exposing `analyze()`, `diff()`, `estimate()`; the `gatecost` console command (via `pip`) and the launcher share one entry point.
 - License: to be decided (Apache-2.0 or MIT).
 - Built-in profiles live in `src/gatecost/profiles/*.toml`.
 
-## 16. Open Questions
+## 16. Design Decisions and Extension Points
 
-1. Should module-level deltas be weighted by instance count by default, or reported per instance with the multiplier shown separately?
-2. Source of the reference synthesis results used by maintainers to tune the built-in profile defaults.
-3. Additional cost targets (for example FPGA LUT/FF/DSP counts) as built-in profiles.
-4. Default value of the architecture policy (`timing`) and of `enable_style` for the built-in profile.
+Decisions taken:
+
+1. Module-level deltas are reported per instance with the instance count shown separately, and as intrinsic and multiplicity components (`DIFF.md` §4).
+2. The built-in profile assumes moderate timing and `mux`-style enables (`COST_MODEL.md` §7); other styles are selected by policy keys.
+3. The tool needs no calibration or reference data from its users. Maintainers may compare estimates with real synthesis reports to tune the built-in defaults (§14).
+
+Extension points (not required for the tool to work; added when needed):
+
+- Additional built-in profiles for other cost targets, for example FPGA primitive counts (LUT, FF, DSP, BRAM); the profile format and the primitive-based formulas allow it.
+- Additional front-ends: the IR is language-neutral (`IR.md`).
