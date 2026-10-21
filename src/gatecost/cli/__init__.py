@@ -94,6 +94,11 @@ def _run(argv: list[str]) -> int:
         _emit(render(Output(command=cmd, result=res), "agent"))
         return EXIT_OK
 
-    settings, _ = resolve_settings(args, Path.cwd(), skill_dir)
-    # Stages 2-5 replace this with the real analysis commands.
+    settings, cfg = resolve_settings(args, Path.cwd(), skill_dir)
+    if cmd in ("estimate", "profiles"):
+        from . import cmd_estimate
+
+        _emit(cmd_estimate.run(args, settings, cfg))
+        return EXIT_OK
+    # Stages 3-5 replace this with the real analysis commands.
     raise commands.not_implemented(cmd)
