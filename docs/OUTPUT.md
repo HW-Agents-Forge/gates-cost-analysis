@@ -38,7 +38,7 @@ ASSUMED <message>                                                               
 - `DELTA`: total change of the typical scenario, its range (`min..max` from `COST_MODEL.md` §5.1), and the percentage relative to `before`. When `before` is zero the percentage is `n/a`.
 - `TOP`: the analyzed top module and absolute totals.
 - **Contributor lines** follow `DIFF.md` §8: grouped by cause, sorted by absolute delta, at most `--max-lines` entries (default 10). The description is a fixed template: `MUL 16x16`, `ADD w8->w12`, `DFF x36 (register stage)`, `MUX 4:1 w32`, `config W 16->32 (14 ops)`.
-- `OTHERS`: the contributors folded under the report threshold.
+- `OTHERS`: the contributors folded under the report threshold or beyond `--max-lines`; omitted when there are none.
 - `WHY`: present when confidence is `medium` or `low`; it names the dominant reasons in a single line, for example `WHY low: 1 unsupported construct in the changed cone; 62% of delta in div class (poor model quality)`.
 - `WARN`: only diagnostics flagged `affects_cost` (`FRONTEND.md` §6) and diagnostics that changed between the two sides. At most 5 lines; an extra line `WARN ... +N more (use --format json)` indicates truncation.
 - `ASSUMED`: assumptions applied by the front-end that affect the changed cone (for example `ASSUMED parameter DEPTH unresolved, default 32 used`).
@@ -63,7 +63,6 @@ A parameter change affecting many operations:
 DELTA +1260 GE (+990..+1580) +4.4% verdict=INCREASE confidence=medium
 TOP top_core before=28410 after=29670
 +1260 config.sv:12 parameter W 16->32 (14 ops) x1
-OTHERS 0 net=0
 WHY medium: delta range is +/-23% of the estimate
 ```
 

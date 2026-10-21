@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+# Launcher: runs gatecost from any mount path with no installation.
+# This file must stay valid for old interpreters so the version check can run.
+import os
+import sys
+
+
+def _user_cache():
+    override = os.environ.get("GATECOST_CACHE_DIR")
+    if override:
+        return override
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Caches", "gatecost")
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        return os.path.join(base, "gatecost")
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
+    return os.path.join(base, "gatecost")
+
+
+def _run():
+    if sys.version_info < (3, 11):
+        sys.stdout.write(
+            "ERROR PYTHON_TOO_OLD gatecost needs Python >= 3.11 (found %d.%d)\n"
+            % (sys.version_info[0], sys.version_info[1])
+        )
+        return 3
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    sys.path.insert(0, os.path.join(repo, "src"))
+    # Keep bytecode out of the (read-only) skill directory.
+    sys.pycache_prefix = os.path.join(_user_cache(), "pycache")
+    from gatecost.cli import main
+
+    return main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(_run())
