@@ -14,11 +14,18 @@ class _Parser(argparse.ArgumentParser):
 
     def parse_known_args(self, args=None, namespace=None):  # noqa: D102
         # Options may appear anywhere after the command name (CLI.md section 1), so leaf
-        # parsers accept positionals interleaved with options.
-        if self._positionals._group_actions and not any(
-            isinstance(a, argparse._SubParsersAction) for a in self._actions
+        # parsers accept positionals interleaved with options. Python 3.11 implements
+        # parse_known_intermixed_args by calling self.parse_known_args again, hence the guard.
+        if (
+            not getattr(self, "_in_intermixed", False)
+            and self._positionals._group_actions
+            and not any(isinstance(a, argparse._SubParsersAction) for a in self._actions)
         ):
-            return self.parse_known_intermixed_args(args, namespace)
+            self._in_intermixed = True
+            try:
+                return self.parse_known_intermixed_args(args, namespace)
+            finally:
+                self._in_intermixed = False
         return super().parse_known_args(args, namespace)
 
     def exit(self, status: int = 0, message: str | None = None):  # noqa: D102

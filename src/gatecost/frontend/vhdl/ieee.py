@@ -240,7 +240,7 @@ for _P, _sem in (("std_logic_unsigned", "u"), ("std_logic_signed", "s")):
 _add("std_logic_signed", ("-", "abs"), ("slv",), "slv", ("arg", 0), "s")
 
 SIGNATURES: tuple = tuple(_SIGS)
-del _SIGS, P, _T, _P, _sem, _a, _b, _src
+del P, _T, _P, _sem, _a, _b, _src
 
 _BY_NAME: dict = {}
 for _s in SIGNATURES:
