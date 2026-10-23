@@ -548,6 +548,7 @@ class ExprMixin:
         try:
             l, r, d = self.eval_range(first, sc)
         except NotConst:
+            self.diag("NON_CONSTANT_BOUND", "non-constant array bound; one element assumed", first)
             self.ctx.assume("non-constant array bound at %s:%s; one element assumed" % (self.file, getattr(first, "line", "?")))
             l, r, d = 0, 0, "to"
         if base.left is not None:

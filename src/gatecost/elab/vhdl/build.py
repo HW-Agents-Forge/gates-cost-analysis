@@ -87,6 +87,28 @@ class BuildCtx(Ctx):
         self.mod_units[modname] = (ent, arch)
 
 
+def check_duplicate_names(E, ent, arch):
+    """VHDL identifiers are case-insensitive: a generic, port, or object declared twice in the entity
+    interface / entity and architecture declarative parts is illegal.  The elaborator would silently
+    keep one of them, so the clash is reported (DUPLICATE_DECLARATION, affects cost)."""
+    seen = {}
+    items = [("generic", g, ent.file) for g in ent.generics or ()]
+    items += [("port", p, ent.file) for p in ent.ports or ()]
+    items += [(d.cls, d, ent.file) for d in ent.decls or () if isinstance(d, N.ObjectDecl)]
+    items += [(d.cls, d, arch.file) for d in arch.decls or () if isinstance(d, N.ObjectDecl)]
+    for kind, node, file in items:
+        key = str(node.name).lower()
+        if key in seen:
+            pk, pn = seen[key]
+            E.ctx.diag("DUPLICATE_DECLARATION",
+                       "%s '%s' is already declared as %s '%s' (line %s) in the same declarative region "
+                       "(VHDL identifiers are case-insensitive); only one declaration is used, the cost is unreliable"
+                       % (kind, node.name, pk, pn.name, getattr(pn, "line", "?")),
+                       file, getattr(node, "line", None), getattr(node, "col", None))
+        else:
+            seen[key] = (kind, node)
+
+
 def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=False):
     n_assume = len(ctx.assumptions)
     b = Builder(modname, params, cp, limits=ctx.ir_limits, key=key,
@@ -106,6 +128,7 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
         elif v is not None:
             esc.declare(Sym("const", g.name, v.t, val=v))
     E.prescan([ent, arch])
+    check_duplicate_names(E, ent, arch)
     assigned = set()
     for n in walk(arch):
         if isinstance(n, (N.SignalAssign, N.SelectAssign)):

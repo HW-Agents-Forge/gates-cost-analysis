@@ -23,6 +23,7 @@ _AFFECTS = {
     "MULTIPLE_DRIVERS": ("warning", True), "AMBIGUOUS_ARCHITECTURE": ("warning", True),
     "SIMULATION_ONLY_PROCESS": ("info", False), "IGNORED_REGION": ("info", False), "INFERRED_LATCH": ("warning", False),
     "RECURSIVE_INSTANCE": ("warning", True), "DUPLICATE_MODULE": ("warning", True),
+    "DUPLICATE_DECLARATION": ("warning", True), "NON_CONSTANT_BOUND": ("warning", True),
 }
 
 

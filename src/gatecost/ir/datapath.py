@@ -191,6 +191,39 @@ def _single_use(o: Net, cons: dict):
         cur = item.net
 
 
+def _ext_use(nd: Node, cons: dict):
+    """A MUL whose whole product is only consumed through a pure zero/sign extension (VHDL
+    ``resize(a * b, N)``: the product is built at its own width, then widened) that does not
+    change its value: the multiplier does not truncate and the extension kind matches its
+    signedness.  Same return shape as :func:`_single_use` (no bridged connections)."""
+    o = nd.outputs[0]
+    refs = cons.get(o.id, [])
+    if not refs or o.port or o.fanout != len(refs):
+        return None
+    item, name = refs[0][0], refs[0][1]
+    if not isinstance(item, Node) or any(r[0] is not item or r[1] != name for r in refs):
+        return None
+    sig = dict(item.inputs)[name]
+    if sig.width <= o.width:
+        return None
+    sa, sb = bool(nd.attrs.get("sa")), bool(nd.attrs.get("sb"))
+    if sa != sb:
+        return None
+    ins = dict(nd.inputs)
+    ia, ib = opinfo(ins["A"]), opinfo(ins["B"])
+    need = max(ia["eff"] - ia["tz"], 0) + max(ib["eff"] - ib["tz"], 0) + ia["tz"] + ib["tz"]
+    if need > o.width:
+        return None
+    whole = SigSpec((Slice(o, 0, o.width),))
+    if sig.key() != whole.resize(sig.width, sa).key():
+        return None
+    return item, name, sig, []
+
+
+def _widen(sig: SigSpec, width: int, signed: bool) -> SigSpec:
+    return sig.slice(0, width) if sig.width >= width else sig.resize(width, signed)
+
+
 def fuse_datapath(m: ModuleIR, enabled: bool = True) -> int:
     """Replace single-use ADD/SUB/NEG/MUL clusters by ``SUM`` nodes.  Returns count."""
     if not enabled:
@@ -201,6 +234,8 @@ def fuse_datapath(m: ModuleIR, enabled: bool = True) -> int:
         if nd.op not in ARITH_FUSABLE:
             continue
         r = _single_use(nd.outputs[0], cons)
+        if r is None and nd.op == "MUL":
+            r = _ext_use(nd, cons)
         if r is None:
             continue
         c, name, sig, bridged = r
@@ -268,7 +303,8 @@ def fuse_datapath(m: ModuleIR, enabled: bool = True) -> int:
                 if child is not None and (child is keep_mul or child.op != "MUL"):
                     if child is keep_mul:
                         ma = dict(child.inputs)
-                        multerm = (ma["A"].slice(0, wroot), ma["B"].slice(0, wroot), s)
+                        multerm = (_widen(ma["A"], wroot, bool(child.attrs.get("sa"))),
+                                   _widen(ma["B"], wroot, bool(child.attrs.get("sb"))), s)
                     else:
                         build(child, s)
                 else:
