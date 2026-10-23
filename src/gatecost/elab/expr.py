@@ -1,6 +1,8 @@
 """Expression evaluation: self/context-determined widths and signedness, references, lvalues."""
 from __future__ import annotations
 
+import math
+
 from gatecost.frontend.verilog import ast as A
 from gatecost.ir import SigSpec, mask
 
@@ -61,6 +63,21 @@ _BITW = {"&": "and_", "|": "or_", "^": "xor", "~^": "xnor", "^~": "xnor"}
 _SHIFT = ("<<", ">>", "<<<", ">>>")
 _CMP = ("<", "<=", ">", ">=")
 _EQ = ("==", "!=", "===", "!==", "==?", "!=?")
+_REAL_ARITH = ("+", "-", "*", "/", "**")
+_REAL_TYPES = ("real", "shortreal", "realtime")
+_REAL_FUNCS = {
+    "$ln": math.log, "$log10": math.log10, "$exp": math.exp, "$sqrt": math.sqrt, "$floor": math.floor,
+    "$ceil": math.ceil, "$sin": math.sin, "$cos": math.cos, "$tan": math.tan, "$asin": math.asin,
+    "$acos": math.acos, "$atan": math.atan, "$sinh": math.sinh, "$cosh": math.cosh, "$tanh": math.tanh,
+    "$asinh": math.asinh, "$acosh": math.acosh, "$atanh": math.atanh, "$itor": float,
+    "$pow": math.pow, "$atan2": math.atan2, "$hypot": math.hypot,
+}
+
+
+def round_real(f: float) -> int:
+    """SystemVerilog real -> integer conversion: round half away from zero."""
+    n = int(math.floor(abs(f) + 0.5))
+    return -n if f < 0 else n
 
 
 def is_z_expr(e) -> bool:
@@ -140,6 +157,9 @@ class ExprMixin:
 
     def cond(self, e) -> SigSpec:
         """1-bit truth value of an expression (self-determined operand)."""
+        if self._isreal(e):
+            f = self.rval(e)
+            return SigSpec.const(0 if f is None or f == 0 else 1, 1)
         v = self.val(e)
         return self.b.to_bool(v.sig)
 
@@ -148,12 +168,17 @@ class ExprMixin:
         self._tm = {}
         try:
             w, s = self.ty(e)
-            return V(self.bv(e, w, s), s)
+            sig = self.bv(e, w, s)
+            if self._isreal(e):
+                return V(sig, s, self.rval(e))
+            return V(sig, s)
         finally:
             self._tm = old
 
     def assign_val(self, e, lw: int, pt: PType | None = None) -> SigSpec:
         """Value of ``e`` as the right-hand side of an assignment to ``lw`` bits."""
+        if self._isreal(e):
+            self.diag("UNSUPPORTED_CONSTRUCT", "real value used as a signal value; rounded to an integer", e, True)
         if isinstance(e, A.AssignPattern) and (pt is not None or e.prefix is not None):
             if e.prefix is not None:
                 pt = self.resolve_dtype(e.prefix) if isinstance(e.prefix, A.DataType) else self.type_of_expr(e.prefix)
@@ -203,6 +228,8 @@ class ExprMixin:
         if c is A.Number:
             _v, _x, w, s = parse_number(e)
             return (w, s)
+        if self._isreal(e):
+            return (64, True)
         if c is A.Ident:
             return self._ty_ident(e)
         if c is A.Binary:
@@ -271,9 +298,6 @@ class ExprMixin:
             return (1, False)
         if c is A.String:
             return (max(1, 8 * len(e.value)), False)
-        if c is A.Real:
-            self.diag("UNSUPPORTED_CONSTRUCT", "real number in a synthesizable context", e)
-            return (32, True)
         return (1, False)
 
     def _ref_signed(self, r: Ref) -> bool:
@@ -353,8 +377,34 @@ class ExprMixin:
             return (1, False)
         return (pt.w, pt.signed)
 
+    def _real_to_int_cast(self, e):
+        """(width, signed, value) of ``int'(real expr)``-style casts of a real operand, else None."""
+        t = e.target
+        if not self._isreal(e.expr) or (isinstance(t, A.OtherType) and t.kind in ("signed", "unsigned")):
+            return None
+        if isinstance(t, A.DataType):
+            pt = self.resolve_dtype(t)
+        else:
+            sym = None
+            if isinstance(t, A.Ident):
+                sym = self.lookup(t.name)
+            elif isinstance(t, A.ScopedName):
+                sym = self.lookup_scoped(t)
+            if isinstance(sym, TSym):
+                pt = sym.pt
+            else:
+                n = self.cint(t, None)
+                if n is None or n <= 0:
+                    n = 32
+                pt = vec(n, True)
+        f = self.rval(e.expr)
+        return pt.w, pt.signed, (None if f is None else round_real(f))
+
     def _ty_cast(self, e):
         t = e.target
+        r = self._real_to_int_cast(e)
+        if r is not None:
+            return (r[0], r[1])
         if isinstance(t, A.OtherType) and t.kind in ("signed", "unsigned"):
             w = self.ty(e.expr)[0]
             return (w, t.kind == "signed")
@@ -384,6 +434,12 @@ class ExprMixin:
             val, xm, nw, sg = parse_number(e)
             sig = SigSpec.const(val, nw, xm)
             return sig.resize(w, s) if nw != w else sig
+        if self._isreal(e):
+            f = self.rval(e)
+            if f is None:
+                self.diag("UNRESOLVED_PARAM", "real expression is not constant; assumed unknown", e, True)
+                return SigSpec.x(w)
+            return SigSpec.const(round_real(f) & mask(max(w, 1)), w)
         if c is A.Ident:
             return self._bv_ident(e, w, s)
         if c is A.Binary:
@@ -453,8 +509,6 @@ class ExprMixin:
             for ch in e.value:
                 bits = (bits << 8) | (ord(ch) & 0xFF)
             return SigSpec.const(bits, max(1, 8 * len(e.value))).resize(w, False)
-        if c is A.Real:
-            return SigSpec.x(w)
         return SigSpec.x(w)
 
     def _bv_ident(self, e, w, s):
@@ -529,6 +583,12 @@ class ExprMixin:
         b = self.b
         op = e.op
         o = self.org(e.loc)
+        if (op in _CMP or op in _EQ or op in ("&&", "||")) and (self._isreal(e.left) or self._isreal(e.right)):
+            r = self._real_cmp(e)
+            if r is None:
+                self.diag("UNRESOLVED_PARAM", "real comparison is not constant; assumed unknown", e, True)
+                return SigSpec.x(w)
+            return SigSpec.const(r, w)
         if op in _ARITH:
             l = self.bv(e.left, w, s)
             r = self.bv(e.right, w, s)
@@ -646,6 +706,13 @@ class ExprMixin:
 
     def _bv_cast(self, e, w, s):
         t = e.target
+        r = self._real_to_int_cast(e)
+        if r is not None:
+            cw, cs, n = r
+            if n is None:
+                self.diag("UNRESOLVED_PARAM", "real expression is not constant; assumed unknown", e, True)
+                return SigSpec.x(w)
+            return SigSpec.const(n & mask(cw), cw).resize(w, s and cs)
         cw, cs = self.ty(e)
         inner_w, inner_s = self.ty(e.expr)
         if isinstance(t, A.OtherType) and t.kind in ("signed", "unsigned"):
@@ -874,6 +941,119 @@ class ExprMixin:
             return self.pattern_sig(sub, ppt, ppt.w).resize(pt.w, False)
         return self.assign_val(e, pt.w)
 
+    # ------------------------------------------------------------------ real constants
+    def _isreal(self, e) -> bool:
+        """True when ``e`` has type real (elaboration-time floating-point constants only)."""
+        c = type(e)
+        if c is A.Real:
+            return True
+        if c is A.Ident:
+            sym = self.lookup(e.name)
+            return isinstance(sym, PSym) and sym.real is not None
+        if c is A.ScopedName:
+            sym = self.lookup_scoped(e)
+            return isinstance(sym, PSym) and sym.real is not None
+        if c not in (A.Binary, A.Unary, A.Ternary, A.Cast, A.SysCall):
+            return False
+        k = ("r", id(e))
+        r = self._tm.get(k)
+        if r is None:
+            r = self._tm[k] = self._isreal2(e, c)
+        return r
+
+    def _isreal2(self, e, c) -> bool:
+        if c is A.Binary:
+            return e.op in _REAL_ARITH and (self._isreal(e.left) or self._isreal(e.right))
+        if c is A.Unary:
+            return e.op in ("+", "-") and self._isreal(e.operand)
+        if c is A.Ternary:
+            return self._isreal(e.then) or self._isreal(e.else_)
+        if c is A.Cast:
+            t = e.target
+            return isinstance(t, A.OtherType) and t.kind in _REAL_TYPES
+        n = e.name
+        if n in ("$pow", "$abs"):
+            return any(self._isreal(a) for a in e.args if isinstance(a, A.Expr))
+        return n in _REAL_FUNCS
+
+    def _rv(self, e):
+        """Floating-point value of any constant expression, or None."""
+        if self._isreal(e):
+            return self.rval(e)
+        x = self.cint(e, None)
+        return None if x is None else float(x)
+
+    def _real_cmp(self, e):
+        a, b = self._rv(e.left), self._rv(e.right)
+        if a is None or b is None:
+            return None
+        op = e.op
+        if op == "&&":
+            return int(a != 0 and b != 0)
+        if op == "||":
+            return int(a != 0 or b != 0)
+        if op in ("==", "===", "==?"):
+            return int(a == b)
+        if op in ("!=", "!==", "!=?"):
+            return int(a != b)
+        return int({"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op])
+
+    def rval(self, e):
+        """Value of a real-typed constant expression as a Python float, or None when not constant."""
+        try:
+            return self._rval(e)
+        except (ValueError, OverflowError, ZeroDivisionError, ElabError):
+            return None
+
+    def _rval(self, e):
+        c = type(e)
+        if c is A.Real:
+            return float(e.value)
+        if c is A.Ident or c is A.ScopedName:
+            sym = self.lookup(e.name) if c is A.Ident else self.lookup_scoped(e)
+            if isinstance(sym, PSym) and sym.real is not None:
+                return sym.real
+            return self._rv(e) if not self._isreal(e) else None
+        if c is A.Binary:
+            op = e.op
+            a, b = self._rv(e.left), self._rv(e.right)
+            if a is None or b is None:
+                return None
+            if op == "+":
+                return a + b
+            if op == "-":
+                return a - b
+            if op == "*":
+                return a * b
+            if op == "/":
+                return a / b
+            return math.pow(a, b)
+        if c is A.Unary:
+            a = self._rv(e.operand)
+            if a is None:
+                return None
+            return -a if e.op == "-" else a
+        if c is A.Ternary:
+            cv = self._rv(e.cond)
+            if cv is None:
+                return None
+            return self._rv(e.then if cv != 0 else e.else_)
+        if c is A.Cast:
+            return self._rv(e.expr)
+        if c is A.SysCall:
+            n = e.name
+            args = [a for a in e.args if isinstance(a, A.Expr)]
+            if n == "$abs":
+                a = self._rv(args[0])
+                return None if a is None else abs(a)
+            fn = _REAL_FUNCS.get(n)
+            vs = [self._rv(a) for a in args]
+            if fn is None or None in vs:
+                return None
+            r = fn(*vs)
+            return float(r)
+        return None
+
     # ------------------------------------------------------------------ system functions
     def _syscall(self, e: A.SysCall) -> V:
         n = e.name
@@ -918,6 +1098,12 @@ class ExprMixin:
             return V(b.land(z, b.red_or(x, origin=o), origin=o), False)
         if n == "$isunknown":
             return V(SigSpec.const(0, 1), False)
+        if n == "$rtoi" and a0 is not None and self._isreal(a0):
+            f = self.rval(a0)
+            if f is None:
+                self.diag("UNRESOLVED_PARAM", "$rtoi argument is not constant; assumed unknown", e, True)
+                return V(SigSpec.x(32), True)
+            return self.const_v(int(f), 64)
         if n in ("$rtoi", "$itor", "$cast"):
             return self.val(a0) if a0 is not None else self.const_v(0)
         if n == "$pow":

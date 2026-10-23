@@ -88,6 +88,8 @@ def pkey(v):
     """Canonical key value of a parameter."""
     if isinstance(v, PType):
         return "type:" + v.describe()
+    if v.real is not None:
+        return ("real", v.real)
     c = v.sig.const_value()
     if c is None:
         return "?"

@@ -4,6 +4,8 @@ from __future__ import annotations
 from gatecost.frontend.verilog import ast as A
 from gatecost.ir import SigSpec, mask
 
+import struct
+
 from .symbols import BIT, FSym, PSym, PType, TSym, V, vec
 
 MAX_BITS = 1 << 20
@@ -24,6 +26,9 @@ def pack(dims, base: PType, signed: bool) -> PType:
         total = MAX_BITS          # the IR rejects the module (net width limit); keep arithmetic cheap
     nb = base.base if base.dims else base
     return PType(total, signed, tuple(dims) + tuple(base.dims), nb, None)
+
+
+_REAL_KINDS = ("real", "shortreal", "realtime")
 
 
 class DeclMixin:
@@ -178,7 +183,8 @@ class DeclMixin:
                 pt = vec(32)
             scope.syms[pd.name] = TSym(pt)
             return
-        pt = self.resolve_dtype(pd.dtype) if pd.dtype is not None else None
+        decl_real = isinstance(pd.dtype, A.OtherType) and pd.dtype.kind in _REAL_KINDS
+        pt = self.resolve_dtype(pd.dtype) if pd.dtype is not None and not decl_real else None
         if (override is None and isinstance(pd.init, A.AssignPattern) and pd.init.prefix is None
                 and pd.init.items and not any(isinstance(i, A.PatternItem) for i in pd.init.items)
                 and (pt is None or pd.udims or not (pt.fields or (pt.base is not None and pt.base.fields)))):
@@ -203,7 +209,16 @@ class DeclMixin:
             self.assume(f"parameter '{pd.name}' without value assumed to be 32")
             v = self.const_v(32)
         v = self.coerce(v, pt)
-        scope.syms[pd.name] = PSym(v, pt)
+        real = None
+        if decl_real or (pd.dtype is None and v.real is not None):
+            real = v.real
+            if real is None:
+                c = v.sig.const_value()
+                real = float(c.as_signed() if v.signed else c.value) if c is not None and not c.xmask else 0.0
+            if pd.dtype is not None and pd.dtype.kind == "shortreal":
+                real = struct.unpack("f", struct.pack("f", real))[0] if abs(real) < 3.4e38 else real
+            v = V(v.sig, v.signed, real)
+        scope.syms[pd.name] = PSym(v, pt, None, real)
 
     def _declare_array_param(self, pd, pt) -> bool:
         """``parameter T [0:3] = '{...}``: an array of constants (the parser drops the unpacked dimension, the

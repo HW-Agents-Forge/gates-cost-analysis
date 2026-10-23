@@ -194,5 +194,46 @@ endmodule
         self.assertIn("w[1:0] <- 2'h2", text)
 
 
+class RealConstants(unittest.TestCase):
+    """Elaboration-time ``real`` constant expressions fold to integers."""
+    SRC = """module m #(parameter real RATE = 25.2E6, parameter int AUD = 48e3, parameter int N = 6144,
+  parameter bit [19:0] IDEAL = 20'(int'(RATE * int'(N) / 128 / AUD)),
+  parameter int W = $clog2(20'(int'(real'(IDEAL) * 1.1))))
+ (output [31:0] a, output [31:0] b, output [31:0] c, output [31:0] d, output [31:0] e, output [W-1:0] f);
+  localparam real HALF = 0.5, T = 2.0 ** 10;
+  assign a = IDEAL;
+  assign b = int'($sqrt(2.0) * 1000) + $rtoi(3.9);
+  assign c = (HALF < 0.75 ? 100 : 0) + int'(T) + int'($ceil(2.1)) + int'($floor(-2.5));
+  assign d = int'(2.5) + int'(-2.5) + int'($ln(1.0) + $log10(1000.0) + $pow(2.0, 0.5) * 0);
+  assign e = int'($itor(7) / 2.0);
+  assign f = '0;
+endmodule
+"""
+
+    def test_real_constants_fold_to_integers(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "r.sv")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("a[31:0] <- 32'h6270", text)      # 25200
+        self.assertIn("b[31:0] <- 32'h589", text)       # 1414 + 3 = 1417
+        self.assertIn("f[14:0]", text)                  # clog2(27720) = 15
+
+    def test_real_values_in_signal_context_are_diagnosed(self):
+        res = run("module m(output [7:0] y); localparam real R = 2.6; assign y = R; endmodule", "s.sv")
+        self.assertIn("UNSUPPORTED_CONSTRUCT", [d.code for d in res.diagnostics])
+
+    def test_real_parameter_override(self):
+        from gatecost.ir.dump import dump
+        src = """module sub #(parameter real R = 1.0) (output [7:0] y); assign y = int'(R * 10); endmodule
+module top(output [7:0] y); sub #(.R(2.55)) u(.y(y)); endmodule
+"""
+        res = run(src, "o.sv")
+        self.assertNotIn("UNRESOLVED_PARAM", [d.code for d in res.diagnostics])
+        text = "\n".join(dump(m, analysis=False) for m in res.design.modules.values())
+        self.assertIn("y[7:0] <- 8'h1a", text)          # round(25.5) = 26
+
+
 if __name__ == "__main__":
     unittest.main()

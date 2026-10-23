@@ -60,11 +60,12 @@ def dim_pos(i: int, dim) -> int:
 class V:
     """A value: signal specification plus signedness."""
 
-    __slots__ = ("sig", "signed")
+    __slots__ = ("sig", "signed", "real")
 
-    def __init__(self, sig: SigSpec, signed: bool = False):
+    def __init__(self, sig: SigSpec, signed: bool = False, real: float | None = None):
         self.sig = sig
         self.signed = signed
+        self.real = real        # elaboration-time ``real`` value (sig then holds its rounded integer), else None
 
     @property
     def w(self) -> int:
@@ -77,10 +78,11 @@ class V:
 class PSym:
     """Parameter / localparam / enum constant / genvar value."""
 
-    __slots__ = ("val", "pt", "arr")
+    __slots__ = ("val", "pt", "arr", "real")
     kind = "param"
 
-    def __init__(self, val: V, pt: PType | None = None, arr=None):
+    def __init__(self, val: V, pt: PType | None = None, arr=None, real: float | None = None):
+        self.real = real        # value of a ``real`` parameter (val holds its rounded integer), else None
         self.val = val
         self.pt = pt
         self.arr = arr          # array parameter: list of constant element values (ints), else None
