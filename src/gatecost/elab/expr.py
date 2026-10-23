@@ -629,15 +629,8 @@ class ExprMixin:
             r = b.or_(r, h, 1, origin=o)
         return r
 
-    def _bv_stream(self, e) -> SigSpec:
-        parts = []
-        for it in e.items:
-            x = it.expr if isinstance(it, A.StreamWith) else it
-            parts.append(self.bv(x, *self.ty(x)))
-        parts.reverse()
-        sig = SigSpec.concat(parts)
-        if e.op == ">>" or sig.width == 0:
-            return sig
+    def stream_size(self, e) -> int:
+        """Slice size (bits) of a ``{<< size {...}}`` streaming concatenation."""
         size = 1
         if e.size is not None:
             if isinstance(e.size, A.DataType):
@@ -647,7 +640,54 @@ class ExprMixin:
                 size = self.lookup(e.size.name).pt.w
             else:
                 size = self.cint(e.size, 1) or 1
-        size = max(1, size)
+        return max(1, size)
+
+    def _stream_lvalue(self, e):
+        """Parts of ``{>> {a, b}} = x`` / ``{<< n {a, b}} = x`` (most significant first): ``<<`` reverses
+        the order of the n-bit slices taken from the right."""
+        parts = []
+        for it in e.items:
+            x = it.expr if isinstance(it, A.StreamWith) else it
+            parts.extend(self.lvalue_parts(x))
+        if e.op == ">>" or not parts or any(p is None for p in parts):
+            return parts
+        size = self.stream_size(e)
+        if any(p.dyn or p.elems is not None for p in parts):
+            self.diag("UNSUPPORTED_CONSTRUCT", "left-to-right streaming target with variable selects; "
+                      "slice order not reversed", e, True)
+            return parts
+        chunks = [[]]              # chunks[0] is the right-most slice; each holds segments most significant first
+        room = size
+        for p in reversed(parts):  # least significant part first
+            lo = 0
+            while lo < p.w:
+                n = min(room, p.w - lo)
+                q = Ref()
+                for f in Ref.__slots__:
+                    setattr(q, f, getattr(p, f))
+                q.off = p.off + lo
+                q.w = n
+                q.pt = None
+                chunks[-1].insert(0, q)
+                lo += n
+                room -= n
+                if room == 0:
+                    chunks.append([])
+                    room = size
+        if not chunks[-1]:
+            chunks.pop()
+        return [q for ch in chunks for q in ch]
+
+    def _bv_stream(self, e) -> SigSpec:
+        parts = []
+        for it in e.items:
+            x = it.expr if isinstance(it, A.StreamWith) else it
+            parts.append(self.bv(x, *self.ty(x)))
+        parts.reverse()
+        sig = SigSpec.concat(parts)
+        if e.op == ">>" or sig.width == 0:
+            return sig
+        size = self.stream_size(e)
         chunks = []
         pos = 0
         while pos < sig.width:
@@ -1218,6 +1258,8 @@ class ExprMixin:
             for it in e.items:
                 out.extend(self.lvalue_parts(it))
             return out
+        if isinstance(e, A.Streaming):
+            return self._stream_lvalue(e)
         if isinstance(e, A.Ident):
             sym = self.lookup(e.name)
             if sym is None:

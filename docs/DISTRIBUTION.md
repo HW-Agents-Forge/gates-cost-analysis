@@ -32,8 +32,11 @@ schema/                     # JSON Schema for the json output
 VERSION
 LICENSE
 README.md                   # adoption instructions and overview
-pyproject.toml              # optional: allows `pip install .` for non-agent use
+pyproject.toml              # optional: allows `pip install .` for non-agent use (with setup.py, a build hook that
+                            # copies VERSION and schema/ into the package as gatecost/_data, and MANIFEST.in)
 ```
+
+In a `pip`-installed layout the package finds `VERSION` and the schema in `gatecost/_data/` (`gatecost.DATA_DIR`); in the repository (skill) layout they are read from the repository root. Built-in profiles are package data in both.
 
 `SKILL.md` stays short (§6) so that loading the skill costs few tokens. Long-form documentation lives in `docs/` and is read only by developers and, on demand, by agents that need details.
 

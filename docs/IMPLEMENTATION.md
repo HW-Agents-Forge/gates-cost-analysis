@@ -129,3 +129,23 @@ The project is built incrementally. Each stage below delivers something an agent
 3. The full suite passes on both interpreters; the start-up benchmark still meets its budget.
 4. `SKILL.md`, `README.md`, and the documents are consistent with what the tool does (the documentation-sync tests pass).
 5. No new dependency, no write outside the documented locations.
+
+## 6. Status
+
+Snapshot of the repository against the stages above (update it in the change that moves a stage; `done` means the
+acceptance criteria are met by the tests in the repository, `partial` lists what is missing).
+
+| Stage | State | Notes |
+|---|---|---|
+| 1 Skeleton, launcher, CLI, output | done | Launcher, parser for every command, configuration, discovery, `agent`/`json`/`text`/`markdown` renderers, schema and `validate-output`, `init`, `clean`, `help`, `SKILL.md`, `README.md`. |
+| 2 Cost model and `estimate` | done | Profiles with `extends`, all formulas, compact notation, `--compare`, `profiles`; deviations in `COST_MODEL.md` section 9. |
+| 3 IR, builder, analysis passes | done | `ir/` package with builder, passes, keys, dump; hand-built IR tests. |
+| 4 Verilog front-end and `cost` | done | Verilog lexer, preprocessor, parser with recovery, elaborator, `cost` command, `estimate --rtl`; deviations in `COST_MODEL.md` section 10. |
+| 5 Differ, baselines, `diff` | partial | Matching engine (`diff/`), baseline resolution, `snapshot`, cache are implemented and tested; the `diff` command is not wired into the CLI yet (`ERROR NOT_IMPLEMENTED`), so budgets and the agent acceptance scenarios for `diff` are open. |
+| 6 Verilog/SystemVerilog completeness | partial | Elaborator covers the core plus much of the SV subset; the per-row fixture coverage of the `FRONTEND.md` section 3 matrix and the fuzz termination test are not complete. |
+| 7 VHDL front-end | partial | VHDL lexer, parser, project/IEEE model, elaboration, `estimate --rtl --lang vhdl` and cross-language tests exist; the paired Verilog/VHDL corpus is still being extended. |
+| 8 Performance, incremental analysis | partial | Parse/cost cache module and speed tests exist; the 10k/100k-line benchmark suite, the start-up benchmark test and the changed-cone scope for large hierarchies are open. |
+| 9 Hardening, release readiness | partial | Done: documentation-sync and lint tests, trigger prompt set, README and CONTRIBUTING, `pyproject.toml`, CI workflow, maintainers' `scripts/validate_reference.py`, optional smoke harness `tests/smoke/`. Open: running the reference validation and tuning the profile defaults, the real-world smoke campaign, the clean-room submodule trial, license confirmation (a `LICENSE` file with the MIT text exists; `SPEC.md` section 15 still says "to be decided"), tagged release. |
+
+Commands whose stage is open print `ERROR NOT_IMPLEMENTED` (exit 3), so `SKILL.md` can already be checked
+against the parser.
