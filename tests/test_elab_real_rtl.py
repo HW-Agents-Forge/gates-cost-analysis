@@ -77,5 +77,194 @@ endmodule
         self.assertTrue([d for d in cut.diagnostics if d.code == "LIMIT_REACHED"])
 
 
+class VhdlConcurrentEdge(unittest.TestCase):
+    HDR = "library ieee; use ieee.std_logic_1164.all;\nentity e is port (q : out std_logic; d, clk, rst : in std_logic); end;\n"
+
+    def dump(self, body):
+        from gatecost.ir.dump import dump
+        res = run(self.HDR + "architecture b of e is begin\n" + body + "\nend;", "m.vhd")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        return dump(m, analysis=False)
+
+    def test_conditional_assignment_with_edge_is_a_register(self):
+        text = self.dump("q <= d when rising_edge(clk);")
+        self.assertIn("DFF(D=d[0], CLK=clk[0]", text)
+        self.assertIn("clk_edge=pos", text)
+
+    def test_conditional_assignment_with_reset_and_edge(self):
+        text = self.dump("q <= '0' when rst = '1' else d when rising_edge(clk);")
+        self.assertIn("ARST=rst[0]", text)
+
+    def test_event_and_not_equal_zero_is_a_rising_edge(self):
+        text = self.dump("process (clk) begin if clk'event and clk /= '0' then q <= d; end if; end process;")
+        self.assertIn("clk_edge=pos", text)
+
+
+class VhdlStdLogicMisc(unittest.TestCase):
+    SRC = """library ieee; use ieee.std_logic_1164.all; use ieee.std_logic_misc.all;
+entity e is port (a : in std_logic_vector(7 downto 0); o, x, n : out std_logic); end;
+architecture b of e is begin
+  o <= or_reduce(a);
+  x <= xor_reduce(a(3 downto 0));
+  n <= nor_reduce(a) and and_reduce(a(1 downto 0));
+end;
+"""
+
+    def test_reduce_functions_are_built_in(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "m.vhd")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertTrue("REDUCE" in text.upper() or "RED_" in text.upper(), text)
+
+
+class VhdlDynamicSliceWidth(unittest.TestCase):
+    SRC = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity e is
+  generic (G : natural := 4);
+  port (a : in std_logic_vector(4*G-1 downto 0); i : in unsigned(1 downto 0);
+        y : out std_logic_vector(G-1 downto 0); z : out std_logic_vector(G-1 downto 0));
+end;
+architecture b of e is
+  signal k : natural range 0 to 3;
+begin
+  k <= to_integer(i);
+  y <= a((k+1)*G-1 downto k*G);
+  z <= a(k*G+G-1 downto (k+1)*G-G);
+end;
+"""
+
+    def test_slice_with_symbolic_but_constant_width(self):
+        res = run(self.SRC, "m.vhd")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info" and d.code != "ASSUMPTION"], [])
+
+
+class VhdlPhysicalTypes(unittest.TestCase):
+    SRC = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+package ph is
+  type FREQ is range 0 to integer'high units
+    Hz;
+    kHz = 1000 Hz;
+    MHz = 1000 kHz;
+  end units;
+  function to_cycles(f : FREQ; t : FREQ) return natural;
+end package;
+package body ph is
+  function to_cycles(f : FREQ; t : FREQ) return natural is
+  begin
+    return natural(f / t);
+  end function;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.ph.all;
+entity e is
+  generic (CLK_FREQ : FREQ := 100 MHz; BAUD : FREQ := 1 MHz);
+  port (clk : in std_logic; q : out std_logic);
+end;
+architecture b of e is
+  constant DIV : positive := to_cycles(CLK_FREQ, BAUD);
+  signal cnt : unsigned(7 downto 0);
+begin
+  process (clk) begin
+    if rising_edge(clk) then
+      if cnt = DIV - 1 then cnt <= (others => '0'); else cnt <= cnt + 1; end if;
+    end if;
+  end process;
+  q <= '1' when cnt = 0 else '0';
+end;
+"""
+
+    def test_user_physical_units_are_integers_in_the_base_unit(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "m.vhd", top="e")
+        self.assertEqual([d for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        self.assertIn("'h63", dump(m, analysis=False))     # DIV = 100 MHz / 1 MHz, compared with DIV - 1
+
+
+class PatternInTernary(unittest.TestCase):
+    SRC = """package p;
+  typedef struct packed { logic irq_ext; logic irq_int; logic [5:0] lower_cause; } cause_t;
+  localparam cause_t C0 = '{irq_ext: 1'b0, irq_int: 1'b1, lower_cause: 6'd3};
+endpackage
+module m import p::*; (input logic a, input logic [5:0] c, output cause_t y);
+  always_comb y = a ? C0 : '{irq_ext: 1'b0, irq_int: 1'b1, lower_cause: c};
+endmodule
+"""
+
+    def test_untyped_pattern_in_a_ternary_branch_takes_the_target_type(self):
+        res = run(self.SRC)
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+
+
+class SystemFunctionSizeCast(unittest.TestCase):
+    SRC = """module m (output logic [3:0] q);
+  typedef enum logic [1:0] {Idle, Run} st_e;
+  localparam st_e RV = Run;
+  localparam logic [3:0] R = $bits(st_e)'(RV);
+  assign q = $clog2(16)'(R) + $bits(st_e)'(1);
+endmodule
+"""
+
+    def test_size_cast_with_a_system_function_width(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC)
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        self.assertIn("q[3:0] <- 4'h", dump(m, analysis=False))
+
+
+class VhdlTimeArithmetic(unittest.TestCase):
+    SRC = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity e is
+  generic (CLK_PERIOD : time := 10 ns; TICK : time := 1 us);
+  port (clk : in std_logic; q : out std_logic);
+end;
+architecture b of e is
+  constant DIV : positive := TICK / CLK_PERIOD;
+  constant DIV2 : positive := integer(real(2 ms / 1 us) * 0.05);
+  signal cnt : unsigned(7 downto 0);
+begin
+  process (clk) begin
+    if rising_edge(clk) then
+      if cnt = DIV - 1 then cnt <= (others => '0'); else cnt <= cnt + DIV2 / 100; end if;
+    end if;
+  end process;
+  q <= '1' when cnt = 0 else '0';
+end;
+"""
+
+    def test_time_values_are_femtosecond_integers(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "m.vhd")
+        self.assertEqual([d for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("'h63", text)          # 1 us / 10 ns - 1
+        self.assertIn("ADD(8'h1,", text)     # 2 ms / 1 us * 0.05 / 100 = 1
+
+
+class VhdlControlCharacters(unittest.TestCase):
+    SRC = """library ieee; use ieee.std_logic_1164.all;
+entity e is port (q, r : out std_logic); end;
+architecture b of e is
+  constant C : character := NUL;
+begin
+  q <= '1' when character'pos(LF) = 10 and character'pos(DEL) = 127 else '0';
+  r <= '1' when C = NUL else '0';
+end;
+"""
+
+    def test_nul_lf_del_are_character_literals(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "m.vhd")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("q[0] <- 1'h1", text)
+        self.assertIn("r[0] <- 1'h1", text)
+
+
 if __name__ == "__main__":
     unittest.main()

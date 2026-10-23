@@ -127,7 +127,7 @@ T_NATURAL = int_type("natural", 0, 2 ** 31 - 1, "nat")
 T_POSITIVE = int_type("positive", 1, 2 ** 31 - 1, "nat")
 T_UINT = int_type("universal_integer", None, None)
 T_REAL = VType("real", "real", "real")
-T_TIME = VType("other", "time", "time")
+T_TIME = int_type("time", -2 ** 63, 2 ** 63 - 1, "time")      # integer count of femtoseconds
 T_SLV = array_type("std_logic_vector", T_STD_LOGIC, cls="slv")
 T_SUV = array_type("std_ulogic_vector", T_STD_LOGIC, cls="suv")
 T_UNSIGNED = array_type("unsigned", T_STD_LOGIC, cls="u")
