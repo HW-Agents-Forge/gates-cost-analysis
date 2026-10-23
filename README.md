@@ -1,4 +1,15 @@
+<div align="center">
+
 # gatecost
+
+**How many gates does this RTL change cost?** Answered in under a second, without a synthesis tool.
+
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![languages](https://img.shields.io/badge/Verilog%20%7C%20SystemVerilog%20%7C%20VHDL-supported-informational)
+![license](https://img.shields.io/badge/license-MIT-lightgrey)
+
+</div>
 
 Estimate the gate cost of RTL (Verilog, SystemVerilog, VHDL) and of any edit to it, in gate equivalents (GE, one 2-input NAND). No synthesis tool, no dependencies, Python 3.11+. Built to be used by an AI coding agent as a skill, and usable from the command line or CI.
 
