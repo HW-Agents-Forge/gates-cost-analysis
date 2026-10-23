@@ -245,6 +245,32 @@ end;
         self.assertIn("ADD(8'h1,", text)     # 2 ms / 1 us * 0.05 / 100 = 1
 
 
+class PartiallyAssignedComb(unittest.TestCase):
+    SRC = """module m(input [7:0] a, output reg [7:0] y);
+  always @* begin
+    y[0] = a[0]; y[1] = a[1]; y[4] = ~a[4]; y[6] = a[5] & a[6]; y[7] = a[7];
+    y[2] = 1'b0; y[3] = 1'b1; y[5] = a[2] | a[3];
+  end
+endmodule
+"""
+
+    def test_runs_of_assigned_bits_are_connected(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC)
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("y[7:0] <- {a[7], n3[0], n1[0], n2[0], 2'h2, a[1:0]}", text)
+
+    def test_very_wide_vector_is_not_quadratic(self):
+        import time
+        src = "module m(input [499999:0] a, output reg [499999:0] y);\n  always @* y = ~a;\nendmodule\n"
+        t0 = time.time()
+        res = run(src, limits={"max_net_width": 1 << 20})
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        self.assertLess(time.time() - t0, 30)
+
+
 class VhdlControlCharacters(unittest.TestCase):
     SRC = """library ieee; use ieee.std_logic_1164.all;
 entity e is port (q, r : out std_logic); end;
