@@ -90,12 +90,20 @@ endmodule""")
         self.assertEqual(sorted(dict(bb[0].inputs)), ["clk", "din"])
         self.assertEqual(bb[0].attrs["out_ports"], ("dout",))
 
-    def test_udp_instance_is_black_box(self):
+    def test_udp_instance_is_lowered(self):
         r = elab("""
 primitive my_udp(o, a, b); output o; input a, b;
   table 0 0 : 0; 1 1 : 1; endtable
 endprimitive
 module top(input a, b, output o); my_udp u(o, a, b); endmodule""")
+        self.assertNotIn("MISSING_MODULE", codes(r))
+
+    def test_unsupported_udp_instance_is_black_box(self):
+        r = elab("""
+primitive my_udp(q, d, c, r); output q; reg q; input d, c, r;
+  table ? ? 1 : ? : 0; 0 r 0 : ? : 0; 1 r 0 : ? : 1; endtable
+endprimitive
+module top(input a, b, c, output o); my_udp u(o, a, b, c); endmodule""")
         self.assertIn("MISSING_MODULE", codes(r))
 
     def test_gate_primitives_one_per_gate(self):

@@ -109,6 +109,11 @@ class Parser:
         self.unit = ParsedUnit()
         self.lex_err = set()
         for off, msg in toks.errors:
+            if msg == "unterminated block comment":
+                ol = bisect_left(self.nl, off)
+                col = off - self.nl[ol - 1] if ol else off + 1
+                sink.add("PREPROC_ERROR", msg, self.lf[ol], self.ll[ol], col)
+                continue
             idx = self._tok_at_offset(off)
             self.lex_err.add(idx)
             self._diag("PARSE_ERROR", msg, idx)
@@ -1749,14 +1754,23 @@ class Parser:
         self.adv()
         params = ()
         if self.k == "#":
-            self.adv()
-            self.expect("(")
-            params = self.parse_param_assigns()
-            self.expect(")")
+            if self.kinds[self.i + 1] in ("NUM", "REAL", "TIME"):
+                self.skip_delay()            # '#1': delay of a user-defined primitive instance
+            else:
+                self.adv()
+                self.expect("(")
+                params = self.parse_param_assigns()
+                self.expect(")")
         while True:
             j = self.i
-            name = self.ident()
-            dims = self.parse_dims()
+            if self.k == "(":
+                # unnamed instance (user-defined primitives may omit the instance name)
+                lc = self.loc(j)
+                name = f"{modname}${lc[1]}_{lc[2]}"
+                dims = ()
+            else:
+                name = self.ident()
+                dims = self.parse_dims()
             self.expect("(")
             conns = self.parse_conns()
             self.expect(")")
@@ -1880,6 +1894,8 @@ class Parser:
         k1 = kinds[j]
         if k1 == "#":
             return self.parse_instance(out)
+        if k1 == "(" and j == i + 1:
+            return self.parse_instance(out)      # unnamed instance (user-defined primitive)
         if k1 == "ID":
             k2 = kinds[j + 1]
             if k2 == "(":
@@ -2180,8 +2196,14 @@ class Parser:
                     u.packages.append(self.parse_package())
                 elif k == "primitive":
                     nm = self.texts[self.i + 1] if self.kinds[self.i + 1] == "ID" else "<unnamed>"
-                    self.info(self.i, f"user-defined primitive '{nm}' ignored (black box)")
-                    u.udps.append(nm)
+                    from .udp import lower_udp
+                    mod, why = lower_udp(self, self.i)
+                    if mod is not None:
+                        u.modules.append(mod)
+                    else:
+                        self.unsupported(self.i, f"user-defined primitive '{nm}' not lowered ({why}); "
+                                         "instances are treated as black boxes")
+                        u.udps.append(nm)
                     self.skip_balanced("primitive", "endprimitive")
                 elif k == "extern":
                     self.i_extern(u.unit_items)

@@ -299,11 +299,12 @@ class Constructs(unittest.TestCase):
                        "covergroup declaration ignored", "clocking declaration ignored", "specify block ignored",
                        "class declaration ignored", "program declaration ignored", "checker declaration ignored",
                        "DPI import ignored", "bind ignored", "always with delay ignored",
-                       "user-defined primitive 'udp' ignored (black box)", "system task $display ignored",
+                       "system task $display ignored",
                        "assert statement ignored"):
             self.assertTrue(any(needle in m for m in info), needle)
         self.assertTrue(all(x.code == "IGNORED_REGION" and not x.affects_cost for x in d.diagnostics))
-        self.assertEqual(d.udps, ("udp",))
+        self.assertEqual(d.udps, ())                 # lowered to a module (kind "primitive")
+        self.assertEqual([(x.name, x.kind) for x in d.modules[1:]], [("udp", "primitive")])
         m = d.modules[0]
         self.assertEqual([type(i).__name__ for i in m.items], ["Always"])
         self.assertEqual(len(m.items[0].body.items), 1)                  # only q <= #1 d remains

@@ -1062,7 +1062,7 @@ class ModElab(BaseEv):
         name = it.module
         self.b.origin = self.org(it.loc)
         if name in ctx.udps:
-            ctx.missing(name, f"user-defined primitive '{name}' is not supported; instance treated as a black box",
+            ctx.missing(name, f"user-defined primitive '{name}' could not be lowered to logic; instance treated as a black box",
                         self, it)
         else:
             ctx.missing(name, f"module '{name}' not found; instance treated as a black box", self, it)

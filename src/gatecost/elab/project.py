@@ -326,6 +326,8 @@ def find_roots(parsed, exclude_lower=(), ctx=None):
     names = []
     seen = set()
     for m in parsed.modules:
+        if m.kind == "primitive":
+            continue                      # lowered user-defined primitive: never a root
         if m.name not in seen:
             seen.add(m.name)
             names.append(m.name)
