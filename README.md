@@ -1,13 +1,82 @@
-# gates-cost-analysis (gatecost)
+<div align="center">
 
-Fast, approximate gate-count estimation for RTL (Verilog, SystemVerilog, VHDL), packaged as an agent skill.
-It answers "how much bigger did this edit make the design?" in gate equivalents (GE, one 2-input NAND), with
-the source lines responsible and an honest confidence level. No synthesis tool, no network, no dependencies:
-Python 3.11 or later and its standard library are enough.
+# gatecost
 
-The repository itself is the skill: `SKILL.md` is what the agent reads, `scripts/gatecost` is the launcher.
+**How many gates does this RTL change cost?** Answered in under a second, without a synthesis tool.
 
-## Adopt it in a project
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![languages](https://img.shields.io/badge/Verilog%20%7C%20SystemVerilog%20%7C%20VHDL-supported-informational)
+![license](https://img.shields.io/badge/license-MIT-lightgrey)
+
+</div>
+
+`gatecost` estimates the logic cost of RTL in **gate equivalents** (GE, one 2-input NAND) and, above all, the
+**cost delta of a modification**, with the source lines responsible and an honest confidence level. It is
+built to be called by an AI coding agent as a *skill*, and works just as well from the command line or CI.
+
+- **Fast**: no daemon, no EDA tool, no network, **standard library only** (Python 3.11+).
+- **Explainable**: every figure comes with a range (`min..max`), a confidence level and the lines that caused it.
+- **Stable**: reformatting, comments, renames and file moves give exactly `0`.
+- **Multi-language**: Verilog, SystemVerilog and VHDL, including mixed designs.
+- **Agent-friendly**: a compact ~400-token text format, plus a stable JSON schema.
+
+## Example
+
+Widen a parameter, ask what it cost:
+
+```console
+$ python3 scripts/gatecost diff
+DELTA +1608 GE (-5..+4644) +104.9% verdict=UNCERTAIN confidence=low
+TOP top before=1533 after=3141
++1608 a.sv:1 parameter W 16->24 (2 ops) x1 cause=parameter:W
+WHY low: delta range is +/-145% of the estimate
+```
+
+One edit, one explained contributor. The first line is the answer: the delta, its plausible range, a verdict
+and a confidence. Compare options *before* writing code:
+
+```console
+$ python3 scripts/gatecost estimate --compare "mul 32x32" "mul 32 const=10"
+$ python3 scripts/gatecost estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32
+$ python3 scripts/gatecost estimate "mul 16x16 + add 32"
+ESTIMATE 1566 GE (1474..2882) confidence=medium
+OP MUL 16x16 unsigned + ADD 32
+ARCH min=booth_wallace+ripple typ=booth_wallace+brent_kung max=wallace_ks+kogge_stone
+WHY medium: delta range is +/-45% of the estimate
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `diff` | Cost delta of your edit (against `HEAD`, a git ref, a snapshot, or two directories), with attribution. |
+| `cost` | Absolute size of the design and its largest modules. |
+| `estimate` | Cost of a hypothetical construct, an RTL fragment, or a comparison of alternatives. |
+| `snapshot` | Record a baseline when there is no git. |
+| `init`, `profiles`, `clean`, `validate-output` | Config file, cost profiles, caches, JSON schema check. |
+
+Formats: `--format agent` (default), `json`, `text`, `markdown` (for pull-request comments).
+Budgets for CI: `--budget GE` and `--fail-on-increase GE` exit with code 1 when exceeded.
+
+## How it works
+
+```
+sources -> lexer/parser -> elaborator -> word-level IR -> cost model -> cost tree
+                                                                           |
+baseline ------------------------- (same pipeline) ---------------------> differ -> reporters
+```
+
+- A hand-written, error-tolerant front-end per language: a broken construct produces a diagnostic, never a crash.
+- Procedural code becomes dataflow; registers, resets, enables, latches and memories are recognised.
+- Costs are built from library primitives (NAND2, XOR2, FA, DFF, ...) under three consistent scenarios
+  (`min`, `typ`, `max`), after reductions that mimic synthesis (constant propagation, unused bits, sharing, fusion).
+- The differ matches operations across versions and explains each change with a reason
+  (`added`, `width`, `parameter`, `sharing`, ...); contributors add up exactly to the total.
+
+Details: [`docs/SPEC.md`](docs/SPEC.md), [`docs/COST_MODEL.md`](docs/COST_MODEL.md), [`docs/DIFF.md`](docs/DIFF.md).
+
+## Install as an agent skill
 
 Add the repository as a git submodule inside the skills directory that your agent toolchain reads:
 
@@ -88,19 +157,30 @@ python3 scripts/gatecost help
 `pip install .` also provides a `gatecost` console command with the same behavior (needs setuptools; not
 needed for the skill).
 
-## Status and limits
+## Accuracy and limits
 
-Work in progress: `docs/IMPLEMENTATION.md` has a status table per stage. Commands whose stage has not landed
-print `ERROR NOT_IMPLEMENTED`.
+The figures are analytic **estimates**, good for ranking options and judging orders of magnitude, not for
+sign-off. Dividers, memories and ROMs are the least accurate; non-synthesizable code is ignored; timing,
+power and routing are not modeled. Every result carries a range and a confidence level. The built-in
+`generic-asic` profile has not yet been calibrated against real synthesis reports
+(`scripts/validate_reference.py` is provided for that): use real synthesis for final decisions.
 
-The figures are analytic estimates, good for ranking options and judging orders of magnitude, not for
-sign-off: dividers, memories and ROMs are the least accurate, non-synthesizable code is ignored, and timing,
-power and routing are not modeled. Every result carries a range and a confidence level; use real synthesis for
-final decisions.
+Known gaps are listed in [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) (status per stage).
 
-## More
+## Documentation
 
-- `SKILL.md`: what the agent does and how it words answers.
-- `docs/SPEC.md`: specification; `docs/CLI.md`: commands and configuration; `docs/OUTPUT.md`: output formats;
-  `docs/COST_MODEL.md`: how costs are computed; `docs/DISTRIBUTION.md`: the skill model.
-- `CONTRIBUTING.md`: development setup and conventions. License: `LICENSE`.
+| | |
+|---|---|
+| [`SKILL.md`](SKILL.md) | What the agent does and how it words answers |
+| [`docs/SPEC.md`](docs/SPEC.md) | Specification |
+| [`docs/CLI.md`](docs/CLI.md) | Commands, options, `estimate` notation, `gatecost.toml` |
+| [`docs/OUTPUT.md`](docs/OUTPUT.md) | Output formats and JSON schema |
+| [`docs/COST_MODEL.md`](docs/COST_MODEL.md) | Primitives, formulas, uncertainty |
+| [`docs/DIFF.md`](docs/DIFF.md) | Matching and attribution |
+| [`docs/FRONTEND.md`](docs/FRONTEND.md), [`docs/IR.md`](docs/IR.md) | Front-ends and intermediate representation |
+| [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) | The skill model and launcher |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup and conventions |
+
+## License
+
+MIT, see [`LICENSE`](LICENSE).
