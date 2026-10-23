@@ -399,5 +399,40 @@ class Constructs(unittest.TestCase):
         self.assertIn("nesting too deep", d.diagnostics[0].message)
 
 
+class ElaborationTasks(unittest.TestCase):
+    def test_elaboration_system_tasks_are_legal_generate_items(self):
+        src = """module a #(parameter int N = 4)(input logic x, output logic y);
+  if (N < 2) begin : g_chk
+    $error("N must be >= 2, got %0d", N);
+  end
+  $info("elaborating");
+  $warning("w"); $fatal(1, "f");
+  assign y = x;
+endmodule
+"""
+        d = parse_text(src, "a.sv")
+        self.assertEqual([x.code for x in d.diagnostics if x.severity != "info"], [])
+        self.assertEqual(len(d.modules), 1)
+
+
+class TypedPorts(unittest.TestCase):
+    def ports(self, src):
+        d = parse_text(src, "a.sv")
+        self.assertEqual([x.code for x in d.diagnostics if x.severity != "info"], [])
+        return d
+
+    def test_function_arguments_each_with_a_type(self):
+        d = self.ports("package p; function automatic int max(int a, int b); return a > b ? a : b; endfunction endpackage\n")
+        (pk,) = [x for x in d.packages if x.name == "p"]
+        (f,) = [x for x in pk.items if isinstance(x, A.Function)]
+        self.assertEqual([p.name for p in f.ports], ["a", "b"])
+
+    def test_module_port_with_new_type_inherits_direction(self):
+        d = self.ports("module m(input logic a, logic b, input my_t c, my_t e, output [3:0] y, z); endmodule\n")
+        got = [(p.name, p.direction, p.iface) for p in d.modules[0].ports]
+        self.assertEqual(got, [("a", "input", None), ("b", "input", None), ("c", "input", None),
+                               ("e", "input", None), ("y", "output", None), ("z", "output", None)])
+
+
 if __name__ == "__main__":
     unittest.main()

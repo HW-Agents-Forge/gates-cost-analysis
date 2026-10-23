@@ -27,6 +27,7 @@ STRENGTH = frozenset(("supply0", "supply1", "strong0", "strong1", "pull0", "pull
 GATES = frozenset(("and", "nand", "or", "nor", "xor", "xnor", "buf", "not", "bufif0", "bufif1", "notif0",
                    "notif1", "nmos", "pmos", "rnmos", "rpmos", "cmos", "rcmos", "tran", "rtran", "tranif0",
                    "tranif1", "rtranif0", "rtranif1", "pullup", "pulldown"))
+ELAB_TASKS = frozenset(("$error", "$warning", "$info", "$fatal"))     # IEEE 1800 20.11, legal as generate items
 ASSIGN_OPS = frozenset(("=", "<=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "<<<=", ">>>="))
 UNARY = frozenset(("+", "-", "!", "~", "&", "|", "^", "~&", "~|", "~^", "^~"))
 BINPREC = {
@@ -983,14 +984,15 @@ class Parser:
                 self.adv()
                 mp = self.ident()
                 cur = (None, None, None, ifc, mp)
-            elif k == "ID" and self.kinds[i + 1] == "ID" and default_dir is None:
+            elif k == "ID" and self.kinds[i + 1] == "ID" and default_dir is None and (cur is None or cur[0] is None):
                 ifc = self.texts[i]
                 self.adv()
                 cur = (None, None, None, ifc, None)
-            elif cur is None and (k in TYPE_KW or k == "[" or k == "signed" or k == "unsigned" or
-                                  (k == "ID" and self.kinds[i + 1] in ("ID", "::"))):
+            elif (k in TYPE_KW or k == "[" or k == "signed" or k == "unsigned" or
+                  (k == "ID" and self.kinds[i + 1] in ("ID", "::") and (cur is None or cur[3] is None))):
+                # a data type starts a new port; without a direction it inherits the previous one
                 dt = self.parse_data_type()
-                cur = (default_dir or "input", None, dt, None, None)
+                cur = ((cur[0] if cur is not None and cur[0] else None) or default_dir or "input", None, dt, None, None)
             elif cur is None:
                 cur = (default_dir, None, None, None, None)
             j = self.i
@@ -1036,15 +1038,16 @@ class Parser:
                     dtype = self.parse_data_type()
             i = self.i
             name = self.ident()
+            udims = ()
             if self.k == "[":
-                self.parse_dims()
+                udims = tuple(self.parse_dims())
             init = None
             if self.accept("="):
                 if is_type:
                     init = self.parse_data_type()
                 else:
                     init = self.parse_expr()
-            out.append(A.ParamDecl(self.loc(i), local, dtype, name, init, is_type))
+            out.append(A.ParamDecl(self.loc(i), local, dtype, name, init, is_type, udims))
             if self.k != ",":
                 break
             self.adv()
@@ -1932,6 +1935,10 @@ class Parser:
             return None
         if k in ASSERT_KW:
             self.info(self.i, f"{k} ignored")
+            self.skip_to_semi()
+            return None
+        if k == "SYSID" and self.texts[self.i] in ELAB_TASKS:
+            self.info(self.i, f"elaboration system task {self.texts[self.i]} ignored")
             self.skip_to_semi()
             return None
         raise ParseError(self.i, f"unexpected {self.desc()} at module item level")

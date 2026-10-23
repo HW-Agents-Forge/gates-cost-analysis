@@ -1084,7 +1084,13 @@ class ExprMixin:
             else:
                 break
         if sym is not None:
-            if isinstance(sym, PSym):
+            if isinstance(sym, PSym) and sym.arr is not None and k < n and steps[k][0] == "i" and sym.pt.fields:
+                # element of an array parameter of structs (``Cfg[i].field``): the element, then the packed steps
+                r.rootsig = self._arr_read(sym, steps[k][2])
+                r.pt = sym.pt
+                r.w = sym.pt.w
+                k += 1
+            elif isinstance(sym, PSym):
                 r.rootsig = sym.val.sig
                 r.pt = sym.pt if sym.pt is not None and sym.pt.w == sym.val.w else vec(sym.val.w, sym.val.signed)
                 r.w = r.pt.w

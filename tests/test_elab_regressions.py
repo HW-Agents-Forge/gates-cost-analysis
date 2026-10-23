@@ -53,5 +53,146 @@ endmodule"""
         self.assertNotIn("INTERNAL", codes)
 
 
+
+class HeaderScope(unittest.TestCase):
+    def test_body_localparam_may_use_an_ansi_port(self):
+        src = """module a(input logic [7:0] x, output logic [15:0] y);
+  localparam int L = $bits(x);
+  assign y = x + L;
+endmodule
+"""
+        diags = [d.code for d in run(src, "a.sv").diagnostics]
+        self.assertNotIn("UNRESOLVED_NAME", diags)
+
+    def test_verilog_identifier_named_like_a_sv_type(self):
+        src = """module a(input clk, output reg [3:0] bit);
+  always @(posedge clk) bit <= bit + 1;
+endmodule
+"""
+        self.assertNotIn("PARSE_ERROR", [d.code for d in run(src, "a.v").diagnostics])
+
+
+class StructPatternParams(unittest.TestCase):
+    SRC = """module c(output logic [31:0] y, output logic [31:0] z);
+  typedef struct packed { logic [15:0] p; logic [15:0] q; } s_t;
+  localparam s_t [2:0] K = '{ '{p: 16'd1, q: 16'd2}, '{p: 16'd3, q: 16'd4}, '{p: 16'd5, q: 16'd6} };
+  localparam s_t ONE = '{p: 16'd7, q: 16'd8};
+  localparam int A = K[1].p;
+  localparam int B = ONE.q;
+  assign y = A;
+  assign z = B + K[0].q;
+endmodule
+"""
+
+    def test_struct_and_array_of_struct_localparams_keep_their_values(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "c.sv")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("y[31:0] <- 32'h3", text)
+        self.assertIn("z[31:0] <- 32'he", text)
+
+
+class VhdlLibraryName(unittest.TestCase):
+    """A project compiled in a single library and referring to it by its real name (``neorv32``)."""
+    PKG = """package my_pkg is
+  constant K : natural := 5;
+  function twice(x : natural) return natural;
+end package;
+package body my_pkg is
+  function twice(x : natural) return natural is begin return 2 * x; end function;
+end package body;
+"""
+    TOP = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+library mylib; use mylib.my_pkg.all;
+entity t is port (a : in unsigned(7 downto 0); y : out unsigned(7 downto 0)); end entity;
+architecture r of t is begin y <= a + K + twice(1); end architecture;
+"""
+
+    def test_unknown_library_falls_back_to_lookup_by_unit_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "pkg.vhd").write_text(self.PKG)
+            Path(td, "t.vhd").write_text(self.TOP)
+            res = elaborate_project([Path("pkg.vhd"), Path("t.vhd")], root=Path(td))
+        bad = [(d.code, d.message) for d in res.diagnostics if d.severity != "info"]
+        self.assertEqual(bad, [])
+
+    def test_vhdl_diagnostic_paths_are_relative(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "t.vhd").write_text(self.TOP)         # the package is missing: MISSING_UNIT
+            res = elaborate_project([Path("t.vhd")], root=Path(td))
+        files = [d.file for d in res.diagnostics if d.code == "MISSING_UNIT"]
+        self.assertTrue(files)
+        self.assertTrue(all(f and not f.startswith("/") for f in files), files)
+
+
+class GenericWithoutDefault(unittest.TestCase):
+    TEMPLATE = """library ieee; use ieee.std_logic_1164.all;
+entity e is generic (N : %s);
+  port (clk, rstn : in std_ulogic; d : in std_ulogic_vector(N-1 downto 0); q : out std_ulogic_vector(N-1 downto 0));
+end entity;
+architecture r of e is signal s : std_ulogic_vector(N-1 downto 0); begin
+  process (rstn, clk) begin
+    if rstn = '0' then s <= (others => '0'); elsif rising_edge(clk) then s <= d; end if;
+  end process;
+  q <= s;
+end architecture;
+"""
+
+    def diags(self, subtype):
+        return run(self.TEMPLATE % subtype, "e.vhd").diagnostics
+
+    def test_assumed_value_stays_inside_the_subtype_range(self):
+        for sub, want in (("natural range 1 to 8", "assumed 8"), ("integer range 4 to 6", "assumed 6"),
+                          ("positive range 40 to 50", "assumed 40"), ("natural", "assumed 32")):
+            msgs = [d.message for d in self.diags(sub) if d.code == "UNRESOLVED_PARAM"]
+            self.assertEqual(len(msgs), 1, sub)
+            self.assertTrue(msgs[0].endswith(want), (sub, msgs))
+
+    def test_no_aggregate_failure_with_a_ranged_generic(self):
+        bad = [d.message for d in self.diags("natural range 1 to 8") if d.code == "UNSUPPORTED_CONSTRUCT"]
+        self.assertEqual(bad, [])
+
+
+class BlackBoxConnections(unittest.TestCase):
+    def test_one_net_on_two_ports_of_a_black_box_is_not_driven_twice(self):
+        src = """module pll(input clki, output clko);
+  wire fb, op;
+  VENDOR_PLL u (.CLKI(clki), .CLKFB(fb), .CLKINTFB(fb), .CLKOP(op));
+  assign clko = op;
+endmodule
+"""
+        codes = [d.code for d in run(src, "pll.v").diagnostics]
+        self.assertNotIn("MULTIPLE_DRIVERS", codes)
+        self.assertIn("MISSING_MODULE", codes)
+
+
+class UnpackedStructArrayParams(unittest.TestCase):
+    SRC = """module a(input logic [1:0] sel, output logic [7:0] y, output logic z, output logic [1:0] w, output logic r);
+  typedef enum logic [1:0] {OFF=0, TOR=1, NA4=2} mode_e;
+  typedef struct packed { logic lock; mode_e mode; logic [3:0] val; } cfg_t;
+  parameter cfg_t Rst[3] = '{ '{lock: 1'b0, mode: OFF, val: 4'd1}, '{lock: 1'b1, mode: TOR, val: 4'd2},
+                              '{lock: 1'b1, mode: NA4, val: 4'd9} };
+  localparam int V1 = Rst[1].val;
+  localparam int V2 = Rst[2].val;
+  assign y = V1 + V2;
+  assign z = Rst[1].lock;
+  assign w = Rst[2].mode;
+  assign r = Rst[sel].lock;
+endmodule
+"""
+
+    def test_elements_and_fields_of_an_array_parameter_of_structs(self):
+        from gatecost.ir.dump import dump
+        res = run(self.SRC, "a.sv")
+        self.assertEqual([d.code for d in res.diagnostics if d.severity != "info"], [])
+        (m,) = res.design.modules.values()
+        text = dump(m, analysis=False)
+        self.assertIn("y[7:0] <- 8'hb", text)       # 2 + 9
+        self.assertIn("z[0] <- 1'h1", text)
+        self.assertIn("w[1:0] <- 2'h2", text)
+
+
 if __name__ == "__main__":
     unittest.main()

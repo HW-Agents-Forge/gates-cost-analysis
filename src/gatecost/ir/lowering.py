@@ -763,9 +763,11 @@ class LowerBlock:
                 d = self._strip(seg, net, lo + i, memo)
                 q = b.latch(d, en, inferred=True, origin=b.origin)
                 b.connect(dst, q)
-                b.module.diag("INFERRED_LATCH",
-                              f"latch inferred for {net.name or net.id}[{lo+i+n-1}:{lo+i}]: "
-                              "not assigned on every path", "warning", False, b.origin)
+                # reported by ``finalize`` only if something reads the signal (a process-local variable that
+                # is always written before it is read leaves an unread hold path, not a latch)
+                b.defer_diag(net, "INFERRED_LATCH",
+                             f"latch inferred for {net.name or net.id}[{lo+i+n-1}:{lo+i}]: "
+                             "not assigned on every path", "warning", False, b.origin)
             i += n
         self._discards.append(run)      # collected after ALL targets are finished (runs share sub-expressions)
 

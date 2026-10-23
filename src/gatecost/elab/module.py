@@ -110,9 +110,21 @@ def build_header(ctx, mod, overrides):
             ev.register_function(it)
     for pd in mod.params:
         _guard(ev, ev.declare_a0, pd, overrides)
+    # ANSI ports cannot depend on body declarations (except imports), so the ports are built first and entered
+    # in the scope: body parameters may then use them (``localparam W = $bits(data);``).
+    late = mod.ansi
     for it in mod.items:
-        if type(it) in (A.ParamDecl, A.Typedef, A.Import):
+        if type(it) in ((A.Import,) if late else (A.ParamDecl, A.Typedef, A.Import)):
             _guard(ev, ev.declare_a0, it, overrides)
+    ports = None
+    if late:
+        ports = _header_ports(ctx, ev, mod, overrides)
+        for pi in ports:
+            if pi.iface is None and pi.member_of is None:
+                scope.syms.setdefault(pi.name, VSym(pi.name, pi.pt))
+        for it in mod.items:
+            if type(it) in (A.ParamDecl, A.Typedef):
+                _guard(ev, ev.declare_a0, it, overrides)
     params = {}
     for pd in param_decls(mod):
         sym = scope.syms.get(pd.name)
@@ -120,7 +132,8 @@ def build_header(ctx, mod, overrides):
             params[pd.name] = pkey(sym.val)
         elif isinstance(sym, TSym):
             params[pd.name] = "type:" + sym.pt.describe()
-    ports = _header_ports(ctx, ev, mod, overrides)
+    if ports is None:
+        ports = _header_ports(ctx, ev, mod, overrides)
     for pi in ports:
         if pi.iface is not None and pi.member_of is None:
             isym = overrides.get("$if:" + pi.name)
@@ -1054,6 +1067,7 @@ class ModElab(BaseEv):
         ins = {}
         outputs = {}
         post = []
+        claimed: set = set()
         self.allow_implicit = True
         try:
             for i, pc in enumerate(it.conns or ()):
@@ -1066,6 +1080,13 @@ class ModElab(BaseEv):
                 if self._guess_output(e):
                     parts = self.lvalue_parts(e)
                     if parts and all(p is not None for p in parts):
+                        # a net connected to several ports of one black box is driven by at most one of them
+                        bits = {(id(p.net), p.off + k) for p in parts if p.net is not None and not p.dyn
+                                for k in range(p.w)}
+                        if bits and bits & claimed:
+                            ins[pname] = self.val(e).sig
+                            continue
+                        claimed |= bits
                         tw = self.part_width(parts)
                         net = b.net(tw)
                         outputs[pname] = net

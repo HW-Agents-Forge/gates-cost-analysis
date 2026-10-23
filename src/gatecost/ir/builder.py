@@ -500,6 +500,12 @@ class Builder:
         return self.inst(name, inst_name, inputs, outputs, count, origin, op="BLACKBOX", **attrs)
 
     # ------------------------------------------------------------- finalize
+    def defer_diag(self, net, code: str, message: str, severity: str = "warning", affects_cost: bool = False,
+                   origin: Origin | None = None) -> None:
+        """Diagnostic about ``net`` that is kept only if the net is read (or is a port) in the finished module."""
+        pend = self.__dict__.setdefault("_deferred_diags", [])
+        pend.append((net, code, message, severity, affects_cost, origin))
+
     def finalize(self, check: str = "raise") -> ModuleIR:
         """Finish the module: cut combinational loops, filter removed objects and check
         invariants (``check``: ``"raise"``, ``"diag"`` or ``"off"``)."""
@@ -514,6 +520,9 @@ class Builder:
         m.nodes = [n for n in m.nodes if n.alive]
         m.nets = [n for n in m.nets if n.driver != "dead"]
         m.recount_fanout()
+        for net, code, message, severity, affects, origin in self.__dict__.get("_deferred_diags", ()):
+            if net.fanout > 0 or net.port:
+                m.diag(code, message, severity, affects, origin)
         cut_loops(m)
         if check != "off":
             problems = check_module(m)

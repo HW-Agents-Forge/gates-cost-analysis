@@ -71,12 +71,20 @@ class InstMixin:
         return str(id(v))
 
     def default_generic(self, g, gt, ent):
-        self.ctx.diag("UNRESOLVED_PARAM", "generic '%s' of '%s' has no value or default; assumed %s" % (
-            g.name, ent.name, "32" if gt.kind == "int" else "0"), ent.file, g.line, g.col)
-        self.ctx.assume("unresolved parameter %s of %s assumed 32" % (g.name, ent.name) if gt.kind == "int"
-                        else "unresolved parameter %s of %s assumed 0" % (g.name, ent.name))
+        guess = None
         if gt.kind == "int":
-            return self.fit(int_val(32), gt)
+            n = 32
+            if getattr(gt, "low", None) is not None and getattr(gt, "high", None) is not None:
+                n = min(max(n, gt.low), gt.high)       # 32, brought into the subtype's range
+            guess = self.fit(int_val(n), gt)
+            shown = str(n)
+        else:
+            shown = "0"
+        self.ctx.diag("UNRESOLVED_PARAM", "generic '%s' of '%s' has no value or default; assumed %s" % (
+            g.name, ent.name, shown), ent.file, g.line, g.col)
+        self.ctx.assume("unresolved parameter %s of %s assumed %s" % (g.name, ent.name, shown))
+        if gt.kind == "int":
+            return guess
         if gt.kind == "enum" and gt.cls == "bool":
             return self.fit(Val(gt, None, 0), gt)
         if gt.width:

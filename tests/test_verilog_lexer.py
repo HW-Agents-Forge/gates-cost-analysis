@@ -122,5 +122,23 @@ class Tokens(unittest.TestCase):
         self.assertEqual(t.stream(), [("ID", "x")])
 
 
+
+class SoftKeywords(unittest.TestCase):
+    """SystemVerilog-only keywords used as identifiers in plain Verilog."""
+
+    def kinds(self, text):
+        return [k for k, _ in toks(text)]
+
+    def test_identifier_when_context_excludes_a_keyword(self):
+        self.assertEqual(self.kinds("reg [3:0] bit;"), ["reg", "[", "NUM", ":", "NUM", "]", "ID", ";"])
+        self.assertEqual(self.kinds("bit <= bit + 1;"), ["ID", "<=", "ID", "+", "NUM", ";"])
+        self.assertEqual(self.kinds(".ref(x)"), [".", "ID", "(", "ID", ")"])
+
+    def test_type_use_stays_a_keyword(self):
+        self.assertEqual(self.kinds("bit [3:0] x;")[0], "bit")
+        self.assertEqual(self.kinds("int x;")[0], "int")
+        self.assertEqual(self.kinds("int'(x)")[0], "int")
+
+
 if __name__ == "__main__":
     unittest.main()

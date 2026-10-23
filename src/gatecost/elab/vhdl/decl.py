@@ -70,6 +70,11 @@ class DeclMixin:
                     key = (l, n)
                     if l == (self.lib_of_current()):
                         break
+        elif lib is not None and parsed.library_unused(lib):
+            for (l, n) in parsed.packages:
+                if n == name:
+                    key = (l, n)
+                    break
         if key is None:
             return None
         env = self.ctx.pkgs.get(key)

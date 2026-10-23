@@ -341,5 +341,19 @@ class Speed(unittest.TestCase):
         self.assertLess(dt, 0.25)
 
 
+class TopConfig(unittest.TestCase):
+    def test_auto_top_against_pinned_top_is_not_a_mismatch(self):
+        b = flat([op("ADD", 100, tgt="a")], config={"top": None})
+        a = flat([op("ADD", 100, tgt="a")], config={"top": "top"})
+        r = diff_trees(b, a)
+        self.assertFalse(any(d.code == "CONFIG_MISMATCH" for d in r.diagnostics_new))
+
+    def test_two_different_pinned_tops_still_mismatch(self):
+        b = flat([op("ADD", 100, tgt="a")], config={"top": "x"})
+        a = flat([op("ADD", 100, tgt="a")], config={"top": "y"})
+        r = diff_trees(b, a)
+        self.assertTrue(any(d.code == "CONFIG_MISMATCH" for d in r.diagnostics_new))
+
+
 if __name__ == "__main__":
     unittest.main()

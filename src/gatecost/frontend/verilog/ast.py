@@ -357,7 +357,7 @@ class VarDecl(Item):
 class ParamDecl(Item):
     """``parameter``/``localparam`` (one per name).  ``dtype`` None when untyped; for type
     parameters ``is_type`` is True and ``init`` is a DataType (or None)."""
-    __slots__ = ("local", "dtype", "name", "init", "is_type")
+    __slots__ = ("local", "dtype", "name", "init", "is_type", "udims")
 
 
 @node

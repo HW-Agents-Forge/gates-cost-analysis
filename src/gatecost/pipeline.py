@@ -155,14 +155,18 @@ def get_elaborator():
     return elaborate_project
 
 
-def _as_diag(d) -> Diagnostic:
+def _as_diag(d, root=None) -> Diagnostic:
     if isinstance(d, Diagnostic):
-        return d
-    if hasattr(d, "as_result_diagnostic"):
-        return d.as_result_diagnostic("after")
-    if isinstance(d, dict):
-        return Diagnostic(d["code"], d["message"], d.get("severity", "warning"), bool(d.get("affects_cost")),
-                          d.get("side", "after"), d.get("file"), d.get("line"), d.get("column"))
+        pass
+    elif hasattr(d, "as_result_diagnostic"):
+        d = d.as_result_diagnostic("after")
+    elif isinstance(d, dict):
+        d = Diagnostic(d["code"], d["message"], d.get("severity", "warning"), bool(d.get("affects_cost")),
+                       d.get("side", "after"), d.get("file"), d.get("line"), d.get("column"))
+    if root is not None and isinstance(d, Diagnostic):
+        msg = _clean_paths(d.message, Path(root))
+        if msg != d.message:
+            d = replace(d, message=msg)
     return d
 
 
@@ -191,7 +195,7 @@ def analyze_project(files, root, top, defines, incdirs, limits, profile, elabora
 
     def mk(r, name):
         t = build_cost_tree(r.design, profile, config={"defines": defines, "top": top, "root": str(root)},
-                            extra_diagnostics=[_as_diag(d) for d in r.diagnostics])
+                            extra_diagnostics=[_as_diag(d, root) for d in r.diagnostics])
         return _annotate(t, texts, defines, root, r, facts_out=facts_out)
 
     notes: list[str] = []
@@ -538,7 +542,7 @@ def analyze_cone(inp: Inputs, profile, top, limits, cache, ref: SideResult, name
     cone_stats.clear()
     cone_stats.update(parsed=plan.parsed if plan else len(inp.files), total=len(inp.files))
     partial = build_cost_tree(design, profile, config={"defines": inp.defines, "top": top, "root": str(inp.root)},
-                              extra_diagnostics=[_as_diag(d) for d in res.diagnostics], stubbed=stubs)
+                              extra_diagnostics=[_as_diag(d, inp.root) for d in res.diagnostics], stubbed=stubs)
     if plan is not None:
         partial = _annotate(partial, plan.texts, inp.defines, inp.root, res, ifdef_extra=plan.ifdef_extra,
                             file_order=plan.order)
