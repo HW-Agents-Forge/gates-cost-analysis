@@ -95,10 +95,21 @@ def _run(argv: list[str]) -> int:
         return EXIT_OK
 
     settings, cfg = resolve_settings(args, Path.cwd(), skill_dir)
+    if cmd == "snapshot":
+        from . import cmd_snapshot
+
+        _emit(cmd_snapshot.run(args, settings, cfg))
+        return EXIT_OK
     if cmd in ("estimate", "profiles"):
         from . import cmd_estimate
 
         _emit(cmd_estimate.run(args, settings, cfg))
         return EXIT_OK
+    if cmd == "cost":
+        from . import cmd_cost
+
+        text, code = cmd_cost.run(args, settings, cfg)
+        _emit(text)
+        return code
     # Stages 3-5 replace this with the real analysis commands.
     raise commands.not_implemented(cmd)

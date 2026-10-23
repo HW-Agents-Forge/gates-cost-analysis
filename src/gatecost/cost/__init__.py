@@ -54,12 +54,16 @@ Composition helpers
 from __future__ import annotations
 
 from .acc import OpCost
+from .build import build_cost_tree, category_totals, module_totals, tree_confidence
+from .tree import CostOp, DesignCostTree, InstanceEdge, ModuleCost
 from .delta import confidence, delta, delta_range, range_ratio, residual_sigma, total
 from .ops import OPS, cost_op
 from .profile import DEFAULT_PROFILE, Profile, builtin_names, dump_profile, list_profiles, load_profile
 from .sharing import shared_leaf_cost
 
 __all__ = [
+    "CostOp", "DesignCostTree", "InstanceEdge", "ModuleCost", "build_cost_tree", "category_totals",
+    "module_totals", "tree_confidence",
     "DEFAULT_PROFILE", "OPS", "OpCost", "Profile", "builtin_names", "confidence", "cost_op", "delta",
     "delta_range", "dump_profile", "list_profiles", "load_profile", "range_ratio", "residual_sigma",
     "shared_leaf_cost", "total",

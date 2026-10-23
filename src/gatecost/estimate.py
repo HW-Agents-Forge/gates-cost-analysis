@@ -394,5 +394,7 @@ RTL_ESTIMATOR: Callable[[str, dict, str, Profile], EstimateResult] | None = None
 
 def estimate_rtl(fragment: str, widths: dict[str, int], lang: str, profile: Profile) -> EstimateResult:
     if RTL_ESTIMATOR is None:
-        raise GatecostError("NOT_IMPLEMENTED", "estimate --rtl needs the HDL front-end, which is not available yet")
+        from .rtl_estimate import estimate_fragment
+
+        return estimate_fragment(fragment, widths, lang, profile)
     return RTL_ESTIMATOR(fragment, widths, lang, profile)

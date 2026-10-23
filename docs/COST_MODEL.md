@@ -272,3 +272,10 @@ The implementation (`src/gatecost/cost/`) follows the formulas above. The follow
 15. **Breakdown.** `breakdown` counts the primitives (and a few pseudo-primitives such as `PREFIX`, `BOOTH_SEL`, `AND_IN`) of the typ architecture before sizing and overhead factors; for α-interpolated typ the counts are interpolated too.
 
 Reference values with `generic-asic` (typ, GE): ADD32 214.2, MUL16 1351.5, MUL32 4952.6, 32-bit DFF bank 181.4, MUX 4:1×32 223.7, barrel shifter 32 (logical) 341.8, rotate 372.8.
+
+## 10. Implementation notes (cost-tree builder, `cost/build.py`)
+
+1. Zero-cost operations are not emitted, except non-surviving members of a shared set (kept with tags `shared`, `shared_zeroed` for attribution). Sharing puts the whole shared cost, per scenario, on the most expensive leaf.
+2. Duplicate flops: min/typ cost once, max is `merge_count` times. A fused `SUM` containing a multiplier is `MAC` (plus `(k-1)·w·FA` for extra addends; max adds unfused adders). With `datapath_fusion = false` a `SUM` is costed from its member nodes.
+3. Instances of modules absent from the design are black boxes costed from the profile `[blackbox]` table (zero plus `MISSING_MODULE` otherwise); their category is `blackbox` and appears in `by_category` only when non-zero.
+4. `cost` reports per-instance `own`/`total` for each module; `--by file` replaces the module rows by per-file rows; `--by category` omits them. Unknown top: with several candidate tops each is costed, the largest is reported and the others appear as `ASSUMED` lines.

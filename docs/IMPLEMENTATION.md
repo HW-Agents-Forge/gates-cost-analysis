@@ -103,10 +103,10 @@ The project is built incrementally. Each stage below delivers something an agent
 
 ## 3. Dependency Overview
 
-```
+```text
 1 ─► 2 ─► 3 ─► 4 ─► 5 ─┬─► 6 ──┐
-                        └─► 7 ──┼─► 8 ─► 9
-                                 │
+                       └─► 7 ──┼─► 8 ─► 9
+                               │
                    (6 and 7 run in parallel)
 ```
 

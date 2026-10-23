@@ -199,7 +199,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(json.loads(out)["error"]["code"], "BAD_ARGUMENT")
 
     def test_unimplemented_commands_are_well_formed(self):
-        for c in ("diff", "cost", "snapshot"):
+        for c in ("diff",):
             with self.subTest(c=c):
                 code, out, _ = run(*c.split(), cwd=self.tmp)
                 self.assertEqual((code, out), (3, f"ERROR NOT_IMPLEMENTED {c.split()[0]} is not implemented yet\n"))

@@ -51,6 +51,7 @@ class Contributor:
     location_side: str = "after"
     cause: dict | None = None  # {"kind","name","file","line","from","to"}
     children: tuple["Contributor", ...] = ()
+    scenario: Ge3 | None = None  # exact per-scenario delta (additive); `delta` adds the residual range
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,6 +74,12 @@ class DiffResult:
     assumed: tuple[str, ...] = ()
     # Extras for --verbose
     modules_verbose: tuple[str, ...] = ()
+    # Additive extras (differ): exact views, each summing to `delta_scenarios` in every scenario
+    delta_scenarios: Ge3 | None = None  # exact per-scenario total delta (`delta` is its range)
+    all_contributors: tuple[Contributor, ...] = ()  # every grouped contributor, unfolded, ranked
+    by_line: tuple[dict, ...] = ()
+    by_cause: tuple[dict, ...] = ()
+    category_scenarios: dict = field(default_factory=dict)  # category -> Ge3
 
 
 @dataclass(slots=True, frozen=True)
