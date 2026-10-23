@@ -75,17 +75,20 @@ def synthetic_ir(n_nodes: int) -> dict:
 
 
 def startup() -> dict:
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-    launcher = [sys.executable, "-m", "gatecost"]
+    """Cold (empty bytecode cache) and warm start-up of the launcher, best of several runs."""
+    launcher = Path(__file__).resolve().parents[2] / "scripts" / "gatecost"
     res = {}
     for label, args in (("version", ["--version"]), ("estimate", ["estimate", "mul 16x16 + add 32"])):
-        times = []
-        for _ in range(5):
-            t0 = time.perf_counter()
-            subprocess.run(launcher + args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            times.append(time.perf_counter() - t0)
-        res[label] = min(times)
+        cold, warm = [], []
+        for _ in range(3):
+            with tempfile.TemporaryDirectory() as cache:
+                env = dict(os.environ, GATECOST_CACHE_DIR=cache)
+                for bucket in (cold, warm, warm):
+                    t0 = time.perf_counter()
+                    subprocess.run([sys.executable, str(launcher)] + args, env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    bucket.append(time.perf_counter() - t0)
+        res[label] = (min(cold), min(warm))
     return res
 
 
@@ -105,7 +108,8 @@ def main() -> None:
         r = synthetic_ir(a.ir)
         print(f"IR    {r['nodes']} nodes: build {r['build_s']:.2f}s  analyze {r['analyze_s']:.2f}s")
     s = startup()
-    print(f"start-up (best of 5): --version {s['version'] * 1000:.0f} ms, estimate {s['estimate'] * 1000:.0f} ms")
+    for k, (c, w) in s.items():
+        print(f"start-up {k:9s} cold {c * 1000:5.0f} ms  warm {w * 1000:5.0f} ms")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from gatecost.ir import Builder, Design, LowerBlock, SigSpec, mask
 from .base import BaseEv
 from .decls import pack
 from .expr import ElabError
-from .symbols import BIT, ISym, KSym, PSym, PType, Scope, TSym, VSym, vec
+from .symbols import BIT, ISym, KSym, PSym, PType, Scope, TSym, V, VSym, vec
 
 
 class PortInfo:
@@ -29,7 +29,7 @@ class PortInfo:
 class Hdr:
     """Evaluated module header: parameters, scope and ports for one parameter assignment."""
 
-    __slots__ = ("mod", "scope", "params", "ports", "iface_syms")
+    __slots__ = ("mod", "scope", "params", "ports", "iface_syms", "inherited")
 
     def __init__(self, mod, scope, params, ports):
         self.mod = mod
@@ -37,6 +37,7 @@ class Hdr:
         self.params = params
         self.ports = ports
         self.iface_syms = {}
+        self.inherited = {}          # hierarchical defparams from an ancestor: {"inst.path.param": V}
 
 
 _DEBUG = bool(os.environ.get("GATECOST_ELAB_DEBUG"))
@@ -125,10 +126,15 @@ def build_header(ctx, mod, overrides):
             if isym is not None:
                 params["$if:" + pi.name] = isym.iface.name + "(" + ",".join(
                     f"{k}={v}" for k, v in sorted(getattr(isym, "pkeys", {}).items())) + ")"
+    for k, v in overrides.items():
+        if k.startswith("$dp:") and isinstance(v, V):
+            params[k] = pkey(v)
     hdr = Hdr(mod, scope, params, ports)
     for k, v in overrides.items():
         if k.startswith("$if:"):
             hdr.iface_syms[k[4:]] = v
+        elif k.startswith("$dp:"):
+            hdr.inherited[k[4:]] = v
     return hdr
 
 
@@ -212,7 +218,7 @@ class ModElab(BaseEv):
         self.cports = cports
         self.hier_depth = depth
         self.deferred = []
-        self.defparams = {}
+        self.defparams = dict(hdr.inherited)        # {'inst.path.param': V}
         self.refs = None
         self.mem_names = None
         self.item_idx = -1
@@ -368,24 +374,36 @@ class ModElab(BaseEv):
             elif c is A.GenBlock:
                 self._safe(self.do_genblock, it, self.scope, node=it)
 
-    def collect_defparam(self, d):
-        p = d.path
-        parts = []
-        while isinstance(p, A.Member):
-            parts.append(p.name)
-            p = p.base
+    def _hier_path(self, p):
+        """Dotted text of a hierarchical name (``g[1].u.W``) or None; indices are constant-evaluated."""
         if isinstance(p, A.Ident):
-            parts.append(p.name)
-        parts.reverse()
-        if len(parts) != 2:
-            self.diag("UNSUPPORTED_CONSTRUCT", "defparam is supported only for a direct child instance "
-                      "(instance.parameter)", d, True)
+            return p.name
+        if isinstance(p, A.Member):
+            b = self._hier_path(p.base)
+            return None if b is None else f"{b}.{p.name}"
+        if isinstance(p, A.Index):
+            b = self._hier_path(p.base)
+            if b is None:
+                return None
+            v = self.val(p.index).sig.const_value()
+            if v is None or v.xmask:
+                return None
+            return f"{b}[{v.value}]"
+        return None
+
+    def collect_defparam(self, d):
+        text = self._hier_path(d.path)
+        parts = text.split(".") if text else []
+        if len(parts) >= 2 and parts[0] == self.mod.name and len(parts) > 2:
+            parts = parts[1:]
+        if len(parts) < 2:
+            self.diag("UNSUPPORTED_CONSTRUCT", "defparam target is not a hierarchical instance parameter", d, True)
             return
         v = self.val(d.value)
         if v.sig.const_value() is None:
             self.diag("UNRESOLVED_PARAM", "defparam value is not constant", d, True)
             return
-        self.defparams.setdefault(parts[0], {})[parts[1]] = v
+        self.defparams[".".join(parts)] = v
         self.assume("defparam applied as an instance parameter override")
 
     # ------------------------------------------------------------------ signals
@@ -789,9 +807,16 @@ class ModElab(BaseEv):
                 self.assume(f"non-constant override of parameter '{nm}' ignored (default used)")
                 continue
             ov[nm] = v
-        for nm, v in self.defparams.get(inst_name, {}).items():
-            if nm in decls and nm not in ov:
-                ov[nm] = v
+        pre = self.path + inst_name + "."
+        for full, v in self.defparams.items():
+            if not full.startswith(pre):
+                continue
+            rest = full[len(pre):]
+            if "." not in rest:
+                if rest in decls and rest not in ov:
+                    ov[rest] = v
+            else:
+                ov["$dp:" + rest] = v        # forwarded to the child (applies to its own instances)
         return ov
 
     def do_instance(self, it: A.Instance):

@@ -8,6 +8,21 @@ from .expr import ElabError
 from .symbols import BIT, PSym, Scope, V, VSym
 
 
+def qual_flags(qualifier, parallel_case=False, full_case=False):
+    """``(parallel, full)`` for ``LowerBlock.case_``/``if_chain`` from a SystemVerilog qualifier and the
+    ``parallel_case``/``full_case`` pragmas: ``unique`` is parallel and full, ``unique0`` parallel,
+    ``priority`` full and explicitly prioritised."""
+    par = True if parallel_case else None
+    full = bool(full_case)
+    if qualifier == "unique":
+        par, full = True, True
+    elif qualifier == "unique0":
+        par = True
+    elif qualifier == "priority":
+        par, full = (par if par else False), True
+    return par, full
+
+
 class StepLimit(ElabError):
     pass
 
@@ -231,9 +246,17 @@ class StmtMixin:
         blk = self.blk
         if p.mem is not None:
             mem = p.mem
-            if p.off or p.w != mem.width or p.dyn:
-                self.diag("UNSUPPORTED_CONSTRUCT", "partial memory word write approximated by a full-word write",
-                          None if False else self._cur_node(), True)
+            partial = bool(p.off) or p.w != mem.width or bool(p.dyn)
+            if partial and not p.dyn and 0 <= p.off and p.off + p.w <= mem.width and p.w > 0:
+                # constant part-select of a word: per-lane write enable (merged into one port by the IR)
+                if blk is not None:
+                    blk.mem_write(mem, p.addr, piece.resize(p.w, False), origin=self.b.origin, lane=(p.off, p.w))
+                else:
+                    mem.write(p.addr, piece.resize(p.w, False), origin=self.b.origin, lane=(p.off, p.w))
+                return
+            if partial:
+                self.diag("UNSUPPORTED_CONSTRUCT", "memory word write with a variable part-select approximated by "
+                          "a full-word write", self._cur_node(), True)
             if blk is not None:
                 blk.mem_write(mem, p.addr, piece.resize(mem.width, False), origin=self.b.origin)
             else:
@@ -303,6 +326,7 @@ class StmtMixin:
         run = lambda t: (lambda: self.exec_stmt(t) if t is not None else None)
         elsefn = (lambda: self.exec_stmt(els)) if els is not None else None
         clocked = self.blk.kind == "clocked"
+        par, full = qual_flags(s.qualifier)
 
         def emit(arms):
             if clocked and len(arms) >= 2 and self.reset_like(arms[0][1]):
@@ -310,7 +334,8 @@ class StmtMixin:
                 self.blk.if_chain([(self.cond(arms[0][0]), run(arms[0][1]))], lambda: emit(arms[1:]), origin=org)
                 return
             conds = [self.cond(c) for c, _ in arms]
-            self.blk.if_chain([(cd, run(t)) for cd, (_c, t) in zip(conds, arms)], elsefn, origin=org)
+            self.blk.if_chain([(cd, run(t)) for cd, (_c, t) in zip(conds, arms)], elsefn, origin=org,
+                              parallel=par, full=full and elsefn is None)
 
         emit(arms)
 
@@ -359,6 +384,7 @@ class StmtMixin:
 
     def x_case(self, s: A.Case):
         b = self.b
+        par, full = qual_flags(s.qualifier, s.parallel_case, s.full_case)
         self.b.origin = self.org(s.loc)
         old = self._tm
         self._tm = {}
@@ -404,11 +430,12 @@ class StmtMixin:
             chain = [(h, (lambda body=it.body: self.exec_stmt(body) if body is not None else None))
                      for h, it in hits]
             if chain:
-                self.blk.if_chain(chain, dfn, origin=self.org(s.loc))
+                self.blk.if_chain(chain, dfn, origin=self.org(s.loc), parallel=par, full=full and dfn is None)
             elif dfn:
                 dfn()
             return
-        self.blk.case_(sel, items, dfn, kind=s.kind, origin=self.org(s.loc))
+        self.blk.case_(sel, items, dfn, kind=s.kind, origin=self.org(s.loc), parallel=par,
+                       full=full and dfn is None)
 
     # -- loops -------------------------------------------------------------------------
     def _loop_enter(self, body):

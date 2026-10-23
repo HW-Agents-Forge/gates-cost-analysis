@@ -1,11 +1,21 @@
 ---
 name: gatecost
-description: Estimate the logic-gate cost (gate equivalents, GE, NAND2-equivalents) of RTL, and the cost delta of a modification, for Verilog, SystemVerilog and VHDL. Use when asked how many gates, how much area, or how big or expensive an RTL/HDL change is, to compare hardware design alternatives before writing them, or to check that an edit did not grow a design. Fast approximation without a synthesis tool; it does not do synthesis, timing, power or simulation.
+description: Estimate the logic-gate cost (gate count, gate equivalents, GE, NAND2-equivalents, area) of RTL, and the cost delta of a modification, for Verilog, SystemVerilog and VHDL. Use when asked how many gates, how much area, or how big or expensive an RTL/HDL change is, to compare hardware design alternatives before writing them, or to check that an edit did not grow a design. Fast approximation without a synthesis tool; it does not do synthesis, timing, power or simulation.
 ---
 
 # gatecost
 
 Fast, approximate gate-count estimation for RTL (Verilog, SystemVerilog, VHDL). It reports the cost change of an edit, which source lines cause it, and how far the figure can be trusted. No synthesis tool is needed.
+
+## When to use
+
+- The user asks how many gates, how much area, or how big or costly an RTL/HDL design or change is.
+- After you edit RTL, to check that the edit did not grow the design more than intended.
+- Before writing code, to choose between hardware alternatives (for example a multiplier against shift-and-add).
+
+Do not use it for timing, power, simulation, linting, or exact post-synthesis area.
+
+## Running it
 
 Run the launcher that sits next to this file (use the directory of this `SKILL.md` as `<skill-dir>`):
 
@@ -25,6 +35,8 @@ python3 <skill-dir>/scripts/gatecost <command>
 
 Run from the project directory. Sources, the top module, and includes are found automatically; add `--top <module>` only if the tool asks for it. Add `--max-lines N` for more detail.
 
+Other commands: `profiles` lists cost profiles, `init` writes a `gatecost.toml`, `clean` removes caches, `help` lists all options.
+
 ## Reading the output
 
 The first line is the answer:
@@ -36,6 +48,7 @@ DELTA +342 GE (+281..+410) +1.2% verdict=INCREASE confidence=medium
 - `GE` = gate equivalents (one 2-input NAND). The parentheses give the plausible range.
 - Following lines: `<delta> <file>:<line> <reason> <what>` sorted by impact. `OTHERS` is the sum of small items.
 - `WHY` explains a confidence below `high`. `WARN` lists code that could not be costed. `ASSUMED` lists assumptions made, for example a parameter taken from its default.
+- `estimate` prints `ESTIMATE <typ> GE (<min>..<max>) confidence=<level>`; `estimate` with `--compare` prints one line per alternative, then `BEST <A|B> saves <GE> GE ... ranges=<overlap|disjoint>`; `overlap` means the preference is uncertain, so say so. `cost` prints `COST <typ> GE (<min>..<max>) confidence=<level>`, then the largest modules.
 - Verdicts: `INCREASE`, `DECREASE`, `NEGLIGIBLE`, `NO_CHANGE` (the edit does not change the hardware as modeled: formatting, comments, renames), `UNCERTAIN` (the sign is not established), `NOT_COMPARABLE`.
 
 ## How to answer the user

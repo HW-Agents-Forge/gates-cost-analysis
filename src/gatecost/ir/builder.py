@@ -582,17 +582,89 @@ class MemHandle:
                            "edge": clk_edge, "out": out})
         return out.sig
 
-    def write(self, addr, data, *, en=None, clk=None, clk_edge: str = "pos", origin=None) -> None:
+    def write(self, addr, data, *, en=None, clk=None, clk_edge: str = "pos", origin=None,
+              lane=None) -> None:
+        """Add a write port.  ``lane=(lo, width)`` marks a partial-word write (``data`` is then
+        the lane value only): at ``seal`` time lane writes with the same address and clock and
+        disjoint lanes are merged into ONE port with a per-lane enable vector (input
+        ``w<i>_be``, attribute ``wlanes``), like a RAM with byte enables."""
         b = self.b
-        d = _fit(b._s(data), self.width)
-        self.writes.append({"addr": b._s(addr), "data": d, "en": None if en is None else b._s(en),
-                            "clk": None if clk is None else b._s(clk), "edge": clk_edge})
+        w = {"addr": b._s(addr), "en": None if en is None else b._s(en),
+             "clk": None if clk is None else b._s(clk), "edge": clk_edge}
+        if lane is None:
+            w["data"] = _fit(b._s(data), self.width)
+        else:
+            lo, lw = lane
+            w["lane"] = (lo, lw)
+            w["data"] = _fit(b._s(data), lw)
+        self.writes.append(w)
+
+    def _merge_lanes(self) -> None:
+        """Merge disjoint partial-word writes (see :meth:`write`) into byte-enable ports."""
+        b = self.b
+        groups: dict = {}
+        for w in self.writes:
+            if "lane" in w:
+                k = (w["addr"].key(), None if w["clk"] is None else w["clk"].key(), w["edge"])
+                groups.setdefault(k, []).append(w)
+        merged_ids: dict = {}
+        for k, ws in groups.items():
+            ws.sort(key=lambda w: w["lane"][0])
+            ok = True
+            end = 0
+            for w in ws:
+                lo, lw = w["lane"]
+                if lo < end:
+                    ok = False
+                    break
+                end = lo + lw
+            if ok and len(ws) > 1:
+                merged_ids[id(ws[0])] = ws
+                for w in ws[1:]:
+                    merged_ids[id(w)] = None
+        out = []
+        for w in self.writes:
+            if "lane" not in w:
+                out.append(w)
+                continue
+            if id(w) not in merged_ids:
+                lo, lw = w["lane"]       # lone or overlapping lane: a full-word port with the lane placed in it
+                d = SigSpec.concat([_x(lo), w["data"], _x(self.width - lo - lw)]) if (lo or lw < self.width) else w["data"]
+                nw = dict(w)
+                del nw["lane"]
+                nw["data"] = d
+                nw["lanes"] = ((lo, lw),)
+                nw["be"] = None
+                out.append(nw)
+                continue
+            ws = merged_ids[id(w)]
+            if ws is None:
+                continue
+            parts = []
+            pos = 0
+            bes = []
+            for x in ws:
+                lo, lw = x["lane"]
+                if lo > pos:
+                    parts.append(_x(lo - pos))
+                parts.append(x["data"])
+                pos = lo + lw
+                bes.append(x["en"] if x["en"] is not None else SigSpec.const(1, 1))
+            if pos < self.width:
+                parts.append(_x(self.width - pos))
+            en = None          # the per-lane enables carry the write enable
+            nw = {"addr": w["addr"], "data": SigSpec.concat(parts), "en": en, "clk": w["clk"], "edge": w["edge"],
+                  "lanes": tuple(x["lane"] for x in ws), "be": SigSpec.concat(bes)}
+            out.append(nw)
+        self.writes = out
 
     def seal(self) -> None:
         if self._sealed:
             return
         self._sealed = True
         b = self.b
+        if any("lane" in w for w in self.writes):
+            self._merge_lanes()
         ins: list = []
         rstyles = []
         for i, r in enumerate(self.reads):
@@ -607,6 +679,8 @@ class MemHandle:
             ins.append((f"w{i}_data", w["data"]))
             if w["en"] is not None:
                 ins.append((f"w{i}_en", w["en"]))
+            if w.get("be") is not None:
+                ins.append((f"w{i}_be", w["be"]))
             if w["clk"] is not None:
                 ins.append((f"w{i}_clk", w["clk"]))
         style = "none"
@@ -615,6 +689,9 @@ class MemHandle:
         attrs = {"depth": self.depth, "width": self.width, "rports": len(self.reads),
                  "wports": len(self.writes), "read_style": style, "rstyles": tuple(rstyles),
                  "mem_name": self.name}
+        lanes = tuple(w.get("lanes") for w in self.writes)
+        if any(l is not None and (len(l) > 1 or l[0][1] < self.width) for l in lanes):
+            attrs["wlanes"] = tuple(l if l is not None else ((0, self.width),) for l in lanes)
         outs = [r["out"] for r in self.reads]
         if not outs:
             outs = []

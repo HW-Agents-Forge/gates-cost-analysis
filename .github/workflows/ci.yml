@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: unittest (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: false
+      - name: Show interpreter
+        run: python3 --version
+      - name: Unit tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -t .
+      - name: Launcher on a path with spaces
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/dir with spaces/.claude/skills"
+          cp -R . "$RUNNER_TEMP/dir with spaces/.claude/skills/gatecost"
+          mkdir -p "$RUNNER_TEMP/host project"
+          cd "$RUNNER_TEMP/host project"
+          python3 "$RUNNER_TEMP/dir with spaces/.claude/skills/gatecost/scripts/gatecost" --version
+          python3 "$RUNNER_TEMP/dir with spaces/.claude/skills/gatecost/scripts/gatecost" estimate "mul 32x32" | head -1 | grep -q '^ESTIMATE '
+        env:
+          GATECOST_CACHE_DIR: ${{ runner.temp }}/gatecost-cache
+      - name: Mount path test (tests/test_cli.py)
+        run: PYTHONPATH=src python3 -m unittest tests.test_cli -k launcher
+      - name: Type check (optional)
+        continue-on-error: true
+        run: |
+          python3 -m pip install mypy
+          python3 -m mypy --strict src/gatecost

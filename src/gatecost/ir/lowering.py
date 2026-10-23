@@ -145,14 +145,15 @@ class LowerBlock:
             items.append(([SigSpec.const(j, idx.width)], fn))
         self.case_(idx, items, None, origin=origin)
 
-    def mem_write(self, mem, addr, data, en=None, origin: Origin | None = None) -> None:
-        """Write port of a memory, enabled by the current path condition (and ``en``)."""
+    def mem_write(self, mem, addr, data, en=None, origin: Origin | None = None, lane=None) -> None:
+        """Write port of a memory, enabled by the current path condition (and ``en``).
+        ``lane=(lo, width)`` makes it a partial-word (byte-enable) write, see ``MemHandle.write``."""
         cond = self.path_condition()
         if en is not None:
             en = self.b._s(en)
             cond = en if cond is None else self.b.and_(cond, en, 1)
         mem.write(addr, self.read(data), en=cond, clk=self.clock, clk_edge=self.clk_edge,
-                  origin=origin)
+                  origin=origin, lane=lane)
 
     def path_condition(self) -> SigSpec | None:
         """AND of the conditions leading to the current statement (None = unconditional)."""
@@ -180,20 +181,25 @@ class LowerBlock:
 
     # -- if / elsif / else -------------------------------------------------
     def if_(self, cond, then_fn: Callable | None = None, else_fn: Callable | None = None,
-            origin: Origin | None = None) -> None:
-        self.if_chain([(cond, then_fn)], else_fn, origin)
+            origin: Origin | None = None, *, full: bool = False) -> None:
+        self.if_chain([(cond, then_fn)], else_fn, origin, full=full)
 
     def if_chain(self, arms: Sequence[tuple], else_fn: Callable | None = None,
-                 origin: Origin | None = None) -> None:
+                 origin: Origin | None = None, *, parallel: bool | None = None,
+                 full: bool = False) -> None:
         """``if c0 .. elsif c1 .. else ..``.  Conditions known to be mutually exclusive
-        (EQ of one signal with distinct constants) give a PMUX, otherwise a PRIORITY."""
+        (EQ of one signal with distinct constants) give a PMUX, otherwise a PRIORITY.
+
+        ``parallel`` overrides the exclusivity analysis (True: PMUX, e.g. SystemVerilog ``unique``;
+        False: PRIORITY, e.g. ``priority``; None: automatic).  ``full=True`` (no ``else``) asserts that
+        some arm always matches: the last arm becomes the default, so no feedback/latch is created."""
         self._push_origin(origin)
         try:
-            self._if_chain(arms, else_fn)
+            self._if_chain(arms, else_fn, parallel, full)
         finally:
             self._pop_origin()
 
-    def _if_chain(self, arms, else_fn) -> None:
+    def _if_chain(self, arms, else_fn, parallel=None, full=False) -> None:
         arms = [(self._bool(c), fn) for c, fn in arms]
         base = self.snapshot()
         live: list[tuple] = []
@@ -228,18 +234,35 @@ class LowerBlock:
             default_fn()
         del self._path[mark:]
         env_def = self.snapshot()
-        exclusive = len(live) == 1 or _exclusive_conds([c for c, _ in live])
-        self._merge(envs, env_def, [c for c, _ in live], exclusive)
+        if parallel is not None:
+            exclusive = parallel
+        else:
+            exclusive = len(live) == 1 or _exclusive_conds([c for c, _ in live])
+        sels = [c for c, _ in live]
+        if full and else_fn is None and default_fn is None:
+            env_def = envs[-1]
+            envs = envs[:-1]
+            sels = sels[:-1]
+            if not sels:
+                self.env = env_def.copy()
+                return
+        self._merge(envs, env_def, sels, exclusive)
 
     # -- case ---------------------------------------------------------------
     def case_(self, sel, items: Sequence[tuple], default_fn: Callable | None = None,
-              kind: str = "case", origin: Origin | None = None) -> None:
+              kind: str = "case", origin: Origin | None = None, *, parallel: bool | None = None,
+              full: bool = False) -> None:
         """``case (sel)``.  ``items`` is a list of ``(labels, fn)``; each label is a
         Const/SigSpec.  Don't-care bits of a label (``xmask``) are wildcards (casez/casex,
-        VHDL ``-``): only the known bits are compared."""
+        VHDL ``-``): only the known bits are compared.
+
+        ``parallel``: True forces a PMUX (``unique``/``parallel_case``), False a PRIORITY
+        (``priority``), None decides from the labels.  ``full=True`` (no default) asserts that some
+        item always matches (``full_case``/``unique``/``priority``): the last item is the default
+        and no feedback/latch is created for the missing default."""
         self._push_origin(origin)
         try:
-            self._case(self.b._s(sel), items, default_fn)
+            self._case(self.b._s(sel), items, default_fn, parallel, full)
         finally:
             self._pop_origin()
 
@@ -270,7 +293,7 @@ class LowerBlock:
             i = j
         return b.eq(SigSpec.concat(parts_s), SigSpec.concat(parts_c))
 
-    def _case(self, sel: SigSpec, items, default_fn) -> None:
+    def _case(self, sel: SigSpec, items, default_fn, parallel=None, full=False) -> None:
         b = self.b
         # hit conditions
         hits: list[SigSpec] = []
@@ -326,6 +349,12 @@ class LowerBlock:
         else:
             ps = [p for (_it, _h, _k, ix) in live for p in pats[ix]]
             exclusive = all_const and _patterns_disjoint(ps)
+        if parallel is not None and stop is None:
+            exclusive = parallel
+            if not parallel:
+                exhaustive = False
+        if full and default_fn is None and stop is None:
+            exhaustive = True
         envs = []
         for i, ((labels, fn), h, _k, _ix) in enumerate(live):
             self.restore(base)
