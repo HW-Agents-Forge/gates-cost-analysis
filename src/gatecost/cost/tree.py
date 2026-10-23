@@ -9,7 +9,7 @@ assigned to the surviving operation, so the total is exactly the sum of operatio
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from ..result import Diagnostic, Ge3
 
@@ -58,6 +58,69 @@ class ModuleCost:
     file: str = ""
     line: int = 0
 
+    def ops_total(self) -> tuple[int, int, int]:
+        """(min, typ, max) sum of the operation costs, per instance."""
+        mn = ty = mx = 0
+        for o in self.ops:
+            c = o.cost
+            mn += c.min
+            ty += c.typ
+            mx += c.max
+        return mn, ty, mx
+
+
+class LazyModuleCost(ModuleCost):
+    """A ``ModuleCost`` read from the analysis cache whose operations are fetched on first use.
+
+    Everything but ``ops`` (names, hashes, instance edges, diagnostics and the cost sums) comes from the
+    cached tree itself; the operations live in a content-addressed blob (``cache.Cache``), so a diff of
+    two trees that share most modules reads the operations of the few modules it compares.
+    """
+
+    __slots__ = ("_loc", "_load", "_ops", "_sums")
+
+    def __init__(self, key, name, parameters=(), canonical_hash="", ops=None, instances=(), diagnostics=(),
+                 file="", line=0, *, _loc=None, _load=None, _sums=None):
+        sa = object.__setattr__
+        sa(self, "key", key)
+        sa(self, "name", name)
+        sa(self, "parameters", parameters)
+        sa(self, "canonical_hash", canonical_hash)
+        sa(self, "instances", instances)
+        sa(self, "diagnostics", diagnostics)
+        sa(self, "file", file)
+        sa(self, "line", line)
+        sa(self, "_loc", _loc)
+        sa(self, "_load", _load)
+        sa(self, "_ops", ops)
+        sa(self, "_sums", _sums)
+
+    @property
+    def ops(self):  # type: ignore[override]
+        o = self._ops
+        if o is None:
+            o = self._load()
+            object.__setattr__(self, "_ops", o)
+        return o
+
+    def ops_total(self):
+        if self._sums is not None:
+            return self._sums
+        return ModuleCost.ops_total(self)
+
+    def __eq__(self, other):
+        if not isinstance(other, ModuleCost):
+            return NotImplemented
+        return all(getattr(self, f) == getattr(other, f) for f in _MC_FIELDS)
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self):
+        return f"LazyModuleCost(key={self.key!r}, name={self.name!r})"
+
+
+_MC_FIELDS = tuple(f.name for f in fields(ModuleCost))
+
 
 @dataclass(slots=True, frozen=True)
 class DesignCostTree:
@@ -73,8 +136,9 @@ class DesignCostTree:
         mn = ty = mx = 0
         for k, m in self.modules.items():
             n = self.instance_counts.get(k, 0)
-            for o in m.ops:
-                mn += o.cost.min * n
-                ty += o.cost.typ * n
-                mx += o.cost.max * n
+            if n:
+                a, b, c = m.ops_total()
+                mn += a * n
+                ty += b * n
+                mx += c * n
         return Ge3(mn, ty, mx)

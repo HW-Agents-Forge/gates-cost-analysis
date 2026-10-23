@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+from ..._lazy import LazyMap
 from ...frontend.vhdl import nodes as N
 from ...frontend.vhdl.nodes import walk
 from ...ir import Builder, Const, Design, Origin, SigSpec
@@ -100,7 +101,9 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
     esc = Scope(lsc, file=ent.file, lib=ent.library)
     for g in ent.generics or ():
         v = gvals.get(g.name)
-        if v is not None:
+        if isinstance(v, T.VType):
+            esc.declare(Sym("type", g.name, v))
+        elif v is not None:
             esc.declare(Sym("const", g.name, v.t, val=v))
     E.prescan([ent, arch])
     assigned = set()
@@ -111,7 +114,8 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
             for a in n.port_map or ():
                 if a.actual is not None:
                     assigned.update(base_names(a.actual))
-    for pn, mode, pt, default in E.entity_ports(ent, esc):
+    hints = {k[5:]: v for k, v in params.items() if k.startswith("$len:")}
+    for pn, mode, pt, default in E.entity_ports(ent, esc, hints):
         mode = (mode or "in").lower()
         if mode in ("inout", "buffer"):
             direction = "out" if (pn in assigned or mode == "buffer") else "in"
@@ -339,10 +343,9 @@ class VhdlElaborator:
         res.stubbed = tuple(sorted(ctx.stubbed))
         res.diagnostics = tuple(ctx.diags)
         res.assumptions = tuple(ctx.assumptions)
-        hashes = {}
-        for name, (ent, arch) in ctx.mod_units.items():
-            hashes[name] = dep_hash(ctx.parsed, ent, arch)
-        res.unit_hashes = hashes
+        units = dict(ctx.mod_units)
+        parsed = ctx.parsed
+        res.unit_hashes = LazyMap(lambda: {name: dep_hash(parsed, ent, arch) for name, (ent, arch) in units.items()})
         return res
 
     def elab_root(self, ent, generics):

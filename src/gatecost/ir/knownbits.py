@@ -4,14 +4,23 @@ from __future__ import annotations
 from .core import ModuleIR, Node
 from .evalops import eval_const
 from .graph import topo_order
-from .sigspec import Const, SigSpec, mask
+from .sigspec import Const, SigSpec, Slice, mask
 
 
 def sig_known(sig: SigSpec) -> tuple[int, int]:
     """(kmask, kval) of a SigSpec from constants and the known facts of its nets."""
+    chunks = sig.chunks
+    if len(chunks) == 1:                       # the common case: one slice or one constant
+        c = chunks[0]
+        if c.__class__ is Slice:
+            n = c.net
+            mm = (1 << c.width) - 1
+            km = (n.kmask >> c.lo) & mm
+            return km, (n.kval >> c.lo) & km
+        return c.kmask, c.value & c.kmask
     km = kv = pos = 0
-    for c in sig.chunks:
-        if isinstance(c, Const):
+    for c in chunks:
+        if c.__class__ is Const:
             km |= c.kmask << pos
             kv |= c.value << pos
         else:
@@ -44,6 +53,7 @@ def _pattern(j: int, width: int) -> int:
     return full & mask(width)
 
 
+_NO_FACTS = frozenset({"LATCH", "MEM", "INST", "BLACKBOX"})
 _FOLDABLE_OPS = frozenset({
     "ADD", "SUB", "MUL", "NEG", "AND", "OR", "XOR", "XNOR", "NOT", "EQ", "NE", "LT", "LE", "GT",
     "GE", "MUX", "RED_AND", "RED_OR", "RED_XOR", "SHL", "SHR", "SAR", "ROL", "ROR", "DIV", "MOD",
@@ -57,18 +67,21 @@ def node_known(nd: Node) -> list[tuple[int, int]]:
         return []
     w = nd.outputs[0].width
     m = mask(w)
-    if op in ("LATCH", "MEM", "INST", "BLACKBOX"):
+    if op in _NO_FACTS:
         return [(0, 0)] * len(nd.outputs)
-    ins = {k: s for k, s in nd.inputs}
-    kn = {k: sig_known(s) for k, s in ins.items()}
-
-    def full(k):
-        return kn[k][0] == mask(ins[k].width)
-
+    ins = {}
+    kn = {}
+    allfull = True
+    for k, s in nd.inputs:
+        ins[k] = s
+        t = sig_known(s)
+        kn[k] = t
+        if allfull and t[0] != (1 << s.width) - 1:
+            allfull = False
     if op == "DFF":
         return [_dff_known(nd, ins, kn, w)]
     # fully known inputs: evaluate exactly (the builder usually folded already)
-    if op in _FOLDABLE_OPS and ins and all(full(k) for k in ins):
+    if allfull and ins and op in _FOLDABLE_OPS:
         try:
             cs = [Const(kn[k][1], ins[k].width) for k in ("A", "B", "S") if k in ins]
             c = eval_const(op, cs, nd.attrs, w)
@@ -266,14 +279,20 @@ def known_bits(m: ModuleIR, order=None, rounds: int = 4) -> None:
             n.kmask = n.kval = 0
     if order is None:
         order, _ = topo_order(m)
+    Node_ = Node
     for _ in range(rounds):
         changed = False
+        state_changed = False
         for it in order:
-            if isinstance(it, Node):
+            if it.__class__ is Node_:
+                if it.op in _NO_FACTS:
+                    continue                       # outputs stay (0, 0)
                 for o, (km, kv) in zip(it.outputs, node_known(it)):
                     if km != o.kmask or kv != o.kval:
                         o.kmask, o.kval = km, kv
                         changed = True
+                        if it.op == "DFF":
+                            state_changed = True
             else:
                 km, kv = sig_known(it.src)
                 net = it.net
@@ -283,5 +302,7 @@ def known_bits(m: ModuleIR, order=None, rounds: int = 4) -> None:
                 if km2 != net.kmask or kv2 != net.kval:
                     net.kmask, net.kval = km2, kv2
                     changed = True
-        if not changed:
+        # A change can only be missed by an item evaluated before its producer, and in a
+        # topological order that happens only for register outputs (they break dependencies).
+        if not changed or not state_changed:
             break

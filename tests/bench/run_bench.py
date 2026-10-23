@@ -1,6 +1,6 @@
 """Print timings of the pipeline stages on generated designs (IMPLEMENTATION.md stage 8).
 
-    PYTHONPATH=src python3 -m tests.bench.run_bench [--lines 10000 100000] [--kinds sv vhdl] [--profile]
+    PYTHONPATH=src python3 -m tests.bench.run_bench [--lines 10000 100000] [--kinds sv vhdl] [--profile] [--diff]
 """
 from __future__ import annotations
 
@@ -49,7 +49,13 @@ def pipeline(kind: str, lines: int, seed: int = 1, profile: bool = False) -> dic
             import pstats
             prof = cProfile.Profile()
             prof.enable()
-        res, out["elab_total_s"] = timed(lambda: elaborate_project(names, root=root))
+        from gatecost import _gc
+
+        def run_elab():
+            with _gc.paused():          # as the CLI does
+                return elaborate_project(names, root=root)
+
+        res, out["elab_total_s"] = timed(run_elab)
         if prof:
             prof.disable()
             pstats.Stats(prof).sort_stats("tottime").print_stats(25)
@@ -67,11 +73,46 @@ def synthetic_ir(n_nodes: int) -> dict:
     from tests.bench.ir_gen import build_big_module
 
     t0 = time.perf_counter()
-    m = build_big_module(n_nodes)
+    from gatecost import _gc
+    with _gc.paused():
+        m = build_big_module(n_nodes)
     t1 = time.perf_counter()
     analyze_ir(m)
     t2 = time.perf_counter()
     return {"nodes": len(m.nodes), "build_s": t1 - t0, "analyze_s": t2 - t1}
+
+
+def diff_scenarios(kind: str, lines: int, seed: int = 1) -> dict:
+    """End-to-end timings of ``gatecost diff`` / ``cost`` on a generated project in a throw-away git repository
+    (in process, user cache in a temporary directory): cold, warm, a one-file edit (changed-cone analysis),
+    the same edit again (cached)."""
+    from tests.e2e_support import Project
+
+    files = generate(kind, lines, seed)
+    p = Project({f"rtl/{k}": v for k, v in files.items()})
+    out: dict = {"kind": kind, "files": len(files), "lines": sum(t.count("\n") for t in files.values())}
+    try:
+        def t(label, *argv):
+            t0 = time.perf_counter()
+            p.run(*argv)
+            out[label] = time.perf_counter() - t0
+
+        t("diff clean, cold cache", "diff")
+        t("diff clean, warm", "diff")
+        leaf = sorted(n for n in files if n.startswith(("leaf", "lib")))[min(3, len(files) - 1)] if files else None
+        text = p.read(f"rtl/{leaf}")
+        marker = "assign sum = a + b;" if kind == "sv" else None
+        if marker and marker in text:
+            p.write(f"rtl/{leaf}", text.replace(marker, "assign sum = a + b + 1;", 1))
+        else:
+            p.write(f"rtl/{leaf}", text + "\n-- edit\n" if kind == "vhdl" else text + "\n// edit\n")
+        t("diff after a 1-file edit, cold", "diff")
+        t("diff after a 1-file edit, warm", "diff")
+        t("cost, cold", "cost")
+        t("cost, warm", "cost")
+    finally:
+        p.close()
+    return out
 
 
 def startup() -> dict:
@@ -82,7 +123,8 @@ def startup() -> dict:
         cold, warm = [], []
         for _ in range(3):
             with tempfile.TemporaryDirectory() as cache:
-                env = dict(os.environ, GATECOST_CACHE_DIR=cache)
+                env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+                env["GATECOST_CACHE_DIR"] = cache
                 for bucket in (cold, warm, warm):
                     t0 = time.perf_counter()
                     subprocess.run([sys.executable, str(launcher)] + args, env=env,
@@ -93,20 +135,33 @@ def startup() -> dict:
 
 
 def main() -> None:
+    import gc
+
+    gc.disable()      # as the CLI does
     ap = argparse.ArgumentParser()
     ap.add_argument("--lines", type=int, nargs="*", default=[10000, 100000])
     ap.add_argument("--kinds", nargs="*", default=["sv", "vhdl"])
     ap.add_argument("--profile", action="store_true")
     ap.add_argument("--ir", type=int, default=100000)
+    ap.add_argument("--no-startup", action="store_true")
+    ap.add_argument("--diff", action="store_true", help="also time the end-to-end diff/cost scenarios")
     a = ap.parse_args()
     for n in a.lines:
         for k in a.kinds:
             r = pipeline(k, n, profile=a.profile)
             print(f"{k:5s} {r['lines']:7d} lines {r['bytes'] / 1e6:6.2f} MB  parse {r['parse_s']:6.2f}s ({r['parse_MBps']:.2f} MB/s)  "
                   f"elab+analyze {r['elab_s']:6.2f}s  cost-tree {r['cost_tree_s']:6.2f}s  IR nodes {r['nodes']}")
+    if a.diff:
+        for n in a.lines:
+            for k in a.kinds:
+                r = diff_scenarios(k, n)
+                print(f"{k:5s} {r['lines']:7d} lines {r['files']:4d} files  " + "  ".join(
+                    f"{lbl} {v:.2f}s" for lbl, v in r.items() if lbl not in ("kind", "files", "lines")))
     if a.ir:
         r = synthetic_ir(a.ir)
         print(f"IR    {r['nodes']} nodes: build {r['build_s']:.2f}s  analyze {r['analyze_s']:.2f}s")
+    if a.no_startup:
+        return
     s = startup()
     for k, (c, w) in s.items():
         print(f"start-up {k:9s} cold {c * 1000:5.0f} ms  warm {w * 1000:5.0f} ms")

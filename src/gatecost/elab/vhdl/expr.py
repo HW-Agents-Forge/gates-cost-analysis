@@ -742,8 +742,82 @@ class ExprMixin:
 
     def ev_slice(self, e, sc, hint):
         base = self.eval(e.prefix, sc)
-        l, r, d = self.eval_range(e.range, sc)
+        try:
+            l, r, d = self.eval_range(e.range, sc)
+        except NotConst:
+            return self.dyn_slice_val(base, e, sc)
         return self.slice_val(base, l, r, d, e)
+
+    def split_offset(self, x, sc):
+        """``(base expression, constant offset)`` of ``x`` written as ``base +/- constant`` (else ``(x, 0)``)."""
+        off = 0
+        while isinstance(x, N.Binary) and x.op in ("+", "-"):
+            try:
+                c = self.const_int(self.eval(x.right, sc))
+                x, off = x.left, off + (c if x.op == "+" else -c)
+                continue
+            except NotConst:
+                pass
+            if x.op == "+":
+                try:
+                    c = self.const_int(self.eval(x.left, sc))
+                    x, off = x.right, off + c
+                    continue
+                except NotConst:
+                    pass
+            break
+        return x, off
+
+    def dyn_slice_bounds(self, rng, sc):
+        """For ``a(i+3 downto i)``: ``(width in elements, low-index expression, direction)`` or raises Unsupported."""
+        if not isinstance(rng, N.Range):
+            raise Unsupported("slice with a non-constant range")
+        lb, lo_ = self.split_offset(rng.left, sc)
+        rb, ro = self.split_offset(rng.right, sc)
+        if repr(lb) != repr(rb):
+            raise Unsupported("slice bounds with a non-constant width")
+        n = abs(lo_ - ro) + 1
+        if rng.direction == "downto":
+            if lo_ < ro:
+                raise Unsupported("null slice with non-constant bounds")
+            return n, rng.right, rng.direction
+        if ro < lo_:
+            raise Unsupported("null slice with non-constant bounds")
+        return n, rng.left, rng.direction
+
+    def dyn_slice_val(self, base, e, sc):
+        """Slice whose position is a variable but whose width is constant: ``a(i+3 downto i)``."""
+        n, low, d = self.dyn_slice_bounds(e.range, sc)
+        t = base.t
+        if t.kind != "array":
+            raise Unsupported("slice of a non-array")
+        ew = t.ewidth or 1
+        s = self.sig_of(base)
+        if t.left is None:
+            t = T.constrain(t, s.width // ew - 1, 0, "downto")
+        iv = self.eval(low, sc, t.index)
+        x, _cnt, lo = self.index_pos_sig(t, iv, e)
+        count = t.length - n + 1
+        nt = T.constrain(t, n - 1, 0, "downto") if d == "downto" else T.constrain(t, 0, n - 1, "to")
+        if count < 1:
+            self.ctx.assume("variable slice wider than the array at %s:%s" % (self.file, getattr(e, "line", "?")))
+            return Val(nt, SigSpec.x(n * ew))
+        if count > 65536:
+            self.diag("LIMIT_REACHED", "variable slice with %d positions exceeds the expansion limit" % count, e)
+            return Val(nt, SigSpec.x(n * ew))
+        arms = []
+        for a in range(count):
+            i = lo + a
+            if t.dir == "downto":
+                p_lo = T.index_to_pos(t, i)
+            else:
+                p_lo = T.index_to_pos(t, i + n - 1)
+            arms.append(s.slice(p_lo * ew, n * ew))
+        cw = max(1, (count - 1).bit_length())
+        xi = x.slice(0, min(cw, x.width)) if x.width > cw else x
+        r = self.b.index_mux(arms, xi, origin=self.org(e)) if count > 1 else arms[0]
+        self.ctx.assume("slice at a variable position (width %d) costed as a %d-way multiplexer" % (n, count))
+        return Val(nt, r.slice(0, n * ew) if r.width >= n * ew else r.zext(n * ew))
 
     def slice_val(self, base, l, r, d, node=None):
         t = base.t

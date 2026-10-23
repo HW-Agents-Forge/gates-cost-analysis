@@ -35,6 +35,27 @@ class Ref:
         self.cache = None
 
 
+def mux_runs(b, c, f, t, w, **kw):
+    """``c ? t : f`` where only the bit runs that differ between the arms are multiplexed (identical bits are wires)."""
+    f, t = f.resize(w, False), t.resize(w, False)
+    fa, ta = list(f.bits()), list(t.bits())
+    diff = [x != y for x, y in zip(fa, ta)]
+    if all(diff) or not any(diff):
+        return b.mux(c, f, t, w, **kw) if all(diff) else f
+    pieces = []
+    i = 0
+    while i < w:
+        j = i
+        while j < w and diff[j] == diff[i]:
+            j += 1
+        if diff[i]:
+            pieces.append(b.mux(c, f.slice(i, j - i), t.slice(i, j - i), j - i, **kw))
+        else:
+            pieces.append(f.slice(i, j - i))
+        i = j
+    return SigSpec.concat(pieces)
+
+
 _ARITH = {"+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod"}
 _BITW = {"&": "and_", "|": "or_", "^": "xor", "~^": "xnor", "^~": "xnor"}
 _SHIFT = ("<<", ">>", "<<<", ">>>")
@@ -50,8 +71,20 @@ def is_z_expr(e) -> bool:
     return False
 
 
+_PN: dict = {}        # literal node id -> (node, result); cleared per project (see ``elaborate_project``)
+
+
 def parse_number(n: A.Number):
     """``(value, xmask, width, signed)`` of a literal at its natural self-determined width."""
+    e = _PN.get(id(n))
+    if e is not None and e[0] is n:
+        return e[1]
+    r = _parse_number(n)
+    _PN[id(n)] = (n, r)
+    return r
+
+
+def _parse_number(n: A.Number):
     base = n.base
     digits = n.digits
     signed = bool(n.signed)
@@ -201,6 +234,8 @@ class ExprMixin:
             if n is None or n < 0:
                 n = 0
             return (min(max(0, n) * sum(self.ty(i)[0] for i in e.items), 1 << 20), False)
+        if c is A.Index and (ap := self._arr_param(e)) is not None:
+            return (ap.pt.w, ap.pt.signed)
         if c is A.Index or c is A.Select or c is A.Member:
             r = self.resolve_ref(e, False)
             if r is None:
@@ -380,6 +415,8 @@ class ExprMixin:
                 self.diag("LIMIT_REACHED", "replication wider than 2**20 bits truncated", e, True)
                 n = max(0, (1 << 20) // max(1, inner.width))
             return inner.repeat(n).resize(w, False)
+        if c is A.Index and (ap := self._arr_param(e)) is not None:
+            return self._arr_read(ap, e).resize(w, s and ap.pt.signed)
         if c is A.Index or c is A.Select or c is A.Member:
             r = self.resolve_ref(e, True)
             if r is None:
@@ -527,15 +564,14 @@ class ExprMixin:
         if op in _EQ:
             l = self.bv(e.left, cw, cs)
             r = self.bv(e.right, cw, cs)
-            res = self.eq_wild(l, r, o)
-            if op in ("!=", "!==", "!=?"):
-                res = b.not_(res, 1, origin=o)
+            neg = op in ("!=", "!==", "!=?")
+            res = self.eq_wild(l, r, o, neg)
             return res.zext(w)
         self.diag("UNSUPPORTED_CONSTRUCT", f"binary operator '{op}'", e)
         return SigSpec.x(w)
 
-    def eq_wild(self, l: SigSpec, r: SigSpec, o) -> SigSpec:
-        """Equality where don't-care constant bits (x/z/?) are not compared."""
+    def eq_wild(self, l: SigSpec, r: SigSpec, o, negate: bool = False) -> SigSpec:
+        """Equality (``negate``: inequality, a NE node) where don't-care constant bits (x/z/?) are not compared."""
         b = self.b
         cl, cr = l.const_value(), r.const_value()
         km = None
@@ -543,10 +579,11 @@ class ExprMixin:
             km = cr.kmask
         if cl is not None and cl.xmask:
             km = cl.kmask if km is None else km & cl.kmask
+        cmp = b.ne if negate else b.eq
         if km is None:
-            return b.eq(l, r, origin=o)
+            return cmp(l, r, origin=o)
         if km == 0:
-            return SigSpec.const(1, 1)
+            return SigSpec.const(0 if negate else 1, 1)
         ps, pr = [], []
         i, w = 0, l.width
         while i < w:
@@ -559,7 +596,7 @@ class ExprMixin:
             ps.append(l.slice(i, j - i))
             pr.append(r.slice(i, j - i))
             i = j
-        return b.eq(SigSpec.concat(ps), SigSpec.concat(pr), origin=o)
+        return cmp(SigSpec.concat(ps), SigSpec.concat(pr), origin=o)
 
     def _bv_pow(self, e, w, s):
         b = self.b
@@ -572,8 +609,25 @@ class ExprMixin:
         if bc is not None and not bc.xmask and bc.value == 2:
             amt = self.val(e.right).sig
             return b.shl(SigSpec.const(1, w), amt, w, origin=o)
-        self.diag("UNSUPPORTED_CONSTRUCT", "power with a non-constant exponent is not supported", e)
-        return SigSpec.x(w)
+        if n is not None:           # negative constant exponent
+            self.diag("UNSUPPORTED_CONSTRUCT", "power with a negative exponent is not supported", e)
+            return SigSpec.x(w)
+        # square-and-multiply ladder over the exponent bits (bounded)
+        ew, es = self.ty(e.right)
+        ex = self.bv(e.right, ew, es)
+        k = ex.width
+        if k > 6:
+            self.diag("LIMIT_REACHED", f"power with a {k}-bit exponent: only the low 6 bits are costed", e, True)
+            k = 6
+        self.assume("power with a non-constant exponent costed as a square-and-multiply ladder")
+        acc = SigSpec.const(1, w)
+        sq = base
+        for i in range(k):
+            prod = b.mul(acc, sq, w, sa=s, sb=s, origin=o)
+            acc = b.mux(ex.slice(i, 1), acc, prod, origin=o)
+            if i + 1 < k:
+                sq = b.mul(sq, sq, w, sa=s, sb=s, origin=o)
+        return acc
 
     def _bv_ternary(self, e, w, s):
         b = self.b
@@ -588,7 +642,7 @@ class ExprMixin:
             return b.mux(en, SigSpec.x(w), data, w, tristate=True, origin=o)
         t = self.bv(e.then, w, s)
         f = self.bv(e.else_, w, s)
-        return b.mux(c, f, t, w, origin=o)
+        return mux_runs(b, c, f, t, w, origin=o)
 
     def _bv_cast(self, e, w, s):
         t = e.target
@@ -628,6 +682,33 @@ class ExprMixin:
         for h in hits[1:]:
             r = b.or_(r, h, 1, origin=o)
         return r
+
+    def _arr_param(self, e):
+        """The array parameter an ``Index`` expression selects an element of, or None."""
+        if type(e.base) is A.Ident:
+            sym = self.lookup(e.base.name)
+            if isinstance(sym, PSym) and sym.arr is not None:
+                return sym
+        return None
+
+    def _arr_read(self, sym, e) -> SigSpec:
+        """Element of an array parameter: constant index -> constant, otherwise a ROM."""
+        arr, ew = sym.arr, sym.pt.w
+        v = self.val(e.index)
+        c = v.sig.const_value()
+        if c is not None and not c.xmask:
+            i = c.as_signed() if v.signed else c.value
+            if 0 <= i < len(arr):
+                return SigSpec.const(arr[i], ew)
+            return SigSpec.x(ew)
+        n = len(arr)
+        ab = max(1, (n - 1).bit_length())
+        if n == 1:
+            return SigSpec.const(arr[0], ew)
+        iw, isg = self.ty(e.index)
+        addr = self.bv(e.index, max(iw, ab), isg).slice(0, ab)
+        pad = list(arr) + [0] * ((1 << ab) - n) if (1 << ab) <= 4096 else list(arr)
+        return self.b.rom(addr, pad, ew, origin=self.b.origin)
 
     def stream_size(self, e) -> int:
         """Slice size (bits) of a ``{<< size {...}}`` streaming concatenation."""
@@ -1265,6 +1346,7 @@ class ExprMixin:
             if sym is None:
                 sym = self.implicit_net(e)
             if sym is None:
+                self.diag("UNRESOLVED_NAME", f"assignment to undeclared identifier '{e.name}' skipped", e, True)
                 return [None]
             if isinstance(sym, VSym) and sym.udims:
                 self.diag("UNSUPPORTED_CONSTRUCT", f"assignment to whole array '{e.name}'", e, True)

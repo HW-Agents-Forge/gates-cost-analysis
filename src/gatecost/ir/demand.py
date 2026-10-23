@@ -90,30 +90,35 @@ def compute_demand(m: ModuleIR) -> None:
     for n in m.nets:
         n.demand = 0
     conns_of = m.conns_by_net
+    cget = conns_of.get
     work: list = []
     queued: set[int] = set()
-
-    def push(item) -> None:
-        if id(item) not in queued:
-            queued.add(id(item))
-            work.append(item)
+    qadd = queued.add
+    wpush = work.append
+    Node_ = Node
+    Slice_ = Slice
 
     def add(sig: SigSpec, mk: int) -> None:
         pos = 0
         for c in sig.chunks:
             w = c.width
-            if isinstance(c, Slice):
-                bits = (mk >> pos) & mask(w)
+            if c.__class__ is Slice_:
                 n = c.net
-                new = (bits << c.lo) & ~n.demand
+                lo = c.lo
+                new = (((mk >> pos) & ((1 << w) - 1)) << lo) & ~n.demand
                 if new:
                     n.demand |= new
                     d = n.driver
-                    if isinstance(d, Node):
-                        push(d)
-                    for cn in conns_of.get(n.id, ()):
-                        if cn.lo < c.lo + w and cn.lo + cn.width > c.lo:
-                            push(cn)
+                    if d.__class__ is Node_ and id(d) not in queued:
+                        qadd(id(d))
+                        wpush(d)
+                    cl = cget(n.id)
+                    if cl:
+                        hi = lo + w
+                        for cn in cl:
+                            if cn.lo < hi and cn.lo + cn.src.width > lo and id(cn) not in queued:
+                                qadd(id(cn))
+                                wpush(cn)
             pos += w
 
     for p in m.ports:
@@ -123,25 +128,58 @@ def compute_demand(m: ModuleIR) -> None:
         if nd.op in _ROOT_OPS:
             for s, mk in _full_inputs(nd):
                 add(s, mk)
+    pop = work.pop
+    discard = queued.discard
     while work:
-        it = work.pop()
-        queued.discard(id(it))
-        if isinstance(it, Conn):
-            dm = (it.net.demand >> it.lo) & mask(it.width)
+        it = pop()
+        discard(id(it))
+        if it.__class__ is Conn:
+            dm = (it.net.demand >> it.lo) & ((1 << it.src.width) - 1)
             if dm:
                 add(it.src, dm)
             continue
         nd = it
-        if nd.op in ("DFF", "LATCH"):
+        op = nd.op
+        if op == "DFF" or op == "LATCH":
             if nd.outputs[0].demand:
                 for s, mk in _full_inputs(nd):
                     add(s, mk)
             continue
-        if nd.op in _ROOT_OPS:
+        if op in _ROOT_OPS:
             continue
         dy = nd.outputs[0].demand
-        for s, mk in operand_demands(nd, dy):
-            add(s, mk)
+        if not dy:
+            continue
+        inp = nd.inputs
+        if op == "ADD" or op == "SUB":
+            low = (1 << dy.bit_length()) - 1
+            s = inp[0][1]
+            add(s, low & ((1 << s.width) - 1))
+            s = inp[1][1]
+            add(s, low & ((1 << s.width) - 1))
+        elif op == "XOR" or op == "XNOR":
+            s = inp[0][1]
+            add(s, dy & ((1 << s.width) - 1))
+            s = inp[1][1]
+            add(s, dy & ((1 << s.width) - 1))
+        elif op == "MUX":
+            sa = inp[0][1]
+            sb = inp[1][1]
+            ss = inp[2][1]
+            sk, sv = sig_known(ss)
+            da = db = dy
+            if sk & 1:
+                if sv & 1:
+                    da = 0
+                else:
+                    db = 0
+            else:
+                add(ss, 1)
+            add(sa, da & ((1 << sa.width) - 1))
+            add(sb, db & ((1 << sb.width) - 1))
+        else:
+            for s, mk in operand_demands(nd, dy):
+                add(s, mk)
 
 
 def node_live(nd: Node) -> bool:
@@ -154,6 +192,7 @@ def dead_logic(m: ModuleIR, order) -> int:
     """Remove unreachable nodes/connections; replace constant registers by constants.
     Returns the number of removed nodes."""
     removed = 0
+    dead: set = set()
     # registers whose D is constant equal to the reset value
     for nd in list(m.nodes):
         if nd.op != "DFF":
@@ -174,8 +213,10 @@ def dead_logic(m: ModuleIR, order) -> int:
             vals.append(a["srst_value"])
         ok = all(not ((dv ^ v.value) & v.kmask) for v in vals)
         if ok:
-            _replace_with_const(m, nd, Const(dv, w))
+            _replace_with_const(m, nd, Const(dv, w), dead)
             removed += 1
+    if dead:
+        m.nodes = [x for x in m.nodes if id(x) not in dead]
     compute_demand(m)
     live_nodes = []
     for nd in m.nodes:
@@ -218,11 +259,14 @@ def dead_logic(m: ModuleIR, order) -> int:
     return removed
 
 
-def _replace_with_const(m: ModuleIR, nd: Node, c: Const) -> None:
+def _replace_with_const(m: ModuleIR, nd: Node, c: Const, dead: set | None = None) -> None:
     out = nd.outputs[0]
     nd.alive = False
     nd.outputs = ()
-    m.nodes = [x for x in m.nodes if x is not nd]
+    if dead is None:
+        m.nodes = [x for x in m.nodes if x is not nd]
+    else:
+        dead.add(id(nd))
     out.driver = None
     conn = Conn(out, 0, SigSpec((c,)), nd.origin)
     m.conns.append(conn)

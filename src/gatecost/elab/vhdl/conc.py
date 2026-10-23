@@ -515,6 +515,10 @@ class ConcMixin:
 
     def elab_block(self, s, sc):
         g = Scope(sc, label=s.label or "")
+        if s.guard is not None:
+            self.diag("UNSUPPORTED_CONSTRUCT", "guarded block '%s': the guard is ignored, guarded assignments are "
+                      "costed as unconditional" % (s.label or "block"), s)
+            self.ctx.assume("guard of block '%s' ignored" % (s.label or "block"))
         old = self.with_prefix(s.label or "block")
         try:
             for a in s.port_map or ():

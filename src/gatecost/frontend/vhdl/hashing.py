@@ -22,43 +22,79 @@ def _digest(node) -> bytes:
     return h.digest()
 
 
+_SCALAR = frozenset({type(None), str, int, bool, float})
+
+
 def _feed(h, root) -> None:
+    """Stream the canonical serialization of ``root`` into ``h``.
+
+    Stack items: ``str`` = literal text, anything else = still to be serialized.  Scalars are
+    rendered inline, so only child nodes and sequences go through the stack.
+    """
     stack = [root]
     pop = stack.pop
-    push = stack.append
     update = h.update
+    scalar = _SCALAR
+    out: list[str] = []           # pending text, encoded in one go
+    emit = out.append
     while stack:
         x = pop()
-        if x.__class__ is bytes:
+        c = x.__class__
+        if c is str:
+            emit(x)
+        elif c is bytes:
+            if out:
+                update("".join(out).encode())
+                out.clear()
             update(x)
         elif isinstance(x, Node):
-            cls = type(x)
-            if cls.__name__ == "Skipped":
-                update(b"(Skipped:" + str(x.kind).encode() + b")")
-                continue
+            cls = c
             tags = _TAGS.get(cls)
             if tags is None:
-                tags = _TAGS[cls] = (b"(" + cls.__name__.encode(),
-                                     tuple((f, b":" + f.encode() + b"=", b":" + f.encode() + b"{")
-                                           for f in reversed(cls._fields)))
-            update(tags[0])
-            push(b")")
+                name = cls.__name__
+                tags = _TAGS[cls] = ("(" + name, tuple((f, ":" + f + "=", ":" + f + "{") for f in cls._fields),
+                                     name == "Skipped")
+            if tags[2]:
+                emit("(Skipped:" + str(x.kind) + ")")
+                continue
             unordered = cls._unordered
+            seq: list = []
+            buf = tags[0]
             for f, eq, br in tags[1]:
                 v = getattr(x, f, None)
                 if unordered and f in unordered and isinstance(v, list):
                     ds = sorted(_digest(i) if isinstance(i, Node) else repr(i).encode() for i in v)
-                    push(br + b"".join(ds) + b"}")
+                    seq.append(buf + br)
+                    seq.append(b"".join(ds) + b"}")
+                    buf = ""
+                    continue
+                buf += eq
+                if v.__class__ in scalar:
+                    buf += "<" + repr(v) + ">"
                 else:
-                    push(v)
-                    push(eq)
+                    seq.append(buf)
+                    seq.append(v)
+                    buf = ""
+            seq.append(buf + ")")
+            seq.reverse()
+            stack.extend(seq)
         elif isinstance(x, (list, tuple)):
-            update(b"[")
-            push(b"]")
-            for i in reversed(x):
-                push(i)
+            seq = []
+            buf = "["
+            for i in x:
+                if i.__class__ in scalar:
+                    buf += "<" + repr(i) + ">"
+                else:
+                    seq.append(buf)
+                    seq.append(i)
+                    buf = ""
+            seq.append(buf + "]")
+            seq.reverse()
+            stack.extend(seq)
         else:
-            update(b"<" + repr(x).encode() + b">")
+            emit("<" + repr(x) + ">")
+    if out:
+        update("".join(out).encode())
 
 
 def node_hash(node) -> str:

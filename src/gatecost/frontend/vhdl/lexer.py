@@ -60,8 +60,8 @@ _OPS = (r"\?/=|\?<=|\?>=|\?=|\?<|\?>|\?\?|=>|<=|>=|/=|:=|\*\*|<>|<<|>>"
 
 _MASTER = re.compile(
     r"""
- (?P<ws>\s+)
-|(?P<lcom>--[^\n]*)
+ \s*(?:
+ (?P<lcom>--[^\n]*)
 |(?P<bcom>/\*.*?(?:\*/|\Z))
 |(?P<bits>(?:\d[\d_]*)?(?:[uUsS]?[bBoOxX]|[dD])"[^"\n]*")
 |(?P<based>\d[\d_]*\#[0-9a-zA-Z_]+(?:\.[0-9a-zA-Z_]+)?\#(?:[eE][+-]?\d+)?)
@@ -72,7 +72,9 @@ _MASTER = re.compile(
 |(?P<str>"(?:[^"\n]|"")*")
 |(?P<char>'[^\n]')
 |(?P<op>""" + _OPS + r""")
+|(?P<end>\Z)
 |(?P<bad>.)
+)
 """, re.VERBOSE | re.DOTALL)
 
 _PRAGMA = re.compile(
@@ -129,13 +131,15 @@ def lex(text: str):
         m = match(text, pos)
         kind = m.lastgroup
         end = m.end()
-        if kind == "ws":
-            nl = text.count("\n", pos, end)
+        ts = m.start(m.lastindex)          # the leading white space is part of the match
+        if ts != pos:
+            nl = text.count("\n", pos, ts)
             if nl:
                 line += nl
-                line_start = text.rfind("\n", pos, end) + 1
-            pos = end
-            continue
+                line_start = text.rfind("\n", pos, ts) + 1
+            pos = ts
+        if kind == "end":
+            break
         col = pos - line_start + 1
         if kind == "lcom":
             pm = _PRAGMA.match(text, pos)
@@ -167,7 +171,7 @@ def lex(text: str):
         if off_line:
             pos = end
             continue
-        raw = m.group()
+        raw = text[pos:end]
         if kind == "id":
             low = raw.lower()
             if low in KEYWORDS:

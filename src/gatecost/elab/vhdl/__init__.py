@@ -51,10 +51,20 @@ Behaviour notes and known gaps
 * ``inout``/``buffer`` ports are ``out`` ports when the architecture drives them, ``in`` otherwise.  Record ports
   are flattened to ``port.field`` ports; the instance output of a whole plain signal drives that net directly.
 * ``if/else`` chains assigning ``'Z'`` in a branch become tri-state ``MUX`` nodes (``tristate=True``).
-* Gaps (degrade with a diagnostic): non-constant slice bounds (``a(i+3 downto i)``), unconstrained entity ports
-  constrained only by association (1 bit is assumed), guarded blocks/disconnection, ``wait`` other than the
-  leading ``wait until <edge>``, ``while`` loops with data-dependent conditions, configuration bodies, generic
-  types/subprograms, external names, physical/real hardware values.
+* Variable slice position with a constant width (``a(i+3 downto i)``, ``to`` or ``downto``) is a multiplexer for
+  reads and a decoded write for targets (the two bounds must differ by a constant).  An entity port that is
+  unconstrained takes its length from the port-map actual (the length is part of the module key as the pseudo
+  generic ``$len:<port>``).  A conversion function / type conversion on an output formal
+  (``std_logic_vector(z) => y``) is wiring.  Instance outputs to indexed, sliced or aggregate targets go through a
+  small combinational block.  ``generic (type T)`` entities are bound from the generic map (``T =>
+  std_logic_vector(7 downto 0)``).  Constant byte-lane writes into array-of-vector memories are lane writes (see the
+  Verilog notes: one write port with per-lane enables).  ``case`` statements and selected assignments mapping
+  constant choices to constants (at least 6 choices, selector 3..12 bits, ``others`` or full coverage) are ROMs.
+  Guarded blocks keep their statements unguarded with a diagnostic.
+* Gaps (degrade with a diagnostic): non-constant slice widths, ``wait`` other than the leading
+  ``wait until <edge>``, ``while`` loops with data-dependent conditions, configuration bodies, generic
+  subprograms and design-unit-level generic package instantiation (the parser skips them; a package instantiated in
+  a declarative region works), external names, physical/real hardware values.
 """
 from __future__ import annotations
 

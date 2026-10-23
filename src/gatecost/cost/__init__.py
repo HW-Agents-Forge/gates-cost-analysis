@@ -54,12 +54,27 @@ Composition helpers
 from __future__ import annotations
 
 from .acc import OpCost
-from .build import build_cost_tree, category_totals, module_totals, tree_confidence
-from .tree import CostOp, DesignCostTree, InstanceEdge, ModuleCost
 from .delta import confidence, delta, delta_range, range_ratio, residual_sigma, total
 from .ops import OPS, cost_op
 from .profile import DEFAULT_PROFILE, Profile, builtin_names, dump_profile, list_profiles, load_profile
 from .sharing import shared_leaf_cost
+
+_LAZY = {"build_cost_tree": "build", "category_totals": "build", "module_totals": "build",
+         "tree_confidence": "build", "CostOp": "tree", "DesignCostTree": "tree",
+         "InstanceEdge": "tree", "ModuleCost": "tree"}
+
+
+def __getattr__(name: str):
+    """Cost-tree names are imported on first use (``estimate`` does not need them: start-up time)."""
+    mod = _LAZY.get(name)
+    if mod is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module("." + mod, __name__), name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "CostOp", "DesignCostTree", "InstanceEdge", "ModuleCost", "build_cost_tree", "category_totals",

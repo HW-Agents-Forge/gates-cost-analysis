@@ -103,12 +103,14 @@ class Item:
 # --------------------------------------------------------------------------- classification
 
 
-def _changed_names(db, da) -> list[str]:
+def _changed_names(db, da, both: bool = False) -> list[str]:
+    """Names whose value differs; with ``both`` only names present on the two sides count."""
     if not isinstance(db, Mapping) and not isinstance(da, Mapping):
         return []
     db = db if isinstance(db, Mapping) else {}
     da = da if isinstance(da, Mapping) else {}
-    return sorted((n for n in set(db) | set(da) if db.get(n) != da.get(n)), key=str)
+    names = (set(db) & set(da)) if both else (set(db) | set(da))
+    return sorted((n for n in names if db.get(n) != da.get(n)), key=str)
 
 
 def _has(tags, t) -> bool:
@@ -120,13 +122,13 @@ def classify(ob: CostOp, oa: CostOp) -> tuple[str, str | None, list[str]]:
     if oa.op == "BLACKBOX" or ob.op == "BLACKBOX":
         return "blackbox", None, []
     fb, fa = ob.facts, oa.facts
-    names = _changed_names(fb.get("params"), fa.get("params"))
+    names = _changed_names(fb.get("params"), fa.get("params"), True)
     if names:
         return "parameter", "param", names
     names = _changed_names(fb.get("consts"), fa.get("consts"))
     if names:
         return "constant", "const", names
-    names = _changed_names(fb.get("widths"), fa.get("widths"))
+    names = _changed_names(fb.get("widths"), fa.get("widths"), True)
     if names or ob.effective_widths != oa.effective_widths or ob.declared_widths != oa.declared_widths:
         return "width", "width", names
     if fb.get("struct") != fa.get("struct"):
@@ -268,8 +270,8 @@ class _Differ:
         self.changed_keys_a: set[str] = set()
         self.removed_shapes: dict[str, list[tuple[str, CostOp]]] = defaultdict(list)
         self.added_shapes: dict[str, list[tuple[str, CostOp]]] = defaultdict(list)
-        self.cfg_b = (before.config or {}).get("defines") or {}
-        self.cfg_a = (after.config or {}).get("defines") or {}
+        self.cfg_b = (before.config or {}).get("macro_values") or (before.config or {}).get("defines") or {}
+        self.cfg_a = (after.config or {}).get("macro_values") or (after.config or {}).get("defines") or {}
 
     # ---- module / instance matching
     def build_pairs(self):
@@ -637,7 +639,10 @@ def build_contributors(items: list[Item]) -> list[Contributor]:
             by_mult[id(it.pair)].append(it)
         elif it.cause is not None:
             c = it.cause
-            by_cause[(c["kind"], c["name"], c["file"], c["line"], c["from"], c["to"])].append(it)
+            if c["kind"] == "define":  # a macro is one cause wherever its condition sits
+                by_cause[(c["kind"], c["name"], None, None, c["from"], c["to"])].append(it)
+            else:
+                by_cause[(c["kind"], c["name"], c["file"], c["line"], c["from"], c["to"])].append(it)
         else:
             by_line[(it.file, it.line, it.side, it.module, it.reason)].append(it)
     for key, its in by_cause.items():
@@ -651,7 +656,8 @@ def build_contributors(items: list[Item]) -> list[Contributor]:
         loc_line = c["line"] if c["line"] is not None else its[0].line
         prefix = "define " if c["kind"] == "define" else ""
         out.append(_merge(its, [_leaf(i) for i in its], file=loc_file, line=loc_line, reason=reason,
-                          description=f"{prefix}{c['name']} {c['from']}->{c['to']} ({n} {what})", cause=c,
+                          description=(f"{prefix}{c['name']} {c['from']}->{c['to']} ({n} {what})" if c["from"] != c["to"]
+                                       else f"{prefix}{c['name']} condition changed ({n} {what})"), cause=c,
                           side="after", module=mods.pop() if len(mods) == 1 else ""))
     for (f, ln, side, mod, reason), its in by_line.items():
         if len(its) == 1:
@@ -741,7 +747,7 @@ def diff_trees(
         diag_extra.append(Diagnostic("CONFIG_MISMATCH", f"baseline and current differ in: {', '.join(cfg)}", "warning", True, "both"))
     top_changed = top_a != top_b
     if top_changed:
-        diag_extra.append(Diagnostic("TOP_CHANGED", f"top module changed from {top_b} to {top_a}", "warning", False, "both"))
+        diag_extra.append(Diagnostic("TOP_CHANGED", f"top module changed from {top_b} to {top_a}", "warning", True, "both"))
     new = new + tuple(diag_extra)
 
     all_c = build_contributors(items)

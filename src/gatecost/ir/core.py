@@ -96,7 +96,7 @@ class Net:
     """A vector of ``width`` bits (IR.md section 2)."""
 
     __slots__ = ("id", "width", "signed", "name", "port", "driver", "kmask", "kval",
-                 "demand", "fanout", "attrs")
+                 "demand", "fanout", "attrs", "_sig")
 
     def __init__(self, id: int, width: int, signed: bool = False, name: str | None = None,
                  port: str | None = None) -> None:
@@ -111,13 +111,17 @@ class Net:
         self.demand = 0           # demanded-bit mask
         self.fanout = 0
         self.attrs: dict = {}
+        self._sig = None
 
     def __repr__(self) -> str:
         return f"Net({self.id}, {self.name or '_'}[{self.width}])"
 
     @property
     def sig(self) -> SigSpec:
-        return SigSpec((Slice(self, 0, self.width),))
+        s = self._sig
+        if s is None or s.width != self.width:
+            s = self._sig = SigSpec((Slice(self, 0, self.width),))
+        return s
 
     def __getitem__(self, idx) -> SigSpec:
         return self.sig[idx]
@@ -249,11 +253,11 @@ class ModuleIR:
         for nd in self.nodes:
             for _, s in nd.inputs:
                 for c in s.chunks:
-                    if isinstance(c, Slice):
+                    if c.__class__ is Slice:
                         c.net.fanout += 1
         for cn in self.conns:
             for c in cn.src.chunks:
-                if isinstance(c, Slice):
+                if c.__class__ is Slice:
                     c.net.fanout += 1
         for p in self.ports:
             if p.port in ("out", "inout"):
@@ -308,7 +312,16 @@ def freeze(v):
 
 
 def identity_attrs(attrs: dict) -> tuple:
-    return tuple(sorted((k, freeze(v)) for k, v in attrs.items() if k not in NON_IDENTITY_ATTRS))
+    if not attrs:
+        return ()
+    items = []
+    for k, v in attrs.items():
+        if k in NON_IDENTITY_ATTRS:
+            continue
+        c = v.__class__
+        items.append((k, v if (c is bool or c is int or c is str or v is None) else freeze(v)))
+    items.sort()          # keys are unique: values are never compared
+    return tuple(items)
 
 
 __all__ = [

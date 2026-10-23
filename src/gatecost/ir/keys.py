@@ -29,15 +29,30 @@ def _i(n: int) -> bytes:
     return b"\x01" + len(b).to_bytes(4, "big") + b
 
 
+_S_CACHE: dict[str, bytes] = {}
+
+
 def _s(s: str) -> bytes:
-    b = s.encode("utf-8")
-    return len(b).to_bytes(4, "big") + b
+    r = _S_CACHE.get(s)
+    if r is None:
+        b = s.encode("utf-8")
+        r = len(b).to_bytes(4, "big") + b
+        if len(_S_CACHE) < 100_000:
+            _S_CACHE[s] = r
+    return r
 
 
 def ser(v) -> bytes:
     """Canonical serialization of an attribute value."""
+    t = v.__class__
+    if t is bool:
+        return b"T" if v else b"F"
     if v is None:
         return b"N"
+    if t is int:
+        return b"I" + _i(v)
+    if t is str:
+        return b"S" + _s(v)
     if isinstance(v, bool):
         return b"T" if v else b"F"
     if isinstance(v, int):
@@ -56,8 +71,8 @@ def ser(v) -> bytes:
 
 
 def attrs_bytes(attrs: dict) -> bytes:
-    items = sorted((k, v) for k, v in attrs.items() if k not in NON_IDENTITY_ATTRS)
-    return _i(len(items)) + b"".join(_s(k) + ser(v) for k, v in items)
+    keys = sorted(k for k in attrs if k not in NON_IDENTITY_ATTRS)
+    return _i(len(keys)) + b"".join([_s(k) + ser(attrs[k]) for k in keys])
 
 
 class KeyBuilder:
@@ -97,9 +112,12 @@ class KeyBuilder:
 
     def sig_atoms(self, sig: SigSpec) -> list[tuple]:
         atoms: list[tuple] = []
+        segs = self.segs
         for c in sig.chunks:
-            if isinstance(c, Const):
+            if c.__class__ is Const:
                 new = [("c", c.value, c.width, c.xmask)]
+            elif c.net.id not in segs:       # untouched net: one root atom
+                new = [("r", self.root(c.net), c.lo, c.width)]
             else:
                 new = self.slice_atoms(c.net, c.lo, c.width)
             for a in new:
@@ -291,14 +309,22 @@ def _named_keys(m: ModuleIR, order, cons, labels, kb: KeyBuilder) -> None:
             return "lhs" if lo_first else "rhs"
         return "rhs" if lo_first else "lhs"
 
+    pmux_offs: dict = {}
+
     def role_of(item: Node, name: str, pos: int, chunk: Slice) -> str:
         sig = dict(item.inputs)[name]
         if item.op in COMMUTATIVE and len(item.inputs) == 2:
             r = commutative_rank(item, name)
         elif item.op in ("PMUX", "PRIORITY") and name == "B":
             w = item.outputs[0].width
-            off = sum(c.width for c in sig.chunks[:pos])
-            r = f"case{off // w}"
+            offs = pmux_offs.get(item.id)
+            if offs is None:
+                offs = pmux_offs[item.id] = []
+                acc = 0
+                for c in sig.chunks:
+                    offs.append(acc)
+                    acc += c.width
+            r = f"case{offs[pos] // w}"
         elif item.op == "SUM":
             r = "term" if name.startswith("T") else "mul"
         elif item.op in ("INST", "BLACKBOX", "MEM"):

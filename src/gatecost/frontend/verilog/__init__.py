@@ -78,6 +78,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+from gatecost import _gc
 from gatecost.frontend.common.diagnostics import DiagSink
 from gatecost.frontend.common.reader import SourceFile, read_source, source_from_text
 from gatecost.result import Diagnostic
@@ -99,6 +100,7 @@ class ParsedFile:
     modules: tuple
     interfaces: tuple
     packages: tuple
+    unit_items: bool = False        # compilation-unit-scope items (outside any module / package)
 
 
 @dataclass(slots=True)
@@ -161,7 +163,7 @@ def _finish(sources: list, pp: Preprocessor, sink: DiagSink, limits: Limits) -> 
         hashes[src.path] = src.sha256
         pre, unit = _parse_source(src, pp, sink, limits, macro_uses)
         if unit is None:
-            files.append(ParsedFile(src.path, src.sha256, {}, (), (), ()))
+            files.append(ParsedFile(src.path, src.sha256, {}, (), (), (), True))
             continue
         hashes.update(pre.included)
         modules.extend(unit.modules)
@@ -173,7 +175,7 @@ def _finish(sources: list, pp: Preprocessor, sink: DiagSink, limits: Limits) -> 
                 unit_loc = unit.unit_items[0].loc
             unit_items.extend(unit.unit_items)
         files.append(ParsedFile(src.path, src.sha256, dict(pre.included), tuple(unit.modules),
-                                tuple(unit.interfaces), tuple(unit.packages)))
+                                tuple(unit.interfaces), tuple(unit.packages), bool(unit.unit_items)))
     if unit_items:
         packages.append(Package(unit_loc, "$unit", tuple(unit_items), False, unit_loc[0], unit_loc[1], None))
     seen: dict = {}
@@ -188,6 +190,7 @@ def _finish(sources: list, pp: Preprocessor, sink: DiagSink, limits: Limits) -> 
                         hashes, macro_uses, tuple(files))
 
 
+@_gc.nogc
 def parse_files(paths, defines: dict | None = None, incdirs=(), limits: Limits | None = None) -> ParsedDesign:
     """Parse source files in the given order (macros persist across files, as on a tool command line)."""
     limits = limits or Limits()

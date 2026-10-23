@@ -170,6 +170,27 @@ All configurable in `gatecost.toml`:
 - Cold analysis of a design of about 100k lines in a few seconds; warm analysis of a single-file change well under one second.
 - Hot paths avoid per-character Python loops, repeated string slicing, and recursion over long lists.
 
+**Measured status** (generated designs of `tests/bench/`, CPython 3.15 on an Apple M2; `python3 -m tests.bench.run_bench --lines 10000 100000 --diff`):
+
+| | 10k lines | 100k lines | target |
+|---|---|---|---|
+| lex + parse | 0.10 s (SV), 0.12 s (VHDL) | 1.0 s (SV, 3 MB/s), 1.0 s (VHDL, 3.5 MB/s) | at least 1 MB/s: met |
+| elaboration + IR analysis (cold) | 0.65 s (SV), 0.53 s (VHDL) | 5.8 s (SV, 66k IR nodes), 5.2 s (VHDL, 44k nodes) | a few seconds: **not met** |
+| cost tree | 0.12 s | 1.2 s (SV), 0.8 s (VHDL) | |
+| IR build + analysis of one synthetic module of 100k requested nodes (75k built, 54k live) | | 0.9 s + 1.7 s | well under 1 s (`IR.md` section 11): **not met** |
+| `cost` end to end, cold cache | 0.9 s | 9.8 s (SV), 8.2 s (VHDL) | a few seconds: **not met** |
+| `diff` with a warm cache, nothing changed | 0.08 s | 0.23 s (SV), 0.17 s (VHDL) | < 0.3 s: met |
+| `diff` after a one-file edit, baseline cached | 0.26 s (SV), 0.38 s (VHDL) | 0.7 s (SV), 2.2 s (VHDL) | < 0.3 s at 100k lines: **not met** |
+| the same edit again (cached) | 0.11 s | 0.29 s (SV), 0.22 s (VHDL) | < 0.3 s: met |
+
+Where the time goes at 100k lines (SV, cold): elaboration and IR construction 4.0 s, IR analysis 1.9 s, cost tree 1.2 s,
+parsing 1.0 s, provenance annotation 1.0 s, cache write 0.6 s.  The profile is flat (no function above 5 %), so further
+gains need a lower per-node cost across the elaborator and the IR passes rather than a single fix.  The one-file edit
+reads only the changed files, the files that must always be read (macros, packages, interfaces, compilation-unit items)
+and the headers of the instances of the changed modules' ancestors (a per-file index stored with the baseline analysis
+supplies everything else, `SPEC.md` §12); for the generated 100k-line SV project (one top with 250 children) that
+is 253 of 351 files.  VHDL projects are always read completely.
+
 ## 9. Tests
 
 - **Lexer and preprocessor:** token streams for every literal form; macro edge cases (nested, recursion guard, arguments containing commas inside parentheses); conditional compilation; include resolution; line-map correctness (a macro-expanded operation maps to the right source line).

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from ...frontend.vhdl import nodes as N
-from ...ir import Const, Design, SigSpec
+from ...ir import Const, Design, LowerBlock, SigSpec
 from ...ir.sigspec import mask
 from . import vtypes as T
 from .core import NotConst, Unsupported, int_val
+from .stmt import XC
 from .values import Scope, Sym, Val
 
 
@@ -28,7 +29,31 @@ def flat_ports(name, t):
 
 class InstMixin:
     # ------------------------------------------------------------------ parameters
+    def type_key(self, t):
+        if t.kind == "array" and t.left is not None:
+            return "type:%s(%s %s %s)" % (t.name, t.left, t.dir, t.right)
+        return "type:%s/%s" % (t.name, t.width)
+
+    def type_from_actual(self, x, sc):
+        """VHDL-2008 generic type actual: a type mark, optionally with an index constraint."""
+        t = self.try_type(x, sc)
+        if t is not None:
+            return t
+        if isinstance(x, N.Slice):
+            base = self.try_type(x.prefix, sc)
+            if base is not None and base.kind == "array" and isinstance(x.range, N.Range):
+                l, r, d = self.eval_range(x.range, sc)
+                return T.constrain(base, l, r, d)
+        if isinstance(x, N.Apply) and len(x.args) == 1:
+            base = self.try_type(x.prefix, sc)
+            if base is not None and base.kind == "array" and self.is_range_expr(x.args[0].actual, sc):
+                l, r, d = self.eval_range(x.args[0].actual, sc)
+                return T.constrain(base, l, r, d)
+        return None
+
     def param_of(self, v):
+        if isinstance(v, T.VType):
+            return self.type_key(v)
         t = v.t
         if t.kind == "int" or t.kind == "real":
             return v.c if v.c is not None else self.const_val(v)
@@ -58,10 +83,18 @@ class InstMixin:
             return Val(gt, SigSpec.const(0, gt.width))
         return int_val(32)
 
-    def bind_generics(self, ent, esc, provider):
-        """Evaluate entity generics in ``esc`` (declaring them); returns {name: Val}."""
+    def bind_generics(self, ent, esc, provider, type_provider=None):
+        """Evaluate entity generics in ``esc`` (declaring them); returns {name: Val} (a ``VType`` for generic types)."""
         vals = {}
         for pos, g in enumerate(ent.generics or ()):
+            if g.kind == "type":
+                gt = type_provider(g, pos) if type_provider is not None else None
+                if gt is None:
+                    gt = T.T_STD_LOGIC
+                    self.ctx.assume("generic type '%s' of '%s' has no actual; std_logic assumed" % (g.name, ent.name))
+                esc.declare(Sym("type", g.name, gt))
+                vals[g.name] = gt
+                continue
             if g.kind != "constant":
                 continue
             try:
@@ -84,13 +117,48 @@ class InstMixin:
                 self.diag("UNSUPPORTED_CONSTRUCT", "generic '%s' skipped (%s)" % (g.name, ex), g)
         return vals
 
-    def entity_ports(self, ent, esc):
+    def port_length_hints(self, ent, esc, s, sc):
+        """Element counts of unconstrained entity ports, taken from the port map actuals (VHDL: an unconstrained
+        port takes its index range from the association)."""
+        hints = {}
+        formals = {}
+        for i, a in enumerate(s.port_map or ()):
+            if a.formal is None:
+                if i < len(ent.ports or ()):
+                    formals[ent.ports[i].name] = a
+            elif isinstance(a.formal, N.Ident):
+                formals[a.formal.name] = a
+        for p in ent.ports or ():
+            try:
+                pt = self.resolve_subtype(p.subtype, esc)
+            except Exception:
+                continue
+            if pt.kind != "array" or pt.width is not None:
+                continue
+            a = formals.get(p.name)
+            if a is None or a.actual is None or isinstance(a.actual, N.Open):
+                continue
+            ew = pt.elem.width or 1
+            try:
+                if (p.mode or "in") in ("in", "linkage"):
+                    w = self.sig_of(self.eval(a.actual, sc)).width
+                else:
+                    w = self.lvalue(a.actual, sc).width
+            except Exception:
+                continue
+            if w and w % ew == 0:
+                hints[p.name] = w // ew
+        return hints
+
+    def entity_ports(self, ent, esc, hints=None):
         out = []
         for p in ent.ports or ():
             try:
                 pt = self.resolve_subtype(p.subtype, esc)
             except Exception:
                 pt = T.T_STD_LOGIC
+            if (pt.width is None or pt.width <= 0) and hints and p.name in hints and pt.kind == "array":
+                pt = T.constrain(pt, hints[p.name] - 1, 0, "downto")
             if pt.width is None or pt.width <= 0:
                 self.ctx.assume("port '%s' of '%s' has no constant width; 1 bit assumed" % (p.name, ent.name))
                 pt = T.T_STD_LOGIC
@@ -174,9 +242,20 @@ class InstMixin:
                 return None
             return self.eval(a.actual, sc, gt)
 
-        gvals = self.bind_generics(ent, esc, provider)
+        def type_provider(g, pos):
+            a = gmap.get(g.name)
+            if a is None and pos < len(gpos) and not gmap:
+                a = gpos[pos]
+            if a is None or isinstance(a.actual, N.Open):
+                return None
+            return self.type_from_actual(a.actual, sc)
+
+        gvals = self.bind_generics(ent, esc, provider, type_provider)
         params = {k: self.param_of(v) for k, v in gvals.items()}
-        ports = self.entity_ports(ent, esc)
+        hints = self.port_length_hints(ent, esc, s, sc)
+        for k, v in hints.items():
+            params["$len:" + k] = v
+        ports = self.entity_ports(ent, esc, hints)
         self.declare_items(ent.decls, esc, None)
         inputs, outs, conns = self.map_ports(s, sc, ports, label)
         cp = Design.const_port_signature(inputs) if self.ctx.propagate else {}
@@ -204,8 +283,10 @@ class InstMixin:
             o, fw = t.offs[f.suffix]
             return pn, off + o, fw, dict(t.fields)[f.suffix]
         if isinstance(f, N.Apply):
-            if isinstance(f.prefix, N.Ident) and f.prefix.name in ports and False:
-                pass
+            if (isinstance(f.prefix, N.Ident) and f.prefix.name not in ports and len(f.args) == 1
+                    and f.prefix.name in CONVERSIONS):
+                # conversion function / type conversion on an output formal: the bits are the same
+                return self.formal_part(f.args[0].actual, ports, sc)
             pn, off, w, t = self.formal_part(f.prefix, ports, sc)
             ex = f.args[0].actual
             if self.is_range_expr(ex, sc):
@@ -320,8 +401,22 @@ class InstMixin:
                 if piece.width != tgt.width:
                     piece = piece.resize(tgt.width, False)
                 self.b.connect(tgt, piece, self.org(a))
-            else:
-                self.diag("UNSUPPORTED_CONSTRUCT", "instance output to an indexed/aggregate target is not supported", a)
+                continue
+            # indexed / aggregate / memory target: a small combinational block distributes the instance output
+            try:
+                blk = LowerBlock(self.b, "comb", origin=self.org(a))
+                xc = XC(blk, False, None, "concurrent")
+                saved = self.proc
+                self.proc = xc
+                try:
+                    self.do_assign(xc, lv, Val(lv.t, piece.resize(lv.width, False)) if lv.t is not None else Val(T.T_SLV, piece.resize(lv.width, False)), a)
+                    blk.finish()
+                finally:
+                    self.proc = saved
+            except Exception as ex:
+                if getattr(self.ctx, "debug", False):
+                    raise
+                self.diag("UNSUPPORTED_CONSTRUCT", "instance output to this target is not supported (%s)" % ex, a)
 
     # ------------------------------------------------------------------ black boxes / foreign
     def inst_blackbox(self, s, sc, name, comp, label):
@@ -418,6 +513,10 @@ class InstMixin:
         else:
             res = self.b.inst(key, label, inputs, outs, 1, origin=self.org(s))
         self.connect_outputs(conns, res, s)
+
+
+CONVERSIONS = frozenset(("std_logic_vector", "std_ulogic_vector", "unsigned", "signed", "bit_vector", "to_stdlogicvector",
+                         "to_stdulogicvector", "to_bitvector", "to_bit_vector", "to_slv", "to_unsigned_vec"))
 
 
 def base_name_of(e):

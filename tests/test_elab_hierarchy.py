@@ -259,7 +259,7 @@ module t(input [7:0] a, output reg [7:0] y);
 endmodule""", limits={"loop_unroll": 8})
         self.assertIn("LIMIT_REACHED", codes(r))
 
-    def test_non_constant_loop_is_reported_not_unrolled(self):
+    def test_non_constant_loop_is_reported_and_bounded(self):
         r = elab("""
 module t(input [3:0] n, input [7:0] a, output reg [7:0] y);
   integer i;

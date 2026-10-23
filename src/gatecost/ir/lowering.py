@@ -69,6 +69,7 @@ class LowerBlock:
         self._path: list[tuple] = []     # (cond SigSpec, polarity)
         self._origin_stack: list[Origin | None] = []
         self._order: dict[int, Net] = {}  # nets in first-assignment order
+        self._discards: list[SigSpec] = []
 
     # -- origin handling -------------------------------------------------
     def _push_origin(self, origin):
@@ -488,6 +489,9 @@ class LowerBlock:
                     else:
                         self._finish_comb(net, i, run)
                     i = j
+            discards, self._discards = self._discards, []
+            for run in discards:
+                b.discard(run)
         finally:
             b.origin = saved
 
@@ -537,6 +541,17 @@ class LowerBlock:
             prev = e
         return _coalesce(out)
 
+    @staticmethod
+    def _arms(d: Node, memo: dict):
+        """``(selects, arm values)`` of a PMUX / PRIORITY node, split once per node."""
+        key = ('a', d.id)
+        r = memo.get(key)
+        if r is None:
+            ins = dict(d.inputs)
+            ow = d.outputs[0].width
+            r = memo[key] = (ins["S"].split(1), ins["B"].split(ow) if ow > 0 else [])
+        return r
+
     def _we_chunk(self, c: Slice, net: Net, abs_pos: int, memo: dict):
         if c.net is net:
             if c.lo == abs_pos:
@@ -548,7 +563,103 @@ class LowerBlock:
         key = ('h', c.net.id, c.lo, c.width, abs_pos)
         if key in memo:
             return memo[key]
+        # Windows of one mux net at the same offset to the target are slices of one another: a wide
+        # register written through a variable index asks for O(width) windows of the same few nets.
+        # Once a net has been asked for several distinct windows, compute it whole and slice.
+        delta = c.lo - abs_pos
+        wk = ('W', c.net.id, delta)
+        ent = memo.get(wk)
+        if ent is None:
+            ent = memo[wk] = [0, []]
+        lo, w = c.lo, c.width
+        for (wl, wh, wr) in ent[1]:
+            if wl <= lo and lo + w <= wh:
+                r = self._we_slice(c, net, delta, wl, wr, memo)
+                memo[key] = r
+                return r
+        if ent[0] >= 2 and not (lo == 0 and w == c.net.width):
+            full = Slice(c.net, 0, c.net.width)
+            fkey = ('h', c.net.id, 0, c.net.width, -delta)
+            if fkey not in memo:
+                memo[fkey] = None
+                rf = self._we_body(full, net, -delta, memo)
+                memo[fkey] = rf
+                ent[1].append((0, c.net.width, rf))
+            else:
+                rf = memo[fkey]
+                ent[1].append((0, c.net.width, rf))
+            r = self._we_slice(c, net, delta, 0, rf, memo)
+            memo[key] = r
+            return r
         memo[key] = None
+        r = self._we_body(c, net, abs_pos, memo)
+        memo[key] = r
+        ent[0] += 1
+        ent[1].append((lo, lo + w, r))
+        return r
+
+    def _we_slice(self, c: Slice, net: Net, delta: int, base: int, segs, memo: dict):
+        """Hold map of window ``c`` out of the map ``segs`` of a window starting at ``base`` (same net, offset)."""
+        if segs is None:
+            return None
+        fm = self._fmask(c.net, delta, memo)
+        if not (fm >> c.lo) & mask(c.width):
+            return None
+        lo = c.lo - base
+        hi = lo + c.width
+        out = []
+        pos = 0
+        for sw, cnd in segs:
+            a = lo if lo > pos else pos
+            e = pos + sw
+            if hi < e:
+                e = hi
+            if e > a:
+                out.append((e - a, cnd))
+            pos += sw
+            if pos >= hi:
+                break
+        return out
+
+    def _fmask(self, x: Net, delta: int, memo: dict) -> int:
+        """Bits of mux net ``x`` whose hold analysis reaches the target (bit mask)."""
+        key = ('F', x.id, delta)
+        m = memo.get(key)
+        if m is not None:
+            return m
+        memo[key] = 0
+        d = x.driver
+        ins = dict(d.inputs)
+        sigs = [ins["A"]]
+        if d.op == "MUX":
+            sigs.append(ins["B"])
+        else:
+            sigs.extend(self._arms(d, memo)[1])
+        m = 0
+        for sg in sigs:
+            m |= self._sig_fmask(sg, -delta, memo)
+        memo[key] = m
+        return m
+
+    def _sig_fmask(self, sig: SigSpec, lo: int, memo: dict) -> int:
+        net = memo['net']
+        m = 0
+        pos = 0
+        for c in sig.chunks:
+            if isinstance(c, Slice):
+                if c.net is net:
+                    if c.lo == lo + pos:
+                        m |= ((1 << c.width) - 1) << pos
+                else:
+                    d = c.net.driver
+                    if isinstance(d, Node) and d.op in _MUXLIKE and d.alive:
+                        f = self._fmask(c.net, c.lo - (lo + pos), memo)
+                        m |= ((f >> c.lo) & ((1 << c.width) - 1)) << pos
+            pos += c.width
+        return m
+
+    def _we_body(self, c: Slice, net: Net, abs_pos: int, memo: dict):
+        d = c.net.driver
         b = self.b
         w = c.width
         ins = dict(d.inputs)
@@ -563,20 +674,19 @@ class LowerBlock:
             r = self._combine([hA or one, hB or one], lambda cs: _mux1(b, S, cs[0], cs[1]))
         else:
             k = d.attrs["k"]
-            ow = d.outputs[0].width
-            arms = [ins["B"].slice(i * ow + c.lo, w) for i in range(k)]
+            sels, avals = self._arms(d, memo)
+            arms = [a.slice(c.lo, w) for a in avals]
             hs = [self._we(a, net, abs_pos, memo) for a in arms]
             hd = self._we(A, net, abs_pos, memo)
             if hd is None and all(h is None for h in hs):
                 return None
 
-            def fn(cs, S=S, k=k):
+            def fn(cs, sels=sels, k=k):
                 h = cs[0]
                 for i in reversed(range(k)):
-                    h = _mux1(b, S.slice(i, 1), h, cs[1 + i])
+                    h = _mux1(b, sels[i], h, cs[1 + i])
                 return h
             r = self._combine([hd or one] + [h or one for h in hs], fn)
-        memo[key] = r
         return r
 
     def _strip(self, sig: SigSpec, net: Net, lo: int, memo: dict) -> SigSpec:
@@ -618,8 +728,7 @@ class LowerBlock:
                 r = b.op("MUX", sA, sB, S, width=w, group=grp)
         else:
             k = d.attrs["k"]
-            ow = d.outputs[0].width
-            arms = [ins["B"].slice(i * ow + c.lo, w) for i in range(k)]
+            arms = [a.slice(c.lo, w) for a in self._arms(d, memo)[1]]
             sarms = [self._strip(a, net, abs_pos, memo) for a in arms]
             sA = self._strip(A, net, abs_pos, memo)
             if sA == A and sarms == arms:
@@ -632,7 +741,7 @@ class LowerBlock:
     # combinational -------------------------------------------------------------
     def _finish_comb(self, net: Net, lo: int, run: SigSpec) -> None:
         b = self.b
-        memo: dict = {}
+        memo: dict = {'net': net}
         hold = self._we(run, net, lo, memo)
         if hold is None:
             b.connect(SigSpec.of(net, lo, run.width), run)
@@ -658,13 +767,13 @@ class LowerBlock:
                               f"latch inferred for {net.name or net.id}[{lo+i+n-1}:{lo+i}]: "
                               "not assigned on every path", "warning", False, b.origin)
             i += n
-        b.discard(run)
+        self._discards.append(run)      # collected after ALL targets are finished (runs share sub-expressions)
 
     # clocked -----------------------------------------------------------------------
     def _finish_reg(self, net: Net, lo: int, run: SigSpec) -> None:
         b = self.b
         w = run.width
-        memo: dict = {}
+        memo: dict = {'net': net}
         segs = [{"w": w, "d": run, "arst": None, "srst": None, "en": None}]
         # A: asynchronous reset / set
         for (asig, level) in self.async_resets[:1]:
@@ -704,7 +813,7 @@ class LowerBlock:
             if not whole:
                 b.connect(SigSpec.of(net, lo + pos, n), q)
             pos += n
-        b.discard(run)
+        self._discards.append(run)      # collected after ALL targets are finished (runs share sub-expressions)
 
     # recognizers: return (arm_kind, sig, polarity, reset_arm_sig, normal_arm_sig) or None
     def _match_async(self, S: SigSpec, A: SigSpec, B: SigSpec, asig: SigSpec, level: int):

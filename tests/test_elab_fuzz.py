@@ -29,7 +29,26 @@ module top import p::*; (input clk, input [3:0] a, output reg [3:0] q, output [3
 endmodule
 """
 
-SOURCES = {"hier": HIER}
+GAPS = """
+module sub #(parameter W = 4)(input [W-1:0] a, output [W-1:0] y); assign y = ~a; endmodule
+module mid(input [7:0] a, output [7:0] y); sub u(.a(a), .y(y)); endmodule
+module gaps #(parameter int T [0:3] = '{1,2,3,4})(input clk, input [3:0] we, input [3:0] a, input [31:0] d,
+              input [2:0] n, input [7:0] x, output reg [31:0] q, output [7:0] r, output reg [7:0] y, output [15:0] pw);
+  reg [31:0] mem [0:15]; integer i; reg [7:0] hi, lo;
+  mid m(.a(x), .y(r)); defparam m.u.W = 8;
+  always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) if (we[i]) mem[a][8*i +: 8] <= d[8*i +: 8];
+    q <= mem[a];
+  end
+  always_comb begin
+    {<<8{hi, lo}} = d[15:0];
+    priority case (n) 0: y = hi; 1: y = lo; 2: y = x; 3: y = 8'd7; 4: y = 8'd9; 5: y = 8'd11; 6: y = 8'd13; default: y = T[n[1:0]]; endcase
+  end
+  assign pw = x ** n;
+endmodule
+"""
+
+SOURCES = {"hier": HIER, "gaps": GAPS}
 for name, (src, _top) in D.DESIGNS.items():
     SOURCES[name] = src
 SOURCES.update({k: v for k, v in CORPUS.items()})

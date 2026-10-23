@@ -1,6 +1,7 @@
 """The analysis pipeline (IR.md section 6): ``analyze_ir``."""
 from __future__ import annotations
 
+from .. import _gc
 from .core import Conn, ModuleIR, Net, Node
 from .datapath import effective_widths, fuse_datapath, mark_sharing
 from .demand import compute_demand, dead_logic
@@ -10,10 +11,13 @@ from .knownbits import known_bits, sig_known
 from .sigspec import Const, SigSpec, mask
 
 
-def _replace_node(m: ModuleIR, nd: Node, sig: SigSpec) -> None:
+def _replace_node(m: ModuleIR, nd: Node, sig: SigSpec, dead: set | None = None) -> None:
     out = nd.outputs[0]
     nd.alive = False
-    m.nodes = [x for x in m.nodes if x is not nd]
+    if dead is None:
+        m.nodes = [x for x in m.nodes if x is not nd]
+    else:
+        dead.add(id(nd))              # removed in one pass by the caller
     out.driver = None
     conn = Conn(out, 0, sig, nd.origin)
     m.conns.append(conn)
@@ -63,28 +67,37 @@ def fold_known(m: ModuleIR, order) -> int:
     select by a wire to the selected input.  Returns the number of replaced nodes."""
     n = 0
     nots: dict = {}
+    dead: set = set()
     for it in list(order):
         if not isinstance(it, Node) or it.is_state or len(it.outputs) != 1:
             continue
         out = it.outputs[0]
         if out.kmask == mask(out.width):
-            _replace_node(m, it, SigSpec((Const(out.kval, out.width),)))
+            _replace_node(m, it, SigSpec((Const(out.kval, out.width),)), dead)
             n += 1
         elif it.op == "MUX" and not it.attrs.get("tristate"):
             sk, sv = sig_known(dict(it.inputs)["S"])
             if sk & 1:
                 ins = dict(it.inputs)
-                _replace_node(m, it, ins["B"] if sv & 1 else ins["A"])
+                _replace_node(m, it, ins["B"] if sv & 1 else ins["A"], dead)
                 n += 1
             else:
                 r = _fold_const_mux(m, it, nots)
                 if r is not None:
-                    _replace_node(m, it, r)
+                    _replace_node(m, it, r, dead)
                     n += 1
+    if dead:
+        m.nodes = [x for x in m.nodes if id(x) not in dead]
     return n
 
 
 def analyze_ir(m: ModuleIR, *, fusion: bool = True, sharing: bool = True) -> ModuleIR:
+    """Run the analysis passes (see ``_analyze_ir``) with the cyclic GC paused."""
+    with _gc.paused():
+        return _analyze_ir(m, fusion, sharing)
+
+
+def _analyze_ir(m: ModuleIR, fusion: bool, sharing: bool) -> ModuleIR:
     """Run the analysis passes on a built Module IR (in place) and return it.
 
     Order: known bits, dead logic, demanded bits, effective widths, datapath fusion,
@@ -95,7 +108,6 @@ def analyze_ir(m: ModuleIR, *, fusion: bool = True, sharing: bool = True) -> Mod
         compute_keys(m, [])
         m.analyzed = True
         return m
-    m.recount_fanout()
     has_state = any(n.op == "DFF" for n in m.nodes)
     clean = False
     order = None
@@ -111,7 +123,8 @@ def analyze_ir(m: ModuleIR, *, fusion: bool = True, sharing: bool = True) -> Mod
         order, _cyc = topo_order(m)
         known_bits(m, order, rounds=4 if has_state else 1)
         compute_demand(m)
-    m.recount_fanout()
+    if not clean:
+        m.recount_fanout()
     effective_widths(m)
     if fusion:
         if fuse_datapath(m):

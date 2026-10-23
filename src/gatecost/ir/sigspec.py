@@ -141,9 +141,13 @@ class SigSpec:
     __slots__ = ("chunks", "width", "_key")
 
     def __init__(self, chunks: Iterable = ()) -> None:
-        cs = _normalize(chunks)
+        if chunks.__class__ is tuple and len(chunks) == 1 and chunks[0].width > 0:
+            cs = chunks                       # a single non-empty chunk is already normal
+            self.width = chunks[0].width
+        else:
+            cs = _normalize(chunks)
+            self.width = sum([c.width for c in cs])
         self.chunks = cs
-        self.width = sum(c.width for c in cs)
         self._key = None
 
     # -- construction -----------------------------------------------------
@@ -181,7 +185,13 @@ class SigSpec:
     def key(self) -> tuple:
         k = self._key
         if k is None:
-            k = self._key = tuple(c.key() for c in self.chunks)
+            parts = []
+            for c in self.chunks:
+                if c.__class__ is Slice:
+                    parts.append(("n", c.net.id, c.lo, c.width))
+                else:
+                    parts.append(("c", c.value, c.width, c.xmask))
+            k = self._key = tuple(parts)
         return k
 
     def __eq__(self, other: object) -> bool:
@@ -243,6 +253,38 @@ class SigSpec:
                 out.append(Slice(c.net, c.lo + a, b - a))
             pos += cw
         return SigSpec(out)
+
+    def split(self, n: int) -> list:
+        """``[self.slice(i * n, n) for i in range(self.width // n)]`` in one pass over the chunks."""
+        if n <= 0:
+            raise ValueError("split width must be positive")
+        total = self.width
+        if total % n:
+            raise ValueError(f"width {total} is not a multiple of {n}")
+        if n == total:
+            return [self]
+        out: list = []
+        cur: list = []
+        need = n
+        for c in self.chunks:
+            cw = c.width
+            off = 0
+            is_const = isinstance(c, Const)
+            while off < cw:
+                take = cw - off if cw - off < need else need
+                if off == 0 and take == cw:
+                    cur.append(c)
+                elif is_const:
+                    cur.append(Const(c.value >> off, take, c.xmask >> off))
+                else:
+                    cur.append(Slice(c.net, c.lo + off, take))
+                off += take
+                need -= take
+                if need == 0:
+                    out.append(SigSpec(cur))
+                    cur = []
+                    need = n
+        return out
 
     def __getitem__(self, idx) -> "SigSpec":
         """``sig[i]`` one bit; ``sig[lo:hi]`` Python half-open, LSB indexed."""
@@ -329,6 +371,9 @@ def _rev_atoms(sig: SigSpec) -> Iterator[tuple]:
 
 def top_rep(sig: SigSpec) -> int:
     """Count of top bits equal to the bit directly below them."""
+    chunks = sig.chunks
+    if len(chunks) == 1 and chunks[0].__class__ is Slice:
+        return 0           # consecutive bits of one slice are never equal atoms
     count = 0
     prev = None
     it = _rev_atoms(sig)

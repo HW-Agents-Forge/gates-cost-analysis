@@ -179,6 +179,11 @@ class DeclMixin:
             scope.syms[pd.name] = TSym(pt)
             return
         pt = self.resolve_dtype(pd.dtype) if pd.dtype is not None else None
+        if (override is None and isinstance(pd.init, A.AssignPattern) and pd.init.prefix is None
+                and pd.init.items and not any(isinstance(i, A.PatternItem) for i in pd.init.items)
+                and (pt is None or not pt.fields)):
+            if self._declare_array_param(pd, pt):
+                return
         if override is not None and isinstance(override, V):
             v = override
         elif pd.init is not None:
@@ -193,6 +198,23 @@ class DeclMixin:
             v = self.const_v(32)
         v = self.coerce(v, pt)
         scope.syms[pd.name] = PSym(v, pt)
+
+    def _declare_array_param(self, pd, pt) -> bool:
+        """``parameter T [0:3] = '{...}``: an array of constants (the parser drops the unpacked dimension, the
+        element count is the pattern length).  Indexed with a signal it becomes a ROM."""
+        vals = [self.val(i) for i in pd.init.items]
+        cs = [v.sig.const_value() for v in vals]
+        if any(c is None or c.xmask for c in cs):
+            return False
+        ew = pt.w if pt is not None else max(max(v.sig.width for v in vals), 1)
+        sg = pt.signed if pt is not None else all(v.signed for v in vals)
+        arr = [c.value & ((1 << ew) - 1) for c in cs]
+        whole = 0
+        for i, x in enumerate(arr):
+            whole |= x << (i * ew)
+        self.scope.syms[pd.name] = PSym(V(SigSpec.const(whole, ew * len(arr)), False), PType(ew, sg, (), None), arr)
+        self.assume(f"array parameter '{pd.name}' of {len(arr)} elements (unpacked dimension taken from the pattern)")
+        return True
 
     def declare_typedef(self, td: A.Typedef):
         pt = self.resolve_dtype(td.dtype)

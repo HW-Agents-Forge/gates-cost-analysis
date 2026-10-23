@@ -5,6 +5,8 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+from ... import _gc
+from ..._lazy import LazyMap
 from ...result import Diagnostic
 from .hashing import node_hash
 from .lexer import lex
@@ -30,6 +32,11 @@ class ParsedVhdl:
     hashes: dict = field(default_factory=dict)               # unit key -> normalized AST hash
     file_hashes: dict = field(default_factory=dict)          # path -> content hash
     selected: dict = field(default_factory=dict)             # (lib, entity) -> chosen Architecture
+
+    def __post_init__(self):
+        # normalized AST hashes are computed only when somebody reads them
+        if not self.hashes:
+            self.hashes = LazyMap(lambda: {_unit_key(u): u.hash for u in self.units})
 
     # ------------------------------------------------------------ lookup helpers
     def find_entity(self, name, lib=None):
@@ -116,7 +123,6 @@ def parse_source(src: SourceFile, library="work", side="after", max_depth=500):
     for u in units:
         u.file = src.path
         u.library = library
-        u.hash = node_hash(u)
     diags.extend(p.diags)
     return units, diags
 
@@ -130,6 +136,7 @@ def _unit_key(u):
     return (kind, lib, u.name)
 
 
+@_gc.nogc
 def parse_files(paths, library_map=None, *, architectures=None, side="after", max_depth=500) -> ParsedVhdl:
     """Parse VHDL files in order (compile order = file order, then position in file).
 
@@ -170,7 +177,6 @@ def _register(out: ParsedVhdl, units, side):
         out.units.append(u)
         lib = u.library
         key = (lib, u.name.lower())
-        out.hashes[_unit_key(u)] = u.hash
         if isinstance(u, Entity):
             if key in out.entities:
                 _dup(out, u, "entity", side)

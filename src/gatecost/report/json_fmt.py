@@ -109,6 +109,7 @@ def _result(r, limit: int | None = None):
                 "new": [diagnostic_dict(d) for d in r.diagnostics_new],
                 "resolved": [diagnostic_dict(d) for d in r.diagnostics_resolved],
             },
+            **({"operations": list(r.operations)} if r.operations is not None else {}),
         }
     if isinstance(r, CostResult):
         return {

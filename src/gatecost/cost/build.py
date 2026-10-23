@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+from .. import _gc
 from ..result import Confidence, Diagnostic, Ge3
 from .acc import OpCost, zero
 from .delta import confidence
@@ -193,7 +194,8 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         k = e.get("k_eff", e.get("k", 1))
         if w <= 0 or k <= 0:
             return zero("select", "medium"), f"{op} 0 w0", (0, 0), facts, tags
-        return cost_op(op, {"k": k, "w": w}, p), f"{op} {k} w{w}", (k, w), facts, tags
+        facts["struct"] = {"k": k}
+        return cost_op(op, {"k": k, "w": w}, p), f"{op} {k} w{w}", (w,), facts, tags
     if op == "DECODE":
         s = e.get("n", 0)
         if s <= 0 or w <= 0:
@@ -220,6 +222,7 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         at = {"n": n, "async_reset": kind in ("async", "both"), "sync_reset": kind in ("sync", "both"),
               "enable": en}
         facts.update(reset=kind, enable=en, enable_recognized=bool(a.get("enable_recognized")))
+        facts["reg"] = {"reset": kind, "enable": en}
         oc = cost_op("DFF", at, p)
         mc = nd.get("merge_count", 1)
         if mc > 1:
@@ -250,23 +253,25 @@ def _cost_sum(nd: dict, p: Profile):
     mul = e.get("mul")
     facts: dict = {"terms": list(e.get("terms", ())), "signs": list(e.get("signs", ()))}
     tags = ["fused"]
+    facts["struct"] = {"k": k}
     if w <= 0 or k < 2:
-        return zero("addcmp"), f"SUM {k} w{w}", (k, w), facts, tags
+        return zero("addcmp"), f"SUM {k} w{w}", (w,), facts, tags
     nT = k - (1 if mul else 0)
     if not mul:
-        return cost_op("SUM", {"k": k, "w": w}, p), f"SUM {k} w{w}", (k, w), facts, tags
+        return cost_op("SUM", {"k": k, "w": w}, p), f"SUM {k} w{w}", (w,), facts, tags
     wa, wb = mul["wa"], mul["wb"]
     if not wa or not wb:
         if nT >= 2:
-            return cost_op("SUM", {"k": nT, "w": w}, p), f"SUM {nT} w{w}", (nT, w), facts, tags
-        return zero("addcmp"), f"SUM {nT} w{w}", (nT, w), facts, tags
+            return cost_op("SUM", {"k": nT, "w": w}, p), f"SUM {nT} w{w}", (w,), facts, tags
+        return zero("addcmp"), f"SUM {nT} w{w}", (w,), facts, tags
     if mul.get("const_a") is not None or mul.get("const_b") is not None:
         kconst = mul["const_a"] if mul.get("const_a") is not None else mul["const_b"]
         n = wb if mul.get("const_a") is not None else wa
         m = cost_op("MUL", {"n": n, "const": kconst, "out": w}, p)
         s = cost_op("SUM", {"k": nT + 1, "w": w}, p)
         facts["const"] = kconst
-        return m + s, f"MAC w{n} const +{nT}", (n, w), facts, tags
+        facts["struct"] = {"k": k, "mul": "const"}
+        return m + s, f"MAC w{n} const +{nT}", (w,), facts, tags
     n, mm = max(wa, wb), min(wa, wb)
     oc = cost_op("MAC", {"n": n, "m": mm, "c": w}, p)
     if nT > 1:
@@ -274,7 +279,8 @@ def _cost_sum(nd: dict, p: Profile):
         add_max = cost_op("ADD", {"n": w}, p).max * (nT - 1)
         oc = OpCost(oc.min + fa, oc.typ + fa, max(oc.max + add_max, oc.typ + fa), oc.arch, oc.breakdown,
                     oc.category, oc.quality, oc.flags)
-    return oc, f"MAC {n}x{mm} +{nT}", (n, mm, w), facts, tags
+    facts["struct"] = {"k": k, "mul": [n, mm]}
+    return oc, f"MAC {n}x{mm} +{nT}", (w,), facts, tags
 
 
 # ---------------------------------------------------------------------------------------
@@ -389,9 +395,13 @@ def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
     return ops, diags, unsupported
 
 
+@_gc.nogc
 def build_cost_tree(design, profile: Profile, *, config: dict | None = None,
-                    extra_diagnostics=()) -> DesignCostTree:
-    """Cost tree of an analyzed ``ir.Design`` (analyzes modules that are not analyzed yet)."""
+                    extra_diagnostics=(), stubbed=()) -> DesignCostTree:
+    """Cost tree of an analyzed ``ir.Design`` (analyzes modules that are not analyzed yet).
+
+    ``stubbed`` lists module keys that the elaborator left unbuilt (changed-cone elaboration): instance
+    edges to them are kept and they are not reported as missing; the caller supplies their cost."""
     from ..ir import analyze_ir, export_design
 
     config = dict(config or {})
@@ -405,7 +415,8 @@ def build_cost_tree(design, profile: Profile, *, config: dict | None = None,
     modules: dict[str, ModuleCost] = {}
     unsupported: set[str] = set()
     all_diags: list[Diagnostic] = []
-    missing = set(exp["missing_modules"])
+    stubbed = set(stubbed)
+    missing = set(exp["missing_modules"]) - stubbed
     for key in sorted(counts):
         mod = exp["modules"][key]
         ir = design.modules[key]
@@ -414,7 +425,7 @@ def build_cost_tree(design, profile: Profile, *, config: dict | None = None,
         for e in exp["edges"]:
             if e["parent"] != key or e["recursive"]:
                 continue
-            if e["child"] in exp["modules"]:
+            if e["child"] in exp["modules"] or e["child"] in stubbed:
                 edges.append(InstanceEdge(e["name"] or "", e["child"], int(e["count"] or 1)))
         # instances of modules absent from the sources: black boxes costed through the profile
         nid = max([o.id for o in ops] + [n["id"] for n in mod["nodes"]] + [0]) + 1

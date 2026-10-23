@@ -10,6 +10,7 @@ from gatecost.result import Diagnostic
 
 from .base import BaseEv
 from .module import ModElab, _guard, build_header, param_decls
+from .scan import scan_module
 from .symbols import ISym, PSym, Scope, V
 
 DEFAULT_LIMITS = {
@@ -66,7 +67,16 @@ class Ctx:
         self.variants = {}
         self.missing_names = set()
         self.module_digest = {}
+        self.roots_hint = None
+        self.needed_hint = None
+        self.scans = {}                # id(module) -> (module, ModScan)
         self.foreign = None            # callable(name) -> foreign module of the other language, or None
+
+    def scan(self, mod):
+        e = self.scans.get(id(mod))
+        if e is None:
+            e = self.scans[id(mod)] = (mod, scan_module(mod))
+        return e[1]
 
     # ------------------------------------------------------------------ locations & diagnostics
     def disp(self, f):
@@ -308,15 +318,11 @@ class VerilogForeign:
         return self.ctx.ensure_module(self.mod, hdr, cp, 1, None)
 
 
-def find_roots(parsed, exclude_lower=()):
+def find_roots(parsed, exclude_lower=(), ctx=None):
     """Modules never instantiated by another module (file order); ``(roots, all names)``."""
-    modmap = parsed.module_map()
     inst = set()
     for m in list(parsed.modules) + list(parsed.interfaces):
-        for it in m.items:
-            for n in A.walk(it):
-                if type(n) is A.Instance and n.module != m.name:
-                    inst.add(n.module)
+        inst.update(x for x in (ctx.scan(m) if ctx is not None else scan_module(m)).insts if x != m.name)
     names = []
     seen = set()
     for m in parsed.modules:
@@ -327,20 +333,15 @@ def find_roots(parsed, exclude_lower=()):
     return roots, names
 
 
-def static_graph(parsed):
+def static_graph(parsed, ctx=None):
     g = {}
     for m in parsed.modules:
-        s = set()
-        for it in m.items:
-            for n in A.walk(it):
-                if type(n) is A.Instance:
-                    s.add(n.module)
-        g[m.name] = s
+        g[m.name] = set((ctx.scan(m) if ctx is not None else scan_module(m)).insts)
     return g
 
 
-def needed_modules(parsed, changed, tops):
-    g = static_graph(parsed)
+def needed_modules(parsed, changed, tops, ctx=None):
+    g = static_graph(parsed, ctx)
     rev = {}
     for p, cs in g.items():
         for c in cs:
@@ -360,7 +361,11 @@ def elaborate_verilog(parsed, ctx: Ctx, top: str | None, exclude_lower=(), have_
     """Elaborate the roots (or ``top``) of a parsed design into ``ctx.design``.
 
     Returns ``(top_name, top_keys, tops)``."""
-    roots, names = find_roots(parsed, exclude_lower)
+    if ctx.roots_hint is not None:           # the caller parsed only part of the project and knows the roots
+        roots = list(ctx.roots_hint)
+        names = list(dict.fromkeys(m.name for m in parsed.modules))
+    else:
+        roots, names = find_roots(parsed, exclude_lower, ctx)
     if have_other_language and not roots and top is None:
         return None, {}, []
     tops = list(roots)
@@ -376,7 +381,7 @@ def elaborate_verilog(parsed, ctx: Ctx, top: str | None, exclude_lower=(), have_
                      "module is used as the top", "info", False, None)
         tops = list(names)
     if ctx.only is not None:
-        ctx.needed = needed_modules(parsed, ctx.only, chosen)
+        ctx.needed = set(ctx.needed_hint) if ctx.needed_hint is not None else needed_modules(parsed, ctx.only, chosen, ctx)
     elif len(chosen) > 1:
         ctx.add_diag("TOP_AMBIGUOUS", "several top-level modules (" + ", ".join(chosen) + "); each root is "
                      "elaborated separately, use --top to select one", "info", False, None)

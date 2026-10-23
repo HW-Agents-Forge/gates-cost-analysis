@@ -187,7 +187,7 @@ class Builder:
             ins = ((ins[0][0], ins[1][1]), (ins[1][0], ins[0][1]))
         key = None
         if cons:
-            key = (op, identity_attrs(attrs), tuple(s.key() for _, s in ins), tuple(out_widths))
+            key = (op, identity_attrs(attrs), tuple([s.key() for _, s in ins]), tuple(out_widths))
             ex = self._table.get(key)
             if ex is not None and ex.alive:
                 return ex, True
@@ -196,7 +196,12 @@ class Builder:
             self._limit("node count", f"more than {self.limits.max_nodes} nodes")
         node_outs = []
         for i, w in enumerate(out_widths):
-            if outs is not None:
+            if outs is not None and m.driven.get(outs[i].id, 0):
+                # the requested output net already has a driver: first driver kept, the new node gets a fresh net
+                m.diag("MULTIPLE_DRIVERS", f"net {outs[i].name or outs[i].id} driven more than once; first driver kept",
+                       "warning", True, origin or self.origin)
+                n = self._new_net(w, None, False, None)
+            elif outs is not None:
                 n = outs[i]
             else:
                 nm = out_names[i] if out_names else None
@@ -207,14 +212,7 @@ class Builder:
         if group is not None:
             node.tags["group"] = group
         for n in node_outs:
-            if outs is not None:
-                drv = m.driven.get(n.id, 0)
-                if drv:
-                    m.diag("MULTIPLE_DRIVERS", f"net {n.name or n.id} driven more than once",
-                           "warning", True, origin or self.origin)
-                m.driven[n.id] = drv | mask(n.width)
-            else:
-                m.driven[n.id] = mask(n.width)
+            m.driven[n.id] = m.driven.get(n.id, 0) | mask(n.width)
             n.driver = node
         for _, s in ins:
             self._ref(s, 1)
@@ -1026,9 +1024,11 @@ def _op_pmux(b, ops, w, sa, sb, o, n, g, at, op="PMUX"):
         raise IRBuildError(f"{op}: expected B width {k*w} and S width {k}")
     arms = []     # (select bit, data)
     default = A
+    sels = S.split(1)
+    datas = B.split(w) if w > 0 else [B.slice(0, 0)] * k
     for i in range(k):
-        si = S.slice(i, 1)
-        di = B.slice(i * w, w)
+        si = sels[i]
+        di = datas[i]
         c = si.const_value()
         if c is not None:
             if c.xmask or c.value == 0:

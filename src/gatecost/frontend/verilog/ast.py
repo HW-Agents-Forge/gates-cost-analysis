@@ -54,24 +54,43 @@ def children(n: Node):
     out = []
     for f in n._fields:
         v = getattr(n, f, None)
-        if isinstance(v, Node):
-            out.append(v)
-        elif isinstance(v, tuple):
+        if v is None:
+            continue
+        if v.__class__ is tuple:
             for x in v:
                 if isinstance(x, Node):
                     out.append(x)
-                elif isinstance(x, tuple):
+                elif x.__class__ is tuple:
                     out.extend(y for y in x if isinstance(y, Node))
+        elif isinstance(v, Node):
+            out.append(v)
     return out
 
 
 def walk(n: Node):
     """Pre-order iteration over a subtree (iterative; safe for very deep trees)."""
     stack = [n]
+    pop = stack.pop
+    extend = stack.extend
     while stack:
-        x = stack.pop()
+        x = pop()
         yield x
-        stack.extend(reversed(children(x)))
+        kids = []
+        for f in x._fields:
+            v = getattr(x, f, None)
+            if v is None:
+                continue
+            if v.__class__ is tuple:
+                for y in v:
+                    if isinstance(y, Node):
+                        kids.append(y)
+                    elif y.__class__ is tuple:
+                        kids.extend(z for z in y if isinstance(z, Node))
+            elif isinstance(v, Node):
+                kids.append(v)
+        if kids:
+            kids.reverse()
+            extend(kids)
 
 
 # ---------------------------------------------------------------------------------------------

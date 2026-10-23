@@ -69,7 +69,14 @@ def run_estimate(args, settings, cfg) -> str:
             fragment = args.rtl
         result = est.estimate_rtl(fragment, widths, lang, prof)
         if count > 1:
-            raise GatecostError("NOT_IMPLEMENTED", "--count with --rtl is not available yet")
+            from dataclasses import replace
+
+            from ..result import Ge3
+
+            g = result.ge
+            result = replace(result, ge=Ge3(g.min * count, g.typ * count, g.max * count),
+                             breakdown={k: v * count for k, v in result.breakdown.items()},
+                             normalized=f"{count} * ({result.normalized})")
     elif args.compare:
         result = est.compare_expressions(args.compare, prof, count)
     else:

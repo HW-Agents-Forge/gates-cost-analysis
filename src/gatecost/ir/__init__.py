@@ -67,7 +67,10 @@ state elements directly (``q=`` drives an existing net).  Identical flops are me
 counted in ``merge_count``.  Usually you do not call them: ``LowerBlock`` does.
 Memories: ``mem = b.memory("ram", depth, width)``; ``data = mem.read(addr[, clk=..])``
 (async without clk); ``mem.write(addr, data, en=, clk=)``.  Inside a ``LowerBlock`` use
-``blk.mem_write(mem, addr, data)`` so the path condition becomes the write enable.
+``blk.mem_write(mem, addr, data)`` so the path condition becomes the write enable.  A partial-word write
+``blk.mem_write(mem, addr, lane_data, lane=(lo, width))`` (byte enables) is merged at ``finalize`` with the other
+disjoint lanes of the same address/clock into one write port with a per-lane enable input ``w<i>_be`` and the
+attribute ``wlanes`` (tuple of ``(lo, width)`` per port).
 
 Procedural code (always / process)
 ----------------------------------
@@ -82,6 +85,8 @@ Procedural code (always / process)
     blk.if_(cond, then_fn, else_fn)                         # callbacks run in a forked environment
     blk.if_chain([(c0, f0), (c1, f1)], else_fn)             # if/elsif chains -> PRIORITY (or PMUX)
     blk.case_(sel, [([label, ...], fn), ...], default_fn)   # labels may carry xmask wildcards
+    # case_/if_chain also take parallel=True (PMUX: unique / parallel_case) or False (PRIORITY) and full=True
+    # (no default feedback: the last arm is the default; full_case / unique / priority)
     blk.assign_indexed(net, index, elem_width, count, value)
     blk.mark_variable(net)      # VHDL variable / block-local temporary in a clocked block
     blk.finish()                # connect comb results, infer latches, create flops

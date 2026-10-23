@@ -77,12 +77,13 @@ class V:
 class PSym:
     """Parameter / localparam / enum constant / genvar value."""
 
-    __slots__ = ("val", "pt")
+    __slots__ = ("val", "pt", "arr")
     kind = "param"
 
-    def __init__(self, val: V, pt: PType | None = None):
+    def __init__(self, val: V, pt: PType | None = None, arr=None):
         self.val = val
         self.pt = pt
+        self.arr = arr          # array parameter: list of constant element values (ints), else None
 
 
 class TSym:

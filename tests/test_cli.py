@@ -198,11 +198,11 @@ class EndToEnd(unittest.TestCase):
         code, out, _ = run("diff", "--nope", "--format", "json")
         self.assertEqual(json.loads(out)["error"]["code"], "BAD_ARGUMENT")
 
-    def test_unimplemented_commands_are_well_formed(self):
-        for c in ("diff",):
-            with self.subTest(c=c):
-                code, out, _ = run(*c.split(), cwd=self.tmp)
-                self.assertEqual((code, out), (3, f"ERROR NOT_IMPLEMENTED {c.split()[0]} is not implemented yet\n"))
+    def test_diff_without_baseline_is_a_single_error_line(self):
+        code, out, _ = run("diff", cwd=self.tmp)
+        self.assertEqual(code, 2)
+        self.assertTrue(out.startswith("ERROR NO_BASELINE "), out)
+        self.assertEqual(out.count("\n"), 1)
 
     def test_init_then_clean(self):
         code, out, _ = run("init", cwd=self.tmp)
@@ -235,7 +235,13 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(run("validate-output", str(self.tmp / "none.json"))[0], 2)
 
     def test_launcher_from_other_mount_paths_and_clean_skill_dir(self):
-        before = subprocess.run(["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True).stdout
+        def litter():
+            # artifacts the tool could leave behind; concurrent source edits by developers are not its business
+            out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "--ignored"], cwd=REPO_ROOT,
+                                 capture_output=True, text=True).stdout.splitlines()
+            return sorted(l for l in out if any(k in l for k in (".gatecost", ".pyc", "snapshots", "gatecost.toml")) and "__pycache__" not in l)
+
+        before = litter()
         mount = self.tmp / "dir with spaces" / ".claude" / "skills" / "gatecost"
         mount.mkdir(parents=True)
         for item in ("scripts", "src", "VERSION", "schema"):
@@ -245,8 +251,7 @@ class EndToEnd(unittest.TestCase):
                            cwd=self.tmp, env={**os.environ, "GATECOST_CACHE_DIR": str(self.tmp / "cache")})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertFalse(list(mount.rglob("__pycache__")))
-        after = subprocess.run(["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True).stdout
-        self.assertEqual(before, after)
+        self.assertEqual(before, litter())
 
     def test_launcher_python_check_is_old_syntax_safe(self):
         import ast

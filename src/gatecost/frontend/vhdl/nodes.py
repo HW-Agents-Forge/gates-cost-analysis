@@ -145,18 +145,31 @@ WaitStmt = _n("WaitStmt", ["label", "on", "until", "timeout"])
 class DesignUnit(Node):
     """Base of design units.  Extra (non-hashed) slots: ``file``, ``library``, ``incomplete``, ``hash``."""
 
-    __slots__ = ("name", "context", "file", "library", "incomplete", "hash", "end_line")
+    __slots__ = ("name", "context", "file", "library", "incomplete", "_hash", "end_line")
+
+    @property
+    def hash(self):
+        """Normalized AST hash, computed on first use."""
+        h = self._hash
+        if h is None:
+            from .hashing import node_hash
+            h = self._hash = node_hash(self)
+        return h
+
+    @hash.setter
+    def hash(self, v):
+        self._hash = v
 
 
 def _unit(name, fields, unordered=()):
     allf = ("name", "context") + tuple(fields)
     init = _make_init(allf, "    self.file = file\n    self.library = library\n    self.incomplete = False\n"
-                            "    self.hash = None\n    self.end_line = line\n")
+                            "    self._hash = None\n    self.end_line = line\n")
     # allow file= / library= keywords
     src_params = "".join(", %s=None" % f for f in allf)
     src = ("def __init__(self%s, *, line=0, col=0, file=None, library='work'):\n    self.line = line\n"
            "    self.col = col\n%s    self.file = file\n    self.library = library\n    self.incomplete = False\n"
-           "    self.hash = None\n    self.end_line = line\n") % (
+           "    self._hash = None\n    self.end_line = line\n") % (
         src_params, "".join("    self.%s = %s\n" % (f, f) for f in allf))
     ns = {}
     exec(src, ns)

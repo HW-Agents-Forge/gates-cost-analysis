@@ -12,7 +12,22 @@ from .keys import compute_keys
 from .sigspec import Const
 
 
+_SCALARS = frozenset({int, str, bool, type(None), float})
+
+
 def _plain(v):
+    c = v.__class__
+    if c in _SCALARS:
+        return v
+    if c is tuple or c is list:
+        return [x if x.__class__ in _SCALARS else _plain(x) for x in v]
+    if c is dict:
+        return {str(k): (x if x.__class__ in _SCALARS else _plain(x)) for k, x in v.items()}
+    if c is Const:
+        return {"value": v.value, "width": v.width, "xmask": v.xmask}
+    if c is bytes:
+        return v.hex()
+    # subclasses of the plain types
     if isinstance(v, Const):
         return {"value": v.value, "width": v.width, "xmask": v.xmask}
     if isinstance(v, (tuple, list)):

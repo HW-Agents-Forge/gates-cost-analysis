@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .. import REPO_ROOT, version
 from ..errors import EXIT_FAILED, EXIT_OK, GatecostError
-from ..result import Output
 
 def _emit(text: str) -> None:
     sys.stdout.write(text)
@@ -15,6 +14,7 @@ def _emit(text: str) -> None:
 
 def _error_output(command: str, err: GatecostError, fmt: str) -> str:
     from ..report import render
+    from ..result import Output
 
     return render(Output(command=command, status="error", error=(err.code, err.message)), fmt)
 
@@ -36,6 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     command = next((a for a in argv if not a.startswith("-")), "gatecost")
     try:
+        import gc
+
+        gc.disable()    # short-lived process, allocation-heavy phases: collections only cost time
         return _run(argv)
     except GatecostError as err:
         _emit(_error_output(command, err, _guess_format(argv)))
@@ -52,8 +55,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(argv: list[str]) -> int:
-    from ..config import resolve_settings
-    from ..report import render
     from .parser import build_parser, help_text, validate_args
 
     args = build_parser().parse_args(argv)
@@ -71,9 +72,12 @@ def _run(argv: list[str]) -> int:
         _emit(help_text(args.topic))
         return EXIT_OK
 
-    from . import commands
+    from ..report import render
+    from ..result import Output
 
     if cmd == "validate-output":
+        from . import commands
+
         try:
             res = commands.cmd_validate(args.file)
         except commands._Invalid as inv:
@@ -83,6 +87,7 @@ def _run(argv: list[str]) -> int:
         return EXIT_OK
 
     if cmd in ("init", "clean"):
+        from . import commands
         from ..config import find_project_root
 
         root = Path(args.root).resolve() if args.root else find_project_root(Path.cwd(), skill_dir)
@@ -93,6 +98,8 @@ def _run(argv: list[str]) -> int:
         )
         _emit(render(Output(command=cmd, result=res), "agent"))
         return EXIT_OK
+
+    from ..config import resolve_settings
 
     settings, cfg = resolve_settings(args, Path.cwd(), skill_dir)
     if cmd == "snapshot":
@@ -105,6 +112,12 @@ def _run(argv: list[str]) -> int:
 
         _emit(cmd_estimate.run(args, settings, cfg))
         return EXIT_OK
+    if cmd == "diff":
+        from . import cmd_diff
+
+        text, code = cmd_diff.run(args, settings, cfg)
+        _emit(text)
+        return code
     if cmd == "cost":
         from . import cmd_cost
 
@@ -112,4 +125,6 @@ def _run(argv: list[str]) -> int:
         _emit(text)
         return code
     # Stages 3-5 replace this with the real analysis commands.
+    from . import commands
+
     raise commands.not_implemented(cmd)

@@ -84,15 +84,13 @@ class StmtMixin:
             for a in e.args:
                 ex = a.actual
                 if self.is_range_expr(ex, sc):
-                    l, r, d = self.eval_range(ex, sc)
-                    base = self.slice_lv(base, l, r, d)
+                    base = self.slice_lv_any(base, ex, sc, e)
                 else:
                     base = self.index_lv(base, ex, sc, e)
             return base
         if isinstance(e, N.Slice):
             base = self.lvalue(e.prefix, sc)
-            l, r, d = self.eval_range(e.range, sc)
-            return self.slice_lv(base, l, r, d)
+            return self.slice_lv_any(base, e.range, sc, e)
         if isinstance(e, N.Aggregate):
             parts = [self.lvalue(it.value, sc) for it in e.items]
             lv = LV(None, parts=parts)
@@ -107,6 +105,36 @@ class StmtMixin:
         lv.dyn = list(base.dyn)
         lv.sym = base.sym
         lv.mem, lv.addr = base.mem, base.addr
+        return lv
+
+    def slice_lv_any(self, base, rng, sc, node):
+        try:
+            l, r, d = self.eval_range(rng, sc)
+        except NotConst:
+            return self.dyn_slice_lv(base, rng, sc, node)
+        return self.slice_lv(base, l, r, d)
+
+    def dyn_slice_lv(self, base, rng, sc, node):
+        """Target ``a(i+3 downto i)``: constant width, variable position (decoded write)."""
+        n, low, d = self.dyn_slice_bounds(rng, sc)
+        t = base.t
+        if t.kind != "array" or t.left is None:
+            raise Unsupported("variable slice of an unconstrained or non-array target")
+        ew = t.ewidth or 1
+        iv = self.eval(low, sc, t.index)
+        x, _cnt, lo = self.index_pos_sig(t, iv, node)
+        count = t.length - n + 1
+        if count < 1:
+            raise Unsupported("variable slice wider than the target")
+        offs = []
+        for a in range(count):
+            i = lo + a
+            p_lo = T.index_to_pos(t, i) if t.dir == "downto" else T.index_to_pos(t, i + n - 1)
+            offs.append(p_lo * ew)
+        nt = T.constrain(t, n - 1, 0, "downto") if d == "downto" else T.constrain(t, 0, n - 1, "to")
+        lv = self.sub_lv(base, nt, 0, n * ew)
+        lv.dyn = base.dyn + [(x, offs)]
+        self.ctx.assume("write to a slice at a variable position costed as a %d-way decoded write" % count)
         return lv
 
     def slice_lv(self, base, l, r, d):
@@ -173,8 +201,17 @@ class StmtMixin:
                 self.do_assign(xc, p, part, node, nonblocking)
             return
         if lv.mem is not None:
-            v = self.fit(val, lv.t, node)
-            blk.mem_write(lv.mem, lv.addr, self.sig_of(v), origin=o)
+            v = self.fit(val, lv.t, node) if lv.t is not None else val
+            sg = self.sig_of(v)
+            mw = lv.mem.width
+            if lv.dyn:
+                self.diag("UNSUPPORTED_CONSTRUCT", "memory word write at a variable position approximated by a "
+                          "full-word write", node)
+            elif lv.off or lv.width != mw:
+                # partial word (byte enables): a lane write, merged into one port with per-lane enables by the IR
+                blk.mem_write(lv.mem, lv.addr, sg.resize(lv.width, False), origin=o, lane=(lv.off, lv.width))
+                return
+            blk.mem_write(lv.mem, lv.addr, sg.resize(mw, False), origin=o)
             return
         nb = self.is_nb(xc, lv) if nonblocking is None else nonblocking
         t = lv.t
@@ -227,7 +264,11 @@ class StmtMixin:
         w = max(sa.width, sb.width)
         sa, sb = sa.resize(w, False), sb.resize(w, False)
         tri = bool(a.z or b_.z) and not (a.z and b_.z)
-        r = self.b.mux(cond, sa, sb, w, origin=o, **({"tristate": True} if tri else {}))
+        if tri:
+            r = self.b.mux(cond, sa, sb, w, origin=o, tristate=True)
+        else:
+            from ..expr import mux_runs
+            r = mux_runs(self.b, cond, sa, sb, w, origin=o)
         t = b_.t if b_.t.kind != "enum" or True else a.t
         t = a.t if (b_.z and not a.z) else b_.t
         return Val(t, r, None, 0)
@@ -377,7 +418,75 @@ class StmtMixin:
                         return
             return
         selsig = self.sig_of(sel)
+        if self.try_case_rom(xc, s, sel, selsig, sc):
+            return
         self.exec_case(xc, selsig, sel, [(alt.choices, alt.body) for alt in s.alts], sc, s)
+
+    def try_case_rom(self, xc, s, sel, selsig, sc):
+        """A ``case`` whose alternatives each assign one constant to the same target is a lookup table."""
+        if getattr(s, "matching", False) or not (3 <= selsig.width <= 12):
+            return False
+        tgt = None
+        alts = []
+        for alt in s.alts:
+            body = alt.body or []
+            if len(body) != 1 or not isinstance(body[0], N.SignalAssign):
+                return False
+            a = body[0]
+            if len(a.alts) != 1 or a.alts[0].cond is not None or not a.alts[0].values:
+                return False
+            if tgt is None:
+                tgt = a.target
+            elif repr(a.target) != repr(tgt):
+                return False
+            alts.append((alt.choices, a.alts[0].values[0]))
+        if tgt is None:
+            return False
+        try:
+            lv = self.lvalue(tgt, sc)
+            if lv.parts is not None or lv.mem is not None or lv.dyn or lv.t is None:
+                return False
+            alts = [(ch, self.eval(e, sc, lv.t)) for ch, e in alts]
+        except Exception:
+            return False
+        return self.rom_from_alts(xc, lv, sel, selsig, alts, sc, s)
+
+    def rom_from_alts(self, xc, lv, sel, selsig, alts, sc, node):
+        """Build a ROM from ``(choices, constant Val)`` alternatives of a case / selected assignment."""
+        if lv.parts is not None or lv.mem is not None or lv.dyn or lv.t is None or not (3 <= selsig.width <= 12):
+            return False
+        w = selsig.width
+        table = {}
+        default = None
+        n = 0
+        for choices, v in alts:
+            if v is None or v.z:
+                return False
+            try:
+                cs = self.sig_of(self.fit(v, lv.t, node)).resize(lv.width, False).const_value()
+            except Exception:
+                return False
+            if cs is None or cs.xmask:
+                return False
+            for l in self.sel_choices(choices, sel, sc):
+                if l is None:
+                    default = cs.value
+                    continue
+                if l[0] == "r":
+                    return False
+                lc = self.label_sig(l, sel, selsig).const_value()
+                if lc is None or lc.xmask:
+                    return False
+                n += 1
+                table.setdefault(lc.value & mask(w), cs.value)
+        if n < 6 or (default is None and len(table) < (1 << w)):
+            return False
+        if sel.t.kind == "enum" and sel.t.onehot:
+            return False
+        contents = [table.get(i, default) for i in range(1 << w)]
+        rom = self.b.rom(selsig, contents, lv.width, origin=self.org(node))
+        self.do_assign(xc, lv, Val(lv.t, rom), node)
+        return True
 
     def exec_case(self, xc, selsig, sel, alts, sc, node, run=None):
         """Shared by case statements and selected assignments; ``run(body)`` executes an alternative."""
@@ -455,6 +564,8 @@ class StmtMixin:
         selsig = self.sig_of(sel)
         if tri:
             self.select_tri(xc, lv, selsig, sel, alts, sc, s)
+            return
+        if not getattr(s, "matching", False) and self.rom_from_alts(xc, lv, sel, selsig, alts, sc, s):
             return
         self.exec_case(xc, selsig, sel, [(ch, v) for ch, v in alts], sc, s,
                        run=lambda v: self.do_assign(xc, lv, v, s) if v is not None else None)

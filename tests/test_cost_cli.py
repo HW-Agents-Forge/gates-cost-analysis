@@ -247,16 +247,16 @@ class Command(unittest.TestCase):
         code, out = run("estimate", "mul 16", "--format", "json")
         self.assertEqual(json.loads(out)["status"], "error")
 
-    def test_rtl_fragments_are_not_implemented_yet(self):
+    def test_rtl_fragments_are_estimated(self):
         for argv in (("--rtl", "assign y = a*b + c;", "--widths", "a=16,b=16,c=32"), ("--rtl", "y <= a + b;", "--lang", "vhdl")):
             code, out = run("estimate", *argv)
-            self.assertEqual(code, 3)
-            self.assertTrue(out.startswith("ERROR NOT_IMPLEMENTED "), out)
+            self.assertEqual(code, 0, out)
+            self.assertTrue(out.startswith("ESTIMATE "), out)
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "frag.v"
             f.write_text("assign y = a & b;", encoding="utf-8")
             code, out = run("estimate", "--rtl-file", str(f))
-            self.assertEqual((code, out.split()[1]), (3, "NOT_IMPLEMENTED"))
+            self.assertEqual((code, out.split()[0]), (0, "ESTIMATE"))
             code, out = run("estimate", "--rtl-file", str(Path(d) / "missing.v"))
             self.assertEqual((code, out.split()[1]), (2, "BAD_ARGUMENT"))
         code, out = run("estimate", "--rtl", "assign y = a;", "--widths", "a")

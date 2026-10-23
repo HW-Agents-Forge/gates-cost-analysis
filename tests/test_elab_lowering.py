@@ -331,12 +331,39 @@ endmodule""")
         mem = [n for n in top_module(r).nodes if n.op == "MEM"][0]
         self.assertEqual(mem.attrs["rports"], 2)
 
-    def test_partial_word_write_is_flagged_and_approximated(self):
+    def test_partial_word_write_is_a_lane_write(self):
         r = elab("""
 module t(input clk, input [3:0] a, input [7:0] d, output [7:0] y);
   reg [15:0] mem [0:15];
   always @(posedge clk) mem[a][7:0] <= d;
   assign y = mem[a][7:0];
 endmodule""")
-        self.assertIn("UNSUPPORTED_CONSTRUCT", codes(r, True))
+        self.assertNotIn("UNSUPPORTED_CONSTRUCT", codes(r, True))
         self.assertEqual(ops(top_module(r)).get("MEM"), 1)
+        mem = [n for n in top_module(r).nodes if n.op == "MEM"][0]
+        self.assertEqual(mem.attrs["wports"], 1)
+        self.assertEqual(mem.attrs["wlanes"], (((0, 8),),))
+
+    def test_byte_enables_merge_into_one_port(self):
+        r = elab("""
+module t(input clk, input [3:0] we, input [3:0] a, input [31:0] d, output reg [31:0] q);
+  reg [31:0] mem [0:15]; integer i;
+  always @(posedge clk) begin
+    for (i = 0; i < 4; i = i + 1) if (we[i]) mem[a][8*i +: 8] <= d[8*i +: 8];
+    q <= mem[a];
+  end
+endmodule""")
+        self.assertEqual(codes(r, True), [])
+        mem = [n for n in top_module(r).nodes if n.op == "MEM"][0]
+        self.assertEqual(mem.attrs["wports"], 1)
+        self.assertEqual(len(mem.attrs["wlanes"][0]), 4)
+        self.assertEqual(dict(mem.inputs)["w0_be"].width, 4)
+
+    def test_variable_part_select_write_still_flagged(self):
+        r = elab("""
+module t(input clk, input [3:0] a, input [1:0] k, input [7:0] d, output [15:0] y);
+  reg [15:0] mem [0:15];
+  always @(posedge clk) mem[a][k*8 +: 8] <= d;
+  assign y = mem[a];
+endmodule""")
+        self.assertIn("UNSUPPORTED_CONSTRUCT", codes(r, True))

@@ -80,6 +80,7 @@ class DiffResult:
     by_line: tuple[dict, ...] = ()
     by_cause: tuple[dict, ...] = ()
     category_scenarios: dict = field(default_factory=dict)  # category -> Ge3
+    operations: tuple | None = None  # --detail ops (json): operations of the changed modules
 
 
 @dataclass(slots=True, frozen=True)

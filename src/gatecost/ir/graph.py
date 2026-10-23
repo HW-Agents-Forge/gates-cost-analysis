@@ -4,8 +4,11 @@ from __future__ import annotations
 import heapq
 from bisect import bisect_right
 
-from .core import Conn, ModuleIR, Node
+from .core import OPAQUE_OPS, STATE_OPS, Conn, ModuleIR, Node
 from .sigspec import SigSpec, Slice
+
+
+_STATE = frozenset(STATE_OPS + OPAQUE_OPS)
 
 
 def _item_inputs(item) -> list[SigSpec]:
@@ -58,24 +61,54 @@ def topo_order(m: ModuleIR, sconns=None):
     """
     if sconns is None:
         sconns = _sorted_conns(m)
-    items: list = list(m.nodes) + list(m.conns)
-    idx = {}
-    for i, it in enumerate(items):
-        idx[id(it)] = i
+    nodes = m.nodes
+    nn = len(nodes)
+    items: list = nodes + m.conns
+    idx = {id(it): i for i, it in enumerate(items)}
     npred = [0] * len(items)
     succ: list[list[int]] = [[] for _ in items]
+    sget = sconns.get
+    idx_get = idx.get
+    state = _STATE
+    sorted_ok = True
     for i, it in enumerate(items):
-        seen = set()
-        for sig in _item_inputs(it):
+        preds = set()
+        for sig in ([s for _, s in it.inputs] if i < nn else (it.src,)):
             for ch in sig.chunks:
-                if isinstance(ch, Slice):
-                    for d in drivers_of_chunk(ch, sconns):
-                        j = idx.get(id(d))
-                        if j is None or j in seen:
-                            continue
-                        seen.add(j)
-                        succ[j].append(i)
-                        npred[i] += 1
+                if ch.__class__ is Slice:
+                    net = ch.net
+                    d = net.driver
+                    if d.__class__ is Node and d.op not in state:
+                        j = idx_get(id(d))
+                        if j is not None:
+                            preds.add(j)
+                    ent = sget(net.id)
+                    if ent is not None:
+                        los, cs = ent
+                        lo = ch.lo
+                        hi = lo + ch.width
+                        k = bisect_right(los, lo) - 1
+                        if k < 0:
+                            k = 0
+                        while k < len(cs):
+                            c = cs[k]
+                            if c.lo >= hi:
+                                break
+                            if c.lo + c.src.width > lo:
+                                j = idx_get(id(c))
+                                if j is not None:
+                                    preds.add(j)
+                            k += 1
+        if preds:
+            npred[i] = len(preds)
+            for j in preds:
+                succ[j].append(i)
+                if j >= i:
+                    sorted_ok = False
+    if sorted_ok:
+        # every predecessor precedes its consumer in creation order: the smallest-index-first
+        # topological order is the identity
+        return items, []
     heap = [i for i in range(len(items)) if npred[i] == 0]
     heapq.heapify(heap)
     order = []

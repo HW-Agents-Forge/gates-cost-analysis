@@ -9,6 +9,7 @@ from gatecost.ir import Builder, Design, LowerBlock, SigSpec, mask
 from .base import BaseEv
 from .decls import pack
 from .expr import ElabError
+from .scan import mem_names_of
 from .symbols import BIT, ISym, KSym, PSym, PType, Scope, TSym, V, VSym, vec
 
 
@@ -227,58 +228,10 @@ class ModElab(BaseEv):
 
     # ------------------------------------------------------------------ prescans
     def build_refs(self):
-        refs = {}
-        for idx, it in enumerate(self.mod.items):
-            for n in A.walk(it):
-                if type(n) is A.Ident:
-                    s = refs.get(n.name)
-                    if s is None:
-                        refs[n.name] = {idx}
-                    else:
-                        s.add(idx)
-        self.refs = refs
+        self.refs = self.ctx.scan(self.mod).refs
 
     def compute_mem_names(self):
-        sig_names = set()
-        loopvars = set()
-        lval_nodes = set()
-        procw = set()
-        for p in self.mod.ports:
-            sig_names.add(p.name)
-        for it in self.mod.items:
-            for n in A.walk(it):
-                c = type(n)
-                if c is A.VarDecl or c is A.NetDecl or c is A.Port:
-                    sig_names.add(n.name)
-                elif c is A.For or c is A.GenFor:
-                    for st in n.init or ():
-                        if isinstance(st, A.ProcAssign) and isinstance(st.lhs, A.Ident):
-                            loopvars.add(st.lhs.name)
-                        elif isinstance(st, (A.VarDecl, A.Genvar)):
-                            loopvars.add(st.name)
-                elif c is A.ContAssign or c is A.ProcAssign:
-                    stack = [n.lhs]
-                    while stack:
-                        x = stack.pop()
-                        if isinstance(x, A.Concat):
-                            stack.extend(x.items)
-                        else:
-                            lval_nodes.add(id(x))
-                            while isinstance(x, (A.Index, A.Select, A.Member)):
-                                x = x.base
-                                lval_nodes.add(id(x))
-                            if c is A.ProcAssign and isinstance(x, A.Ident):
-                                procw.add(x.name)
-        dyn, loopw = set(), set()
-        for it in self.mod.items:
-            for n in A.walk(it):
-                if type(n) is A.Index and type(n.base) is A.Ident:
-                    names = {x.name for x in A.walk(n.index) if type(x) is A.Ident}
-                    if names & (sig_names - loopvars):
-                        dyn.add(n.base.name)
-                    elif names & loopvars and id(n) in lval_nodes:
-                        loopw.add(n.base.name)
-        self.mem_names = (dyn - loopw) & procw
+        self.mem_names = mem_names_of(self.ctx.scan(self.mod))
 
     # ------------------------------------------------------------------ driver
     def run(self):
@@ -479,6 +432,9 @@ class ModElab(BaseEv):
         self.b.origin = self.org(nd.loc)
         sig = self.assign_val(nd.init, sym.pt.w, sym.pt)
         self.b.connect(SigSpec.of(self.store_net(sym), 0, sym.pt.w), sig, self.b.origin)
+        cv = sig.const_value()
+        if cv is not None and sym.const_sig is None and not sym.is_port and sym.wired is None:
+            sym.const_sig = SigSpec.const(cv.value, cv.width, cv.xmask)      # a wire tied to a constant reads as that constant
 
     # ------------------------------------------------------------------ gates
     def do_gate(self, g: A.GateInst):
@@ -1146,6 +1102,11 @@ class ModElab(BaseEv):
     # -- interfaces ---------------------------------------------------------------------------------
     def do_iface_inst(self, it: A.Instance):
         ctx = self.ctx
+        if it.dims:
+            self.diag("UNSUPPORTED_CONSTRUCT", f"interface array '{it.name}' is not supported; its members and "
+                      "the logic reading them are skipped", it, True)
+            self.assume(f"interface array '{it.name}' skipped")
+            return
         iface = ctx.ifmap[it.module]
         ov = self.eval_overrides(iface, it, it.name)
         hdr = ctx.get_header(iface, ov)

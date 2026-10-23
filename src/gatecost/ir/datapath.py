@@ -4,7 +4,7 @@ from __future__ import annotations
 from .core import ARITH_FUSABLE, ModuleIR, Net, Node
 from .graph import consumers
 from .knownbits import _tz, sig_known
-from .sigspec import SigSpec, Slice, mask
+from .sigspec import SigSpec, Slice, mask, top_rep
 
 
 def popcount(x: int) -> int:
@@ -16,17 +16,17 @@ def opinfo(sig: SigSpec) -> dict:
     W = sig.width
     km, kv = sig_known(sig)
     zeros = km & ~kv
-    ub = (~zeros & mask(W)).bit_length()
-    sr = sig.sign_rep
+    full = (1 << W) - 1 if W > 0 else 0
+    ub = (~zeros & full).bit_length()
+    sr = top_rep(sig)
     es = W - sr if W else 0
-    allknown = km == mask(W)
     return {
         "width": W,
         "eff": min(ub, es) if W else 0,
         "ub": ub,
         "sign_rep": sr,
-        "tz": _tz(zeros, W),
-        "const": kv if allknown else None,
+        "tz": min((~zeros & (zeros + 1)).bit_length() - 1, W),
+        "const": kv if km == full else None,
         "kmask": km,
         "kval": kv,
     }
@@ -45,8 +45,11 @@ def compute_eff(nd: Node) -> dict:
     dw = dm.bit_length()
     km, kv = out.kmask, out.kval
     e: dict = {"declared": W, "demand": dm, "known": (km, kv)}
-    info = {k: opinfo(s) for k, s in ins.items()} if op not in ("MEM", "INST", "BLACKBOX") else {}
-    e["ops"] = {k: v for k, v in info.items()}
+    info = {}
+    if op not in ("MEM", "INST", "BLACKBOX"):
+        for k, s in nd.inputs:
+            info[k] = opinfo(s)
+    e["ops"] = dict(info)
     a = info.get("A")
     b = info.get("B")
     if op in ("DFF", "LATCH", "MEM", "INST", "BLACKBOX"):

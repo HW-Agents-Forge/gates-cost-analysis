@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from .. import REPO_ROOT
@@ -247,40 +248,9 @@ def _dedupe(diags) -> tuple[Diagnostic, ...]:
 
 def analyze_project(files, root, top, defines, incdirs, limits, profile, elaborate=None):
     """Elaborate and build the cost tree.  Returns (tree, elab result, extra diagnostics, extra assumptions)."""
-    elaborate = elaborate or get_elaborator()
-    kw = dict(root=root, top=top, defines=defines, incdirs=incdirs, limits=limits, side="after")
-    res = elaborate(files, **kw)
-    design = res.design
-    tops = list(getattr(res, "tops", ()) or ())
-    key = res.top_key
-    if key is None or design is None or key not in design.modules:
-        if top:
-            raise GatecostError("TOP_NOT_FOUND", f"top module {top} not found in the sources")
-        if not tops:
-            raise GatecostError("NO_SOURCES", "no module or entity definition found in the sources")
-    extra: list[str] = []
-    cands: list[tuple[str, DesignCostTree, object]] = []
-    if top is None and len(tops) > 1:
-        for name in tops[:MAX_CANDIDATE_TOPS]:
-            r = res if (key is not None and (name == key or name == design.modules[key].name)) else elaborate(files, **{**kw, "top": name})
-            if r.top_key is None:
-                continue
-            cands.append((name, build_cost_tree(r.design, profile, config={"defines": defines, "top": name, "root": str(root)},
-                                                extra_diagnostics=[_as_diag(d) for d in r.diagnostics]), r))
-        if cands:
-            best = max(cands, key=lambda c: (c[1].total().typ, c[0]))
-            res = best[2]
-            extra.append("multiple top candidates: " + ", ".join(c[0] for c in cands)
-                         + f"; reported {best[0]} (use --top to select)")
-            for name, t, _ in cands:
-                if t is not best[1]:
-                    extra.append(f"top candidate {name} total={round(t.total().typ / 1000)} GE")
-            return best[1], res, [], extra
-    if key is None:
-        raise GatecostError("TOP_NOT_FOUND", "no top module could be determined (use --top)")
-    tree = build_cost_tree(design, profile, config={"defines": defines, "top": design.modules[key].name, "root": str(root)},
-                           extra_diagnostics=[_as_diag(d) for d in res.diagnostics])
-    return tree, res, [], extra
+    from ..pipeline import analyze_project as ap
+
+    return ap(files, root, top, defines, incdirs, limits, profile, elaborate or get_elaborator())
 
 
 def run(args, settings, cfg) -> tuple[str, int]:
@@ -288,9 +258,15 @@ def run(args, settings, cfg) -> tuple[str, int]:
     profile = load_profile(settings.profile, overrides, Path.cwd())
     files, incdirs, defines, fdiags = collect_sources(args, settings, cfg)
     limits = dict(cfg.data.get("limits", {})) if getattr(cfg, "data", None) else {}
-    tree, res, _, extra = analyze_project(files, settings.root, settings.top, defines, incdirs, limits, profile)
-    assumed = list(res.assumptions or ()) + list(tree.assumptions) + extra
-    assumed = list(dict.fromkeys(assumed))
+    from .. import pipeline
+    from ..cache import resolve_cache
+
+    cache = resolve_cache(settings)
+    t0 = time.perf_counter()
+    inp = pipeline.read_inputs(files, incdirs, defines, settings.root)
+    sr = pipeline.analyze_side(inp, profile, settings.top, limits, cache, elaborate=get_elaborator(), side="after")
+    tree = sr.tree
+    assumed = list(sr.assumptions)
     result = make_result(tree, profile, getattr(args, "by", "module") or "module", getattr(args, "detail", None) == "ops", assumed)
     diags = list(tree.diagnostics)
     for m in tree.modules.values():
@@ -308,5 +284,6 @@ def run(args, settings, cfg) -> tuple[str, int]:
     status = "partial" if any(d.affects_cost for d in diags if d.code != "BUDGET_EXCEEDED") else "ok"
     cfg_out = {"top": result.top, "defines": dict(defines), "sources": len(files)}
     out = Output(command="cost", status=status, profile={"name": profile.name, "nand2_area_um2": profile.nand2_area_um2},
-                 config=cfg_out, result=result, diagnostics=diags)
+                 config=cfg_out, result=result, diagnostics=diags,
+                 meta={"elapsed_ms": round((time.perf_counter() - t0) * 1000), "cache": cache.state})
     return _render(out, settings), code

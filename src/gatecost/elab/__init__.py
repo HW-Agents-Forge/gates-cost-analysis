@@ -63,8 +63,12 @@ elaborated by a *lazily imported, optional* function::
   Verilog/SystemVerilog modules to the VHDL elaborator (``name``, ``parameters``, ``ports(params)``,
   ``elaborate(params, const_ports) -> key``; the protocol documented in ``elab/vhdl/__init__.py``).  In the
   other direction the Verilog elaborator instantiates VHDL entities through ``VhdlElaborator.lookup`` when the
-  real ``gatecost.elab.vhdl`` is used (not when a function is registered); an unresolved foreign module is a
-  black box plus ``MISSING_MODULE``.  VHDL entities instantiated only from Verilog (and vice versa) are not
+  real ``gatecost.elab.vhdl`` is used.  A registered override that also wants to serve Verilog -> VHDL
+  instantiation is an object with a ``bind(parsed, design, *, top, limits, side, only_modules, foreign, root)``
+  method (called before any Verilog module is elaborated) returning a ``lookup(name) -> module | None``
+  with the same protocol; a plain registered function gets only the VHDL -> Verilog direction.  An unresolved
+  foreign module is a black box plus ``MISSING_MODULE``.  With roots in both languages the alphabetically first
+  one is the default top (``TOP_AMBIGUOUS``).  VHDL entities instantiated only from Verilog (and vice versa) are not
   reported as extra tops;
 * returns an object with attributes ``top_key`` (str | None), ``tops`` (list[str]), ``diagnostics``
   (iterable of ``Diagnostic``), ``assumptions`` (iterable of str) and ``parsed_hashes``
@@ -79,21 +83,37 @@ Verilog/SystemVerilog notes (approximations and gaps)
 ====================================================
 * Enums without explicit base type use the minimum binary width (like VHDL), not 32 bits.
 * Unpacked structs are flattened like packed ones; unpacked array ports are flattened into one vector.
-* ``unique``/``parallel_case``/``full_case`` are recorded by the parser but ``ir.LowerBlock`` has no flag for
-  them: only disjoint constant case labels give a ``PMUX`` (otherwise ``PRIORITY``).
+* ``unique`` / ``unique0`` / ``priority`` and the ``full_case`` / ``parallel_case`` attributes or ``// synopsys``
+  pragmas are honoured through ``LowerBlock.case_``/``if_chain(parallel=, full=)``: ``parallel`` forces a ``PMUX``
+  (``priority`` forces ``PRIORITY``), ``full`` makes the last arm the default so no feedback/latch is created.
 * ``inout`` ports are ``in`` ports unless the module drives them, then ``out`` (tri-state mux costed).
 * Black-box port directions are guessed: a connection to an otherwise undriven net is an output.
 * An unpacked array is a memory when it is indexed with a signal-dependent index and written in a procedural
   block, and not written with loop-variable indices (reset loops give registers); otherwise its elements are
   separate registers/wires.  A synchronous read (``q <= mem[a]`` with ``q`` assigned nowhere else in the block)
-  becomes a synchronous read port; other reads are asynchronous.  Partial-word memory writes are approximated by
-  full-word writes (flagged).
+  becomes a synchronous read port; other reads are asynchronous.  Constant part-select writes of a memory word
+  (``mem[a][8*i +: 8] <= ...``, byte enables) are lane writes: the IR merges disjoint lanes of one address into a
+  single write port with a per-lane enable input ``w<i>_be`` (attribute ``wlanes``); a part-select at a variable
+  offset is approximated by a full-word write (flagged).
 * A blocking assignment to a variable in a clocked block makes it a register only when it is read before it is
   written (or used outside the block); otherwise it is a combinational temporary.
-* Procedural ``for``/``while``/``repeat`` loops are unrolled when their condition is constant at each step;
-  ``forever`` and non-constant loops are reported and skipped.
-* ``defparam`` supports ``instance.parameter`` only; hierarchical references into other modules are skipped
-  (generate-block and interface-member references work).
+* Procedural ``for``/``while``/``repeat`` loops are unrolled when their condition is constant at each step.  A
+  ``for`` loop whose bound is not constant is unrolled with a guard per iteration (``condition`` AND-ed along the
+  way) up to ``2**k + 1`` iterations for the widest ``k``-bit signal in the condition, at most
+  ``limits["dyn_loop_unroll"]`` (default 32), with an ``UNSUPPORTED_CONSTRUCT`` warning; other non-constant loops
+  and ``forever`` are reported and skipped.
+* ROM inference: array parameters/localparams (``parameter int T [0:3] = '{...}``, the element count is taken from
+  the pattern because the parser drops the unpacked dimension) indexed by a signal, and ``case`` statements that
+  map constant labels (at least 6, selector 3..12 bits, a default or full coverage) to constants of one target,
+  become a ``ROM`` node with its contents.
+* ``a ** n`` with a variable exponent is a square-and-multiply ladder over (at most) 6 exponent bits (``2 ** n`` is
+  a shift).  A wire declared with a constant initializer reads as that constant.  Streaming concatenations are
+  supported as assignment targets (``{<< 8 {a, b}} = x`` reverses the slices of the source).
+* ``defparam`` supports ``inst.param``, ``gen[3].inst.param`` and paths through child instances
+  (``mid.u.W``, forwarded to the child as the pseudo parameter ``$dp:u.W`` of its module key); a leading
+  own-module name is accepted.  Hierarchical references into other modules and interface arrays / virtual
+  interfaces are diagnosed (``UNSUPPORTED_CONSTRUCT``) and skipped.
+* Assignment to an undeclared identifier is skipped with ``UNRESOLVED_NAME``.
 * Set the environment variable ``GATECOST_ELAB_DEBUG=1`` to let internal errors propagate (tests, debugging).
 """
 from __future__ import annotations
@@ -102,6 +122,7 @@ import os
 import sys
 from dataclasses import dataclass, field, replace
 
+from gatecost._lazy import LazyMap
 from gatecost.errors import GatecostError
 from gatecost.frontend.verilog import ast as A
 from gatecost.result import Diagnostic
@@ -127,9 +148,28 @@ class ElabResult:
     tops: list
     diagnostics: tuple
     assumptions: tuple
-    parsed_hashes: dict
+    _hashes: object
     top_keys: dict = field(default_factory=dict)
     stubbed: tuple = ()
+    _facts: object = None
+
+    @property
+    def file_facts(self) -> dict | None:
+        """Per parsed Verilog file (path as given): modules with the module names they instantiate, whether the
+        file must always be parsed (compilation-unit items, packages, interfaces), and its parse diagnostics.
+        ``None`` when the project mixes languages.  Computed on first access."""
+        f = self._facts
+        if callable(f):
+            f = self._facts = f()
+        return f
+
+    @property
+    def parsed_hashes(self) -> dict:
+        """``{module name: digest}``; computed on first access (nothing in the pipeline needs it)."""
+        h = self._hashes
+        if callable(h):
+            h = self._hashes = h()
+        return h
 
 
 def _vhdl_elaborator():
@@ -154,6 +194,32 @@ def _abs(p, root):
     return s
 
 
+def _file_facts(parsed, ctx) -> dict:
+    by_file: dict = {}
+    nofile = []
+    for d in parsed.diagnostics:
+        if d.file:
+            by_file.setdefault(d.file, []).append(replace(d, side="after", file=ctx.disp(d.file)))
+        else:
+            nofile.append(replace(d, side="after"))
+    out = {}
+    if nofile:
+        out[""] = {"mods": [], "unit": True, "diags": nofile}
+    for pf in parsed.files:
+        mods = [[m.name, "module", sorted(ctx.scan(m).insts)] for m in pf.modules]
+        mods += [[m.name, "interface", sorted(ctx.scan(m).insts)] for m in pf.interfaces]
+        out[pf.path] = {"mods": mods, "unit": bool(pf.unit_items or pf.packages or pf.interfaces),
+                        "diags": by_file.get(pf.path, [])}
+    return out
+
+
+def _merge_maps(maps):
+    out = {}
+    for m in maps:
+        out.update(m)
+    return out
+
+
 def _dedupe(diags):
     seen = set()
     out = []
@@ -166,9 +232,33 @@ def _dedupe(diags):
     return out
 
 
+def quick_facts(files, *, root, defines: dict | None = None, incdirs=(), limits: dict | None = None) -> dict:
+    """Parse ``files`` (Verilog/SystemVerilog only) and return their ``ElabResult.file_facts`` without elaborating."""
+    from gatecost.frontend.verilog import Limits as PLimits
+    from gatecost.frontend.verilog import parse_files as vparse
+
+    from .project import DEFAULT_LIMITS, Ctx
+
+    alias = {"inline_depth": "call_depth", "const_steps": "const_func_steps"}
+    limits = {alias.get(k, k): v for k, v in (limits or {}).items() if isinstance(v, int) and not isinstance(v, bool)}
+    lim = dict(DEFAULT_LIMITS)
+    lim.update(limits)
+    old_rec = sys.getrecursionlimit()
+    if old_rec < 30000:
+        sys.setrecursionlimit(30000)
+    try:
+        parsed = vparse([_abs(f, root) for f in files], defines=defines, incdirs=tuple(os.fspath(i) for i in incdirs),
+                        limits=PLimits(macro_depth=lim["macro_depth"], include_depth=lim["include_depth"],
+                                       expr_depth=lim["expr_depth"]))
+        return _file_facts(parsed, Ctx(parsed, root, limits, "after", None, True))
+    finally:
+        if sys.getrecursionlimit() != old_rec:
+            sys.setrecursionlimit(old_rec)
+
+
 def elaborate_project(files, *, root, top: str | None = None, defines: dict | None = None, incdirs=(),
                       limits: dict | None = None, side: str = "after", only_modules=None,
-                      propagate_const_ports: bool = True) -> ElabResult:
+                      propagate_const_ports: bool = True, roots_hint=None, needed_hint=None, extra_parse_diags=()) -> ElabResult:
     """Parse and elaborate a set of RTL files into an analyzed :class:`gatecost.ir.Design`."""
     from gatecost.frontend.verilog import Limits as PLimits
     from gatecost.frontend.verilog import parse_files as vparse
@@ -187,20 +277,20 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
     old_rec = sys.getrecursionlimit()
     if old_rec < 30000:
         sys.setrecursionlimit(30000)
+    from .expr import _PN
+    _PN.clear()
     try:
         parsed = vparse(v_files, defines=defines, incdirs=tuple(os.fspath(i) for i in incdirs),
                         limits=PLimits(macro_depth=lim["macro_depth"], include_depth=lim["include_depth"],
                                        expr_depth=lim["expr_depth"]))
         ctx = Ctx(parsed, root, limits, side, only_modules, propagate_const_ports)
-        diags = []
-        for d in parsed.diagnostics:
-            diags.append(replace(d, side=side, file=ctx.disp(d.file) if d.file else d.file))
-        hashes = {}
-        for m in list(parsed.modules) + list(parsed.interfaces):
-            try:
-                hashes[m.name] = m.digest()
-            except Exception:
-                pass
+        ctx.roots_hint = list(roots_hint) if roots_hint is not None else None
+        ctx.needed_hint = set(needed_hint) if needed_hint is not None else None
+        diags = [replace(d, side=side, file=ctx.disp(d.file) if d.file else d.file) for d in parsed.diagnostics]
+        if extra_parse_diags:      # parse diagnostics of files the caller left out (changed-cone analysis)
+            diags = sorted(diags + [replace(d, side=side) for d in extra_parse_diags],
+                           key=lambda d: (d.file or "", d.line or 0, d.column or 0))
+        v_units = list(parsed.modules) + list(parsed.interfaces)
         tops: list = []
         top_keys: dict = {}
         top_key = None
@@ -218,6 +308,7 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         if not parsed.modules and (vh is None or not h_names_low):
             raise GatecostError("NO_SOURCES", "no module or entity found in the sources")
         hres = None
+        h_hashes = None
         if run_v:
             exclude = vh.instantiated_low() if vh is not None else set()
             name, top_keys, tops = elaborate_verilog(parsed, ctx, top if in_v else None, exclude,
@@ -225,8 +316,8 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
             if name is not None:
                 top_key = top_keys.get(name)
         if run_h:
-            v_inst_low = {n.module.lower() for m in list(parsed.modules) + list(parsed.interfaces) for it in m.items
-                          for n in A.walk(it) if type(n) is A.Instance}
+            v_inst_low = {x.lower() for m in list(parsed.modules) + list(parsed.interfaces)
+                          for x in ctx.scan(m).insts}
             hres = vh.run(top if in_h else None, v_inst_low)
             if hres is not None:
                 diags.extend(hres["diags"])
@@ -239,9 +330,15 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
                     top_key = hres["top_key"]
                 ctx.stubbed.update(hres["stubbed"])
                 ctx.assumptions.update(hres["assumptions"])
-                hashes.update(hres["hashes"])
-        if vh is not None:
-            hashes.update(vh.hashes)
+                h_hashes = hres["hashes"]
+        if top is None and vh is not None and len(tops) > 1:
+            # roots of both languages: the alphabetically first one is the default top
+            first = next((t for t in sorted(tops) if t in top_keys), None)
+            if first is not None:
+                top_key = top_keys[first]
+            if not any(d.code == "TOP_AMBIGUOUS" for d in ctx.sink):
+                ctx.add_diag("TOP_AMBIGUOUS", "several top-level units (" + ", ".join(sorted(tops)) + "); each root is "
+                             "elaborated separately, use --top to select one", "info", False, None)
         design = ctx.design
         design.top = top_key
         if top_key is not None and top_key not in design.modules and top_key in ctx.stubbed:
@@ -268,9 +365,28 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
             asm.update(m.assumptions)
         if tops == [] and top_key is not None:
             tops = [top_key.split("(")[0]]
+        def hashes():
+            out = {}
+            for m in v_units:
+                try:
+                    out[m.name] = m.digest()
+                except Exception:
+                    pass
+            if h_hashes is not None:
+                out.update(h_hashes)
+            if vh is not None:
+                out.update(vh.hashes)
+            return out
+
+        def facts():
+            if vh is not None:
+                return None
+            return _file_facts(parsed, ctx)
+
         return ElabResult(design, top_key, sorted(tops), tuple(_dedupe(diags)), tuple(sorted(asm)), hashes,
-                          top_keys, tuple(sorted(ctx.stubbed)))
+                          top_keys, tuple(sorted(ctx.stubbed)), facts)
     finally:
+        _PN.clear()
         if sys.getrecursionlimit() != old_rec:
             sys.setrecursionlimit(old_rec)
 
@@ -312,6 +428,17 @@ class _VhdlSide:
             return
         self.diags.extend(replace(d, side=side) for d in self.parsed.diagnostics)
         self.ok = True
+        bind = getattr(self.fn, "bind", None) if self.fn is not None and VhdlElaborator is None else None
+        if callable(bind):
+            # a registered elaborator object may serve Verilog -> VHDL instantiation through ``bind``
+            try:
+                ctx.foreign = bind(self.parsed, ctx.design, top=top, limits=dict(lim), side=side,
+                                   only_modules=set(only) if only is not None else None,
+                                   foreign=ctx.verilog_lookup, root=root)
+            except Exception as exc:
+                self.diags.append(Diagnostic("UNSUPPORTED_CONSTRUCT",
+                                             f"VHDL elaborator bind failed ({type(exc).__name__}: {exc})",
+                                             "warning", True, side, None, None, None))
         if VhdlElaborator is not None:
             try:
                 self.vel = VhdlElaborator(self.parsed, ctx.design, limits=dict(lim), side=side,
@@ -353,7 +480,7 @@ class _VhdlSide:
                     names = [top]
                 else:
                     names = [e.name for e in vel.roots(None) if e.name.lower() not in v_inst_low]
-                tops, top_keys, stubbed, asm, hashes, diags = [], {}, set(), set(), {}, []
+                tops, top_keys, stubbed, asm, hashes, diags = [], {}, set(), set(), [], []
                 for nm in names:
                     r = vel.elaborate(nm)
                     for t in r.tops:
@@ -362,7 +489,7 @@ class _VhdlSide:
                     top_keys.update(r.top_keys)
                     stubbed.update(r.stubbed)
                     asm.update(r.assumptions)
-                    hashes.update(r.parsed_hashes)
+                    hashes.append(r.parsed_hashes)
                     diags = list(r.diagnostics)
                 tk = None
                 if top is not None and tops:
@@ -370,7 +497,8 @@ class _VhdlSide:
                 elif len(tops) == 1:
                     tk = top_keys.get(tops[0])
                 return {"tops": tops, "top_keys": top_keys, "top_key": tk, "stubbed": stubbed, "assumptions": asm,
-                        "hashes": hashes, "diags": [replace(d, side=side) for d in diags]}
+                        "hashes": LazyMap(lambda: _merge_maps(hashes)),
+                        "diags": [replace(d, side=side) for d in diags]}
             except GatecostError:
                 raise
             except Exception as exc:
@@ -397,8 +525,8 @@ class _VhdlSide:
         return {"tops": tops, "top_keys": top_keys, "top_key": tk,
                 "stubbed": set(getattr(res, "stubbed", ()) or ()),
                 "assumptions": set(getattr(res, "assumptions", ()) or ()),
-                "hashes": dict(getattr(res, "parsed_hashes", {}) or {}),
+                "hashes": getattr(res, "parsed_hashes", None) or {},
                 "diags": [replace(d, side=side) for d in (getattr(res, "diagnostics", ()) or ())]}
 
 
-__all__ = ["elaborate_project", "ElabResult", "register_language_elaborator"]
+__all__ = ["elaborate_project", "quick_facts", "ElabResult", "register_language_elaborator"]

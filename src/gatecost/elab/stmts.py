@@ -399,6 +399,8 @@ class StmtMixin:
                         lw, ls = self.ty(x)
                         w, sg = max(w, lw), sg and ls
             sel = self.bv(s.expr, w, sg)
+            if self.try_case_rom(s, sel, w, sg):
+                return
             ranged = s.inside or any(isinstance(l, A.ValueRange) for it in s.items
                                      if it.labels for l in it.labels)
             default = None
@@ -436,6 +438,76 @@ class StmtMixin:
             return
         self.blk.case_(sel, items, dfn, kind=s.kind, origin=self.org(s.loc), parallel=par,
                        full=full and dfn is None)
+
+    ROM_MIN_ENTRIES = 8
+
+    def _single_assign(self, body):
+        while isinstance(body, A.Block):
+            st = [x for x in body.items if isinstance(x, A.Stmt) and not isinstance(x, A.Null)]
+            if len(st) != 1 or len(st) != len([x for x in body.items if not isinstance(x, A.Null)]):
+                return None
+            body = st[0]
+        return body if isinstance(body, A.ProcAssign) and body.op in ("=", "<=") else None
+
+    def try_case_rom(self, s: A.Case, sel, w: int, sg: bool) -> bool:
+        """A ``case`` that maps constant labels to constants of one target is a ROM (lookup table)."""
+        if s.inside or s.kind != "case" or sel.const_value() is not None:
+            return False
+        w = min(w, self.ty(s.expr)[0])         # the selector's own width: wider labels never match
+        if w > 12 or w < 3:
+            return False
+        sel = sel.slice(0, w)
+        n = sum(len(it.labels) for it in s.items if it.labels is not None)
+        if n < self.ROM_MIN_ENTRIES - 2:
+            return False
+        lhs_key = None
+        blocking = None
+        table = {}
+        default = None
+        tgt = None
+        for it in s.items:
+            a = self._single_assign(it.body) if it.body is not None else None
+            if a is None:
+                return False
+            k = repr(a.lhs)
+            if lhs_key is None:
+                lhs_key, blocking, tgt = k, a.blocking, a.lhs
+            elif k != lhs_key or a.blocking != blocking:
+                return False
+            rv = self.val(a.rhs)
+            rc = rv.sig.const_value()
+            if rc is None or rc.xmask:
+                return False
+            if it.labels is None:
+                default = (rc, rv.signed)
+                continue
+            for lab in it.labels:
+                if isinstance(lab, A.ValueRange):
+                    return False
+                lc = self.val(lab).sig.const_value()
+                if lc is None or lc.xmask:
+                    return False
+                if lc.value >> w == 0:
+                    table.setdefault(lc.value, (rc, rv.signed))
+        if default is None and len(table) < (1 << w):
+            return False
+        parts = self.lvalue_parts(tgt)
+        if not parts or any(p is None for p in parts) or any(p.mem is not None or p.dyn for p in parts):
+            return False
+        tw = self.part_width(parts)
+        mk = (1 << tw) - 1
+
+        def conv(entry):
+            c, sgn = entry
+            v = c.value
+            if sgn and c.width < tw and (v >> (c.width - 1)) & 1:
+                v |= mk & ~((1 << c.width) - 1)
+            return v & mk
+        contents = [conv(table[i]) if i in table else conv(default) for i in range(1 << w)]
+        self.b.origin = self.org(s.loc)
+        sig = self.b.rom(sel, contents, tw, origin=self.b.origin)
+        self.store_parts(parts, sig, not blocking)
+        return True
 
     # -- loops -------------------------------------------------------------------------
     def _loop_enter(self, body):
@@ -476,6 +548,21 @@ class StmtMixin:
             return None
         return bool(c.value)
 
+    def _bound_cap(self, cond) -> int:
+        """Iteration bound of a loop with a non-constant condition: ``2**k + 1`` for the widest signal ``k``
+        bits in the condition (a counter compared with it cannot get further), else unbounded."""
+        if cond is None:
+            return 1 << 30
+        ws = []
+        for n in A.walk(cond):
+            if type(n) is A.Ident:
+                sym = self.lookup(n.name)
+                if isinstance(sym, VSym) and sym.net is not None and sym.net.id not in self.forced_vars:
+                    ws.append(sym.pt.w)
+        if not ws or max(ws) > 8:
+            return 1 << 30
+        return (1 << max(ws)) + 1
+
     def x_for(self, s: A.For):
         old = self.scope
         saved_locals = self.block_locals
@@ -489,18 +576,47 @@ class StmtMixin:
                 self.exec_item(st)
             fr = self._loop_enter(s.body)
             limit = self.ctx.limits["loop_unroll"]
+            natural = self._bound_cap(s.cond)
+            dyn_cap = min(limit, self.ctx.limits.get("dyn_loop_unroll", 32), natural)
             it = 0
+            go = None            # guard of a loop whose bound is not constant
             while True:
-                c = self._loop_cond(s.cond, s)
-                if not c:
+                if s.cond is None:
+                    cv = None
+                    sig = None
+                else:
+                    sig = self.cond(s.cond)
+                    cv = sig.const_value()
+                    if cv is not None and cv.xmask:
+                        cv = None
+                        sig = SigSpec.const(0, 1)
+                if s.cond is not None and cv is not None and not cv.value:
                     break
+                if sig is not None and cv is None:
+                    if self.blk is None:
+                        self.diag("UNSUPPORTED_CONSTRUCT", "loop condition is not constant; loop not unrolled", s, True)
+                        break
+                    if go is None:
+                        self.diag("UNSUPPORTED_CONSTRUCT", "loop bound is not constant: approximated by guarded "
+                                  f"unrolling (at most {dyn_cap} iterations)", s, True)
+                    go = sig if go is None else self.b.and_(go, sig, 1)
+                    if it >= dyn_cap:
+                        if dyn_cap < natural:
+                            self.diag("LIMIT_REACHED", f"loop with a non-constant bound: unrolled to {dyn_cap} "
+                                      "guarded iterations, the rest ignored", s, True)
+                        break
                 if it >= limit:
                     self.diag("LIMIT_REACHED", f"loop unrolling limit ({limit}) reached; remaining iterations "
                               "ignored", s, True)
                     break
                 it += 1
-                if not self._run_iteration(fr, s.body):
-                    break
+                if go is None:
+                    if not self._run_iteration(fr, s.body):
+                        break
+                else:
+                    if it == 1 or not getattr(self, "_dyn_noted", False):
+                        self.assume("loop with a non-constant bound unrolled with a guard per iteration")
+                    self.blk.if_(go, lambda: self._run_iteration(fr, s.body))
                 for st in s.step or ():
                     self.exec_item(st)
         finally:
