@@ -11,6 +11,13 @@ from .symbols import ISym, KSym, PSym, PType, TSym, V, VSym, dim_pos, vec
 _MAXDYN = 1 << 16
 
 
+def _bare_pattern(e) -> bool:
+    """True for an assignment pattern without a type prefix, or a ternary with one in a branch."""
+    if isinstance(e, A.AssignPattern):
+        return e.prefix is None
+    return isinstance(e, A.Ternary) and (_bare_pattern(e.then) or _bare_pattern(e.else_))
+
+
 class ElabError(Exception):
     """Local, recoverable problem (reported as a diagnostic by the catching item handler)."""
 
@@ -184,6 +191,10 @@ class ExprMixin:
                 pt = self.resolve_dtype(e.prefix) if isinstance(e.prefix, A.DataType) else self.type_of_expr(e.prefix)
             sig = self.pattern_sig(e, pt, lw)
             return sig.resize(lw, False)
+        if pt is not None and isinstance(e, A.Ternary) and _bare_pattern(e):
+            # ``c ? CONST : '{field: v, ...}``: the untyped pattern takes the type of the assignment target
+            return mux_runs(self.b, self.cond(e.cond), self.assign_val(e.else_, lw, pt),
+                            self.assign_val(e.then, lw, pt), lw, origin=self.org(e.loc))
         old = self._tm
         self._tm = {}
         try:

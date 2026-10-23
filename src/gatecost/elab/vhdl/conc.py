@@ -177,6 +177,17 @@ class ConcMixin:
 
     # ------------------------------------------------------------------ concurrent assignment
     def conc_assign(self, s, sc):
+        if isinstance(s, N.SignalAssign) and len(s.alts) >= 1 and any(
+                a.cond is not None and self.parse_edge(a.cond) is not None for a in s.alts):
+            # ``q <= d when rising_edge(clk);`` is the process ``if rising_edge(clk) then q <= d; end if;`` (LRM 11.6)
+            def one(a):
+                return N.SignalAssign(None, s.target, [N.Alt(a.values, None)], s.kind, s.guarded, line=s.line, col=s.col)
+            branches = [N.IfBranch(a.cond, [one(a)]) for a in s.alts if a.cond is not None]
+            last = s.alts[-1]
+            els = [one(last)] if last.cond is None else None
+            ifs = N.IfStmt(None, branches, els, line=s.line, col=s.col)
+            self.elab_process(N.ProcessStmt(s.label, "all", [], [ifs], False, False, line=s.line, col=s.col), sc)
+            return
         if isinstance(s, N.SignalAssign) and len(s.alts) == 1 and s.alts[0].cond is None:
             lv = self.lvalue(s.target, sc)
             if lv.parts is None and lv.mem is None and not lv.dyn:
@@ -247,11 +258,12 @@ class ConcMixin:
                 i, clk = ev
                 key = expr_key(clk)
                 for j, t in enumerate(terms):
-                    if j == i or not isinstance(t, N.Binary) or t.op != "=":
+                    if j == i or not isinstance(t, N.Binary) or t.op not in ("=", "/="):
                         continue
                     for a, b in ((t.left, t.right), (t.right, t.left)):
                         if expr_key(a) == key and isinstance(b, N.Literal) and b.kind == "char" and b.value in "01":
-                            edge = (clk, "pos" if b.value == "1" else "neg")
+                            lvl = b.value if t.op == "=" else ("0" if b.value == "1" else "1")   # clk /= '0' is a rise
+                            edge = (clk, "pos" if lvl == "1" else "neg")
                             used.update((i, j))
                 if edge is None:
                     # `not clk'stable and clk = '1'`

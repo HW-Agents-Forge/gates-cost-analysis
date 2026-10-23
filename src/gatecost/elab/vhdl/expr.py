@@ -11,6 +11,13 @@ from .core import NotConst, StopLimit, Unsupported, bool_const, int_val, real_va
 from .vtypes import VType, minbits
 from .values import Val, Sym
 
+_CONTROL_CHARS = {n: i for i, n in enumerate((
+    "nul soh stx etx eot enq ack bel bs ht lf vt ff cr so si dle dc1 dc2 dc3 dc4 nak syn etb can em sub esc "
+    "fsp gsp rsp usp").split())}
+_CONTROL_CHARS["del"] = 127
+_CONTROL_CHARS.update({"c%d" % i: i for i in range(128, 160)})
+_TIME_FS = {"fs": 1, "ps": 10 ** 3, "ns": 10 ** 6, "us": 10 ** 9, "ms": 10 ** 12, "sec": 10 ** 15,
+            "min": 6 * 10 ** 16, "hr": 36 * 10 ** 17}
 _HEXVAL = {c: i for i, c in enumerate("0123456789ABCDEF")}
 _SLBIT = {"0": (0, 0), "1": (1, 0), "L": (0, 0), "H": (1, 0), "U": (0, 1), "X": (0, 1), "W": (0, 1), "-": (0, 1), "Z": (0, 1)}
 
@@ -233,6 +240,8 @@ class ExprMixin:
             return self.builtin_call(name, [], e, sc, hint)
         if name == "now":
             return int_val(0)
+        if name in _CONTROL_CHARS:       # NUL .. DEL of STANDARD.CHARACTER
+            return Val(T.T_CHARACTER, None, _CONTROL_CHARS[name])
         self.diag("UNSUPPORTED_CONSTRUCT", "unknown name '%s'" % name, e)
         return self.unknown(hint)
 
@@ -355,7 +364,17 @@ class ExprMixin:
         return Val(t, SigSpec.const(value, n, xm), None, zm)
 
     def ev_physical(self, e, sc, hint):
-        return int_val(0)
+        syms = [x for x in sc.lookup(e.unit) if x.kind == "const" and x.val is not None]
+        if not syms:
+            mult = _TIME_FS.get(e.unit.lower())
+            if mult is None:
+                return int_val(0)          # unit of an undeclared physical type
+            k = self.const_val(self.eval(e.value, sc))
+            return Val(T.T_TIME, None, int(round(k * mult)) if isinstance(k, float) else int(k) * mult)
+        n = self.eval(e.value, sc)
+        mult = self.const_int(syms[0].val)
+        k = self.const_val(n)
+        return Val(syms[0].t, None, int(round(k * mult)) if isinstance(k, float) else int(k) * mult)
 
     def ev_others(self, e, sc, hint):
         raise Unsupported("'others' outside an aggregate")
@@ -749,33 +768,37 @@ class ExprMixin:
             return self.dyn_slice_val(base, e, sc)
         return self.slice_val(base, l, r, d, e)
 
-    def split_offset(self, x, sc):
-        """``(base expression, constant offset)`` of ``x`` written as ``base +/- constant`` (else ``(x, 0)``)."""
-        off = 0
-        while isinstance(x, N.Binary) and x.op in ("+", "-"):
-            try:
-                c = self.const_int(self.eval(x.right, sc))
-                x, off = x.left, off + (c if x.op == "+" else -c)
-                continue
-            except NotConst:
-                pass
-            if x.op == "+":
+    def linear_form(self, x, sc):
+        """``({atom repr: coefficient}, constant)`` of ``x`` built from + - and constant factors, else one atom."""
+        try:
+            return {}, self.const_int(self.eval(x, sc))
+        except NotConst:
+            pass
+        if isinstance(x, N.Binary) and x.op in ("+", "-"):
+            la, lc = self.linear_form(x.left, sc)
+            ra, rc = self.linear_form(x.right, sc)
+            sg = 1 if x.op == "+" else -1
+            atoms = dict(la)
+            for k, v in ra.items():
+                atoms[k] = atoms.get(k, 0) + sg * v
+            return {k: v for k, v in atoms.items() if v}, lc + sg * rc
+        if isinstance(x, N.Binary) and x.op == "*":
+            for a, b in ((x.left, x.right), (x.right, x.left)):
                 try:
-                    c = self.const_int(self.eval(x.left, sc))
-                    x, off = x.right, off + c
-                    continue
+                    f = self.const_int(self.eval(a, sc))
                 except NotConst:
-                    pass
-            break
-        return x, off
+                    continue
+                ba, bc = self.linear_form(b, sc)
+                return {k: v * f for k, v in ba.items() if v * f}, bc * f
+        return {repr(x): 1}, 0
 
     def dyn_slice_bounds(self, rng, sc):
         """For ``a(i+3 downto i)``: ``(width in elements, low-index expression, direction)`` or raises Unsupported."""
         if not isinstance(rng, N.Range):
             raise Unsupported("slice with a non-constant range")
-        lb, lo_ = self.split_offset(rng.left, sc)
-        rb, ro = self.split_offset(rng.right, sc)
-        if repr(lb) != repr(rb):
+        la, lo_ = self.linear_form(rng.left, sc)
+        ra, ro = self.linear_form(rng.right, sc)
+        if la != ra:
             raise Unsupported("slice bounds with a non-constant width")
         n = abs(lo_ - ro) + 1
         if rng.direction == "downto":

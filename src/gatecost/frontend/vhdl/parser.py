@@ -820,7 +820,7 @@ class Parser:
             if k == "based":
                 lit.text = "%d#%s#" % (t.val[0], t.val[1])
             nt = self.tok
-            if nt.kind == "id" and nt.val in TIME_UNITS:
+            if nt.kind == "id":          # a unit of TIME or of a user-defined physical type
                 self.adv()
                 return N.PhysicalLit(lit, nt.val, line=t.line, col=t.col)
             return lit
@@ -1129,9 +1129,7 @@ class Parser:
             self.adv()
             rng = self.parse_range()
             if self.kw("units"):
-                self.info_skip("physical type '%s'" % name, d)
-                self.skip_to_end("units")
-                return N.TypeDecl(name, N.Skipped("physical", None, line=d.line, col=d.col), line=t.line, col=t.col)
+                return N.TypeDecl(name, self.parse_physical_units(rng, d), line=t.line, col=t.col)
             else:
                 definition = N.RangeType(rng, line=d.line, col=d.col)
         elif d.kind == "kw" and d.val == "array":
@@ -1176,6 +1174,35 @@ class Parser:
             self.err("unsupported type definition starting at " + self.describe(d))
         self.semi()
         return N.TypeDecl(name, definition, line=t.line, col=t.col)
+
+    def parse_physical_units(self, rng, d):
+        """``units base; name = 1000 base; ... end units [name]`` of a physical type declaration."""
+        self.expect_kw("units")
+        units = [N.UnitDecl(self.expect_ident(), None, None, line=d.line, col=d.col)]
+        self.semi()
+        while not self.kw("end"):
+            if self.tok.kind == "eof":
+                self.err("unterminated units declaration")
+            ut = self.tok
+            uname = self.expect_ident()
+            self.expect_op("=")
+            lt = self.tok
+            if lt.kind in ("int", "real", "based"):
+                self.adv()
+                lit = N.Literal(lt.kind, lt.num if lt.kind == "based" else lt.val, None, line=lt.line, col=lt.col)
+                if lt.kind == "based":
+                    lit.text = "%d#%s#" % (lt.val[0], lt.val[1])
+            else:
+                lit = N.Literal("int", 1, None, line=lt.line, col=lt.col)
+            ref = self.expect_ident()
+            self.semi()
+            units.append(N.UnitDecl(uname, lit, ref, line=ut.line, col=ut.col))
+        self.expect_kw("end")
+        self.expect_kw("units")
+        if self.tok.kind in ("id", "xid"):
+            self.adv()
+        self.semi()
+        return N.PhysicalType(rng, units, line=d.line, col=d.col)
 
     def skip_to_end(self, what):
         """Skip to and over ``end <what> [body] [name] ;``."""

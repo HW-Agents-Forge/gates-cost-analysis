@@ -290,6 +290,23 @@ class DeclMixin:
             t = T.record_type(name, fields)
             sc.declare(Sym("type", name, t))
             return
+        if isinstance(df, N.PhysicalType):
+            # physical types are integers counted in the base unit; the units are constants of that type
+            rg = df.range
+            lo, hi = self.const_int(self.eval(rg.left, sc)), self.const_int(self.eval(rg.right, sc))
+            if rg.direction == "downto":
+                lo, hi = hi, lo
+            t = T.int_type(name, lo, hi)
+            sc.declare(Sym("type", name, t))
+            vals = {}
+            for u in df.units:
+                if u.ref is None:
+                    v = 1
+                else:
+                    v = int(round(float(self.const_val(self.eval(u.value, sc))))) * vals.get(u.ref.lower(), 1)
+                vals[u.name.lower()] = v
+                sc.declare(Sym("const", u.name, t, val=int_val(v)))
+            return
         if isinstance(df, N.RangeType):
             l = self.eval(df.range.left, sc) if isinstance(df.range, N.Range) else None
             r = self.eval(df.range.right, sc) if isinstance(df.range, N.Range) else None

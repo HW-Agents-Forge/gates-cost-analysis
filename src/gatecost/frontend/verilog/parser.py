@@ -505,7 +505,10 @@ class Parser:
                 self.adv()
                 args = self.parse_call_args(sysc=True)
                 self.expect(")")
-            return A.SysCall(self.loc(i), texts[i], args)
+            sc = A.SysCall(self.loc(i), texts[i], args)
+            if self.k == "'(":      # ``$bits(T)'(x)`` / ``$clog2(N)'(x)``: size cast
+                return self.parse_cast_tail(sc)
+            return sc
         elif k == "STR":
             self.adv()
             t = texts[i]
@@ -1159,7 +1162,8 @@ class Parser:
         if isinstance(lhs, A.SysCall):
             if semi:
                 self.expect(";")
-            self.ns += 1
+            if lhs.name not in ("$error", "$fatal", "$warning", "$info", "$finish", "$stop", "$exit"):
+                self.ns += 1         # assertion-style reporting in an unreachable branch keeps a function synthesizable
             self.info(i, f"system task {lhs.name} ignored")
             return A.Null(loc)
         if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.Call):

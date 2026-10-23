@@ -7,6 +7,7 @@ assignments into ``DFF`` nodes with async reset, sync reset and enable recogniti
 """
 from __future__ import annotations
 
+import re
 from typing import Callable, Sequence
 
 from .builder import Builder, IRBuildError
@@ -475,20 +476,15 @@ class LowerBlock:
                 net = self._order[nid]
                 amask = self.env.assigned[nid]
                 final = self.env.val[nid]
-                i = 0
-                while i < net.width:
-                    if not (amask >> i) & 1:
-                        i += 1
-                        continue
-                    j = i
-                    while j < net.width and (amask >> j) & 1:
-                        j += 1
+                # runs of assigned bits, lowest first (a shift per bit is quadratic on very wide nets)
+                bits = bin(amask & ((1 << net.width) - 1))[:1:-1]
+                for m in re.finditer("1+", bits):
+                    i, j = m.span()
                     run = final.slice(i, j - i)
                     if self.kind == "clocked" and nid not in self._variables:
                         self._finish_reg(net, i, run)
                     else:
                         self._finish_comb(net, i, run)
-                    i = j
             discards, self._discards = self._discards, []
             for run in discards:
                 b.discard(run)

@@ -138,6 +138,21 @@ class OpsMixin:
             return Val(T.T_STD_LOGIC, r)
         raise Unsupported("unary operator %s" % op)
 
+    def bi_reduce(self, name, args, e, sc, hint):
+        """ieee.std_logic_misc ``and_reduce``/``or_reduce``/``xor_reduce`` (and the inverting forms)."""
+        (v,) = self.call_args(name, args, sc)[:1]
+        s = self.sig_of(v)
+        b = self.b
+        o = self.org(e)
+        op = name[: -len("_reduce")]
+        if s.width == 0:                     # identity element of the empty reduction
+            return Val(T.T_STD_LOGIC, SigSpec.const(1 if op in ("and", "nor", "xnor") else 0, 1))
+        r = {"and": b.red_and, "nand": b.red_and, "or": b.red_or, "nor": b.red_or, "xor": b.red_xor,
+             "xnor": b.red_xor}[op](s, origin=o)
+        if op in ("nand", "nor", "xnor"):
+            r = b.not_(r, 1, origin=o)
+        return Val(T.T_STD_LOGIC, r)
+
     def cap_width(self, lo, hi):
         w, sg = minbits(lo, hi)
         if w > 32:
@@ -785,6 +800,8 @@ class _Lit:
 
 
 _BUILTIN = {
+    "and_reduce": OpsMixin.bi_reduce, "or_reduce": OpsMixin.bi_reduce, "xor_reduce": OpsMixin.bi_reduce,
+    "nand_reduce": OpsMixin.bi_reduce, "nor_reduce": OpsMixin.bi_reduce, "xnor_reduce": OpsMixin.bi_reduce,
     "to_integer": OpsMixin.bi_to_integer, "conv_integer": OpsMixin.bi_conv_integer,
     "to_unsigned": OpsMixin.bi_to_vec, "to_signed": OpsMixin.bi_to_vec, "conv_unsigned": OpsMixin.bi_to_vec,
     "conv_signed": OpsMixin.bi_to_vec, "conv_std_logic_vector": OpsMixin.bi_to_vec,
