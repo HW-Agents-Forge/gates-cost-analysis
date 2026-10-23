@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .. import REPO_ROOT
+from .. import DATA_DIR
 
-SCHEMA_PATH = REPO_ROOT / "schema" / "gatecost-result.schema.json"
+SCHEMA_PATH = DATA_DIR / "schema" / "gatecost-result.schema.json"
 
 _TYPES = {
     "object": dict,

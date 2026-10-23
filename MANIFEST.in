@@ -1,0 +1,2 @@
+include VERSION LICENSE README.md
+recursive-include schema *.json

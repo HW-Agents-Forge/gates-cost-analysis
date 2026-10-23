@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gatecost"
+dynamic = ["version"]
+description = "Fast, approximate gate-count estimation for RTL (Verilog, SystemVerilog, VHDL)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: System :: Hardware",
+]
+
+[project.scripts]
+gatecost = "gatecost.cli:main"
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# VERSION and schema/ are copied into gatecost/_data by setup.py's build hook (the single source stays at the
+# repository root, where the skill layout needs it).
+gatecost = ["profiles/*.toml"]
