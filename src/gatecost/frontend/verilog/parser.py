@@ -1154,7 +1154,8 @@ class Parser:
         if isinstance(lhs, A.SysCall):
             if semi:
                 self.expect(";")
-            self.ns += 1
+            if lhs.name not in ("$error", "$fatal", "$warning", "$info", "$finish", "$stop", "$exit"):
+                self.ns += 1         # assertion-style reporting in an unreachable branch keeps a function synthesizable
             self.info(i, f"system task {lhs.name} ignored")
             return A.Null(loc)
         if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.Call):

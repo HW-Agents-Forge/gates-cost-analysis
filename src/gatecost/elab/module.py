@@ -108,13 +108,17 @@ def build_header(ctx, mod, overrides):
     for it in mod.items:
         if isinstance(it, A.Function):
             ev.register_function(it)
+    # Package imports first: the ``#(...)`` parameter list sees ``module m import pkg::*; #(...)``.
+    for it in mod.items:
+        if type(it) is A.Import:
+            _guard(ev, ev.declare_a0, it, overrides)
     for pd in mod.params:
         _guard(ev, ev.declare_a0, pd, overrides)
     # ANSI ports cannot depend on body declarations (except imports), so the ports are built first and entered
     # in the scope: body parameters may then use them (``localparam W = $bits(data);``).
     late = mod.ansi
     for it in mod.items:
-        if type(it) in ((A.Import,) if late else (A.ParamDecl, A.Typedef, A.Import)):
+        if type(it) in (() if late else (A.ParamDecl, A.Typedef)):
             _guard(ev, ev.declare_a0, it, overrides)
     ports = None
     if late:

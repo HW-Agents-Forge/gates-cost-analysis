@@ -170,7 +170,9 @@ class StmtMixin:
     def exec_stmt(self, s):
         if self.depth > 0:
             self.fsteps += 1
-            if self.fsteps > self.ctx.limits["const_func_steps"]:
+            fk = self.fkey
+            tot = self.ctx.func_steps[fk] = self.ctx.func_steps.get(fk, 0) + 1
+            if self.fsteps > self.ctx.limits["const_func_steps"] or tot > self.ctx.limits["const_func_total_steps"]:
                 raise StepLimit("step limit")
         self._cur = s
         c = type(s)
@@ -792,6 +794,7 @@ class StmtMixin:
         outermost = self.depth == 0
         if outermost:
             self.fsteps = 0
+            self.fkey = id(ast)
         self.depth += 1
         self.ctl = list(self.ctl)
         self.created = []
