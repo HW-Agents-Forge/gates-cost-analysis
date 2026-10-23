@@ -64,6 +64,7 @@ _OPS.sort(key=len, reverse=True)
 OPERATORS = frozenset(_OPS)
 
 _SKIP = r"(?:[ \t\r\n\f\v]+|//[^\n]*|/\*(?:.*?\*/|.*\Z))*+"
+_CMT_SCAN = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/|(?P<open>/\*)', re.S)
 _BASED = r"(?:\d[\d_]*[ \t]*)?'[sS]?[bBoOdDhH][ \t]*[0-9a-fA-FxXzZ?_]+"
 _REAL = r"\d[\d_]*(?:\.\d[\d_]*(?:[eE][+-]?\d+)?|[eE][+-]?\d+)(?![\w.])"
 _TIME = r"\d[\d_]*(?:\.\d[\d_]*)?(?:fs|ps|ns|us|ms|s)(?![\w])"
@@ -165,6 +166,12 @@ def lex(text: str) -> Tokens:
         if prev == "." or nxt in _AFTER_IDENT or (prev == "]" and k in _SOFT_TYPES):
             kinds[i] = "ID"
     n = len(text)
+    i = text.rfind("/*")
+    if i >= 0 and text.find("*/", i + 2) < 0:
+        for m in _CMT_SCAN.finditer(text):
+            if m.lastgroup == "open":
+                toks.errors.append((m.start(), "unterminated block comment"))
+                break
     for _ in range(4):
         ka("EOF")
         ta("")
