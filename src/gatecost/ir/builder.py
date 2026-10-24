@@ -587,6 +587,7 @@ class MemHandle:
         out = b._new_net(self.width, f"{self.name}.r{i}", False, None)
         self.reads.append({"addr": addr, "clk": None if clk is None else b._s(clk), "en": None if en is None else b._s(en),
                            "edge": clk_edge, "out": out})
+        self._pin(addr, clk, en)
         return out.sig
 
     def write(self, addr, data, *, en=None, clk=None, clk_edge: str = "pos", origin=None,
@@ -605,6 +606,14 @@ class MemHandle:
             w["lane"] = (lo, lw)
             w["data"] = _fit(b._s(data), lw)
         self.writes.append(w)
+        self._pin(addr, data, en, clk)
+
+    def _pin(self, *sigs) -> None:
+        """Count the port operands as used until ``seal`` emits the node: a garbage collection
+        (``Builder.discard``) running before then must not drop the logic that feeds them."""
+        for x in sigs:
+            if x is not None:
+                self.b._ref(self.b._s(x), 1)
 
     def _merge_lanes(self) -> None:
         """Merge disjoint partial-word writes (see :meth:`write`) into byte-enable ports."""

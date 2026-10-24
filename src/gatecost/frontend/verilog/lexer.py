@@ -81,7 +81,7 @@ _MASTER = re.compile(
     r'|(?P<STR>"(?:[^"\\\n]|\\.)*(?:"|(?=\n)|\Z))'
     r"|(?P<ESC>\\\S+)"
     r"|(?P<TICKSP>'[ \t\r\n]+[({])"
-    r"|(?P<OP>" + "|".join(re.escape(o) for o in _OPS) + r")"
+    r"|(?P<OP>" + "|".join(re.escape(o) + (r"(?![/*])" if o == ":/" else "") for o in _OPS) + r")"
     r"|(?P<END>\Z)"
     r"|(?P<BAD>\S)"
     r")",

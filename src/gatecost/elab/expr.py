@@ -5,6 +5,7 @@ import math
 
 from gatecost.frontend.verilog import ast as A
 from gatecost.ir import SigSpec, mask
+from gatecost.ir.sigspec import Const, Slice
 
 from .symbols import ISym, KSym, PSym, PType, TSym, V, VSym, dim_pos, vec
 
@@ -44,24 +45,53 @@ class Ref:
         self.cache = None
 
 
+def _diff_runs(f, t, w):
+    """Maximal ``(lo, hi, differs)`` runs of two ``w``-bit signals, compared chunk-wise (never bit by bit)."""
+    fc, tc = f.chunks, t.chunks
+    runs: list = []
+    i = j = 0           # chunk indexes
+    fo = to = 0         # bits already consumed inside chunks i and j
+    pos = 0
+    while pos < w:
+        a, b = fc[i], tc[j]
+        n = min(a.width - fo, b.width - to, w - pos)
+        if isinstance(a, Const) and isinstance(b, Const):
+            m = (1 << n) - 1
+            d = ((a.xmask >> fo) & m) != ((b.xmask >> to) & m) or ((a.value >> fo) & m) != ((b.value >> to) & m)
+        elif isinstance(a, Slice) and isinstance(b, Slice):
+            d = a.net is not b.net or a.lo + fo != b.lo + to
+        else:
+            d = True
+        if runs and runs[-1][2] == d:
+            runs[-1][1] = pos + n
+        else:
+            runs.append([pos, pos + n, d])
+        pos += n
+        fo += n
+        to += n
+        if fo == a.width:
+            i += 1
+            fo = 0
+        if to == b.width:
+            j += 1
+            to = 0
+    return runs
+
+
 def mux_runs(b, c, f, t, w, **kw):
     """``c ? t : f`` where only the bit runs that differ between the arms are multiplexed (identical bits are wires)."""
     f, t = f.resize(w, False), t.resize(w, False)
-    fa, ta = list(f.bits()), list(t.bits())
-    diff = [x != y for x, y in zip(fa, ta)]
-    if all(diff) or not any(diff):
-        return b.mux(c, f, t, w, **kw) if all(diff) else f
+    runs = _diff_runs(f, t, w) if w > 0 else []
+    if not runs or all(r[2] for r in runs):
+        return b.mux(c, f, t, w, **kw)
+    if not any(r[2] for r in runs):
+        return f
     pieces = []
-    i = 0
-    while i < w:
-        j = i
-        while j < w and diff[j] == diff[i]:
-            j += 1
-        if diff[i]:
+    for i, j, d in runs:
+        if d:
             pieces.append(b.mux(c, f.slice(i, j - i), t.slice(i, j - i), j - i, **kw))
         else:
             pieces.append(f.slice(i, j - i))
-        i = j
     return SigSpec.concat(pieces)
 
 
