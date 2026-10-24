@@ -127,6 +127,54 @@ endmodule"""
             costs[d] = build_cost_tree(res.design, load_profile()).total().typ
         self.assertLess(costs[64], 5 * costs[16])      # ~4x for linear, ~16x for quadratic
 
+    def test_cast_with_struct_member_size(self):
+        # cva6: ``CVA6Cfg.XLEN'(x)`` with a config struct parameter
+        src = """package cfgp;
+  typedef struct packed { int unsigned XLEN; int unsigned PLEN; bit RVA; } cfg_t;
+  localparam cfg_t Cfg = '{XLEN: 32, PLEN: 34, RVA: 1'b1};
+endpackage
+module h import cfgp::*; #(parameter cfg_t CVA6Cfg = Cfg)(input [15:0] a, input [31:0] b,
+  output [CVA6Cfg.XLEN-1:0] y, output [CVA6Cfg.PLEN-1:0] z);
+  localparam logic [CVA6Cfg.XLEN-1:0] IsaCode = (CVA6Cfg.XLEN'(CVA6Cfg.RVA) << 0);
+  assign y = CVA6Cfg.XLEN'(a) & b | IsaCode;
+  assign z = CVA6Cfg.PLEN'(b[CVA6Cfg.XLEN-1:0]);
+endmodule"""
+        self.assertEqual(self.codes(src), [])
+
+    def test_bitwise_independent_feedback_through_one_concatenated_connection_is_not_a_loop(self):
+        # cva6 instr_queue: ``ent`` is driven by ``{v, f(ent[32])}``; bit 32 does not depend on bits 31:0
+        src = """module m(input clk, input [31:0] d, input v, input rdy, output logic [31:0] q_o, output logic [32:0] ent_o);
+  logic [32:0] ent;
+  logic [31:0] address_out;
+  logic pop;
+  logic [31:0] q;
+  always_comb begin
+    ent[32] = v;
+    ent[31:0] = address_out;
+  end
+  assign pop = ent[32] & rdy;
+  always_ff @(posedge clk) if (pop) q <= d;
+  assign address_out = pop ? q : d;
+  assign ent_o = ent;
+  assign q_o = q;
+endmodule"""
+        self.assertNotIn("COMBINATIONAL_LOOP", self.codes(src))
+
+    def test_real_loop_through_a_concatenated_connection_is_still_reported(self):
+        src = """module m(input a, output [1:0] y);
+  wire [1:0] w;
+  assign w = {w[0] ^ a, ~w[1]};
+  assign y = w;
+endmodule"""
+        self.assertIn("COMBINATIONAL_LOOP", self.codes(src))
+
+    def test_constant_mask_and_keeps_the_masked_bits_exact(self):
+        src = """module m(input [7:0] a, output [7:0] y);
+  assign y = a & 8'b0011_1100;
+endmodule"""
+        res = run(src)
+        self.assertEqual([d.code for d in res.diagnostics], [])
+
 
 if __name__ == "__main__":
     unittest.main()

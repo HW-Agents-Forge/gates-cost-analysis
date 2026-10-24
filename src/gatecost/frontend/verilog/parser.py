@@ -581,7 +581,7 @@ class Parser:
                 args = self.parse_call_args()
                 self.expect(")")
                 e = A.Call(e.loc, e, args)
-            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number):
+            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number, A.Member):
                 return self.parse_cast_tail(e)
             elif k == "'{" and e.__class__ in (A.Ident, A.ScopedName):
                 return self.parse_pattern(e)
