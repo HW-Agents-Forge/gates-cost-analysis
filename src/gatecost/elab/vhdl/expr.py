@@ -320,7 +320,16 @@ class ExprMixin:
                 ev, ex = et.enc[et.lits.index(nm)] if nm in et.lits else (0, 1)
                 value |= ev << ((n - 1 - i) * ew)
                 xm |= (mask(ew) if ex else 0) << ((n - 1 - i) * ew)
-        t = T.constrain(base if base.kind == "array" else T.T_SLV, n - 1, 0, "downto") if n else T.constrain(base, -1, 0, "downto")
+        if base.kind == "array" and base.cls == "str":
+            # a string literal is indexed from its subtype's lower bound (`string`: positive, so 1 to n) -- 'left,
+            # 'right and slices of string parameters depend on it (open-logic trim/toUpper/compareNoCase)
+            if hint is not None and hint.kind == "array" and hint.left is not None and hint.length == n:
+                l0, r0, d0 = hint.left, hint.right, hint.dir
+            else:
+                l0, r0, d0 = 1, n, "to"
+            t = T.constrain(base, l0, r0, d0)
+        else:
+            t = T.constrain(base if base.kind == "array" else T.T_SLV, n - 1, 0, "downto") if n else T.constrain(base, -1, 0, "downto")
         t = t.copy(elem=et, ewidth=ew) if t.elem is not et else t
         t.width = n * ew
         return Val(t, SigSpec.const(value, n * ew, xm), None, zm)
@@ -543,7 +552,7 @@ class ExprMixin:
         if ics and base.kind == "array":
             return self.constrain_array(base, ics, sc)
         if ics and base.kind == "record":
-            return base
+            return self.constrain_record(base, ics, sc)
         if ind.range is not None and base.kind in ("int", "real"):
             if base.kind == "real":
                 return base
@@ -561,6 +570,36 @@ class ExprMixin:
             except Exception:
                 pass
         return base
+
+    def constrain_record(self, base, ics, sc):
+        """``my_rec(v(7 downto 0), w(3 downto 0)(1 downto 0))``: constrain the unconstrained array fields."""
+        new = {}
+        for ic in ics:
+            ranges = []
+            n = ic
+            while isinstance(n, (N.Slice, N.Apply, N.Select)):
+                if isinstance(n, N.Slice):
+                    ranges.append(n.range)
+                elif isinstance(n, N.Apply):
+                    ranges.extend(a.actual for a in reversed(n.args))
+                else:
+                    break
+                n = n.prefix
+            path = []
+            while isinstance(n, N.Select):
+                path.append(n.suffix)
+                n = n.prefix
+            if not isinstance(n, N.Ident) or not ranges:
+                continue
+            path = ".".join([n.name] + path[::-1])
+            ft = T.field_at(base, path)
+            if ft is None or ft.kind != "array" or ft.width is not None:
+                continue
+            try:
+                new[path] = self.constrain_array(ft, ranges[::-1], sc)
+            except Exception:
+                self.diag("UNSUPPORTED_CONSTRUCT", "record field constraint '%s' is not constant" % path, ic, severity="info", affects=False)
+        return T.constrain_fields(base, new) if new else base
 
     def constrain_array(self, base, ics, sc):
         first = ics[0]
@@ -683,7 +722,9 @@ class ExprMixin:
         raise Unsupported("attribute '%s" % nm)
 
     def attr_scalar(self, nm, t, e, sc):
-        a = self.eval(e.arg, sc, t if nm != "pos" else None)
+        # a character literal under 'pos takes its type from the prefix: character'pos('z') is 122, not std_logic 'Z'
+        char_lit = isinstance(e.arg, N.Literal) and e.arg.kind == "char" and t.kind == "enum"
+        a = self.eval(e.arg, sc, t if nm != "pos" or char_lit else None)
         if nm == "pos":
             if a.c is not None:
                 return int_val(a.c)

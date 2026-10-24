@@ -10,6 +10,9 @@ from .stmt import XC
 from .values import Scope, Sym, Val
 
 
+DEFAULT_UNCONSTRAINED_PORT_LEN = 8
+
+
 class ForeignModule:
     """Protocol for modules of another language (documented in ``__init__``).
 
@@ -130,16 +133,56 @@ class InstMixin:
         port takes its index range from the association)."""
         hints = {}
         formals = {}
+
+        def fpath(f):
+            parts = []
+            while isinstance(f, N.Select):
+                parts.append(f.suffix)
+                f = f.prefix
+            if isinstance(f, N.Ident):
+                return ".".join([f.name] + parts[::-1])
+            return None
+
         for i, a in enumerate(s.port_map or ()):
             if a.formal is None:
                 if i < len(ent.ports or ()):
                     formals[ent.ports[i].name] = a
-            elif isinstance(a.formal, N.Ident):
-                formals[a.formal.name] = a
+            else:
+                k = fpath(a.formal)
+                if k is not None:
+                    formals[k] = a
+
+        def actual_width(p, a):
+            if (p.mode or "in") in ("in", "linkage"):
+                return self.sig_of(self.eval(a.actual, sc)).width
+            return self.lvalue(a.actual, sc).width
+
         for p in ent.ports or ():
             try:
                 pt = self.resolve_subtype(p.subtype, esc)
             except Exception:
+                continue
+            if pt.kind == "record" and pt.width is None:
+                whole = formals.get(p.name)
+                whole_t = None
+                if whole is not None and whole.actual is not None and not isinstance(whole.actual, N.Open):
+                    try:
+                        whole_t = self.eval(whole.actual, sc).t
+                    except Exception:
+                        whole_t = None
+                for path, ft in T.unconstrained_paths(pt):
+                    a = formals.get(p.name + "." + path)
+                    ew = ft.elem.width or 1
+                    try:
+                        if a is not None and a.actual is not None and not isinstance(a.actual, N.Open):
+                            w = actual_width(p, a)
+                        else:
+                            at = T.field_at(whole_t, path) if whole_t is not None else None
+                            w = at.width if at is not None else None
+                    except Exception:
+                        continue
+                    if w and w % ew == 0:
+                        hints[p.name + "." + path] = w // ew
                 continue
             if pt.kind != "array" or pt.width is not None:
                 continue
@@ -148,10 +191,7 @@ class InstMixin:
                 continue
             ew = pt.elem.width or 1
             try:
-                if (p.mode or "in") in ("in", "linkage"):
-                    w = self.sig_of(self.eval(a.actual, sc)).width
-                else:
-                    w = self.lvalue(a.actual, sc).width
+                w = actual_width(p, a)
             except Exception:
                 continue
             if w and w % ew == 0:
@@ -165,8 +205,23 @@ class InstMixin:
                 pt = self.resolve_subtype(p.subtype, esc)
             except Exception:
                 pt = T.T_STD_LOGIC
+            if pt.kind == "record" and pt.width is None:
+                new = {}
+                for path, ft in T.unconstrained_paths(pt):
+                    n = (hints or {}).get(p.name + "." + path)
+                    if n is None:
+                        n = DEFAULT_UNCONSTRAINED_PORT_LEN
+                        self.ctx.assume("unconstrained record field '%s.%s' of '%s' has no actual to take its range "
+                                        "from; %d elements assumed" % (p.name, path, ent.name, n))
+                    new[path] = T.constrain(ft, n - 1, 0, "downto")
+                pt = T.constrain_fields(pt, new)
             if (pt.width is None or pt.width <= 0) and hints and p.name in hints and pt.kind == "array":
                 pt = T.constrain(pt, hints[p.name] - 1, 0, "downto")
+            if (pt.width is None or pt.width <= 0) and pt.kind == "array" and pt.left is None and pt.elem is not None \
+                    and pt.elem.width:
+                self.ctx.assume("unconstrained port '%s' of '%s' has no actual to take its range from; "
+                                "%d elements assumed" % (p.name, ent.name, DEFAULT_UNCONSTRAINED_PORT_LEN))
+                pt = T.constrain(pt, DEFAULT_UNCONSTRAINED_PORT_LEN - 1, 0, "downto")
             if pt.width is None or pt.width <= 0:
                 self.ctx.assume("port '%s' of '%s' has no constant width; 1 bit assumed" % (p.name, ent.name))
                 pt = T.T_STD_LOGIC
