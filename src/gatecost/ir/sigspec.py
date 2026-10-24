@@ -117,21 +117,37 @@ class Slice:
         return ("n", self.net.id, self.lo, self.width)
 
 
+def _merge_consts(consts: list) -> "Const":
+    """One Const from adjacent Const chunks (least significant first), by balanced pairwise merging so
+    that very many pieces do not cost a quadratic number of big-integer operations."""
+    cs = [(c.value, c.xmask, c.width) for c in consts]
+    while len(cs) > 1:
+        nxt = []
+        for k in range(0, len(cs) - 1, 2):
+            a, b = cs[k], cs[k + 1]
+            nxt.append((a[0] | (b[0] << a[2]), a[1] | (b[1] << a[2]), a[2] + b[2]))
+        if len(cs) & 1:
+            nxt.append(cs[-1])
+        cs = nxt
+    v, x, w = cs[0]
+    return Const(v, w, x)
+
+
 def _normalize(chunks: Iterable) -> tuple:
     out: list = []
+    run: list = []             # pending (value, xmask, width) of consecutive Const chunks
     for ch in chunks:
         w = ch.width
         if w == 0:
             continue
+        if ch.__class__ is Const:
+            run.append(ch)
+            continue
+        if run:
+            out.append(run[0] if len(run) == 1 else _merge_consts(run))
+            run = []
         if out:
             last = out[-1]
-            if isinstance(ch, Const) and isinstance(last, Const):
-                out[-1] = Const(
-                    last.value | (ch.value << last.width),
-                    last.width + w,
-                    last.xmask | (ch.xmask << last.width),
-                )
-                continue
             if (
                 isinstance(ch, Slice)
                 and isinstance(last, Slice)
@@ -141,6 +157,8 @@ def _normalize(chunks: Iterable) -> tuple:
                 out[-1] = Slice(last.net, last.lo, last.width + w)
                 continue
         out.append(ch)
+    if run:
+        out.append(run[0] if len(run) == 1 else _merge_consts(run))
     return tuple(out)
 
 

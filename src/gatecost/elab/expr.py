@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from gatecost.frontend.verilog import ast as A
 from gatecost.ir import SigSpec, mask
@@ -45,6 +46,9 @@ class Ref:
         self.cache = None
 
 
+_BITRUN = re.compile(r"0+|1+")
+
+
 def _diff_runs(f, t, w):
     """Maximal ``(lo, hi, differs)`` runs of two ``w``-bit signals, compared chunk-wise (never bit by bit)."""
     fc, tc = f.chunks, t.chunks
@@ -59,12 +63,14 @@ def _diff_runs(f, t, w):
             m = (1 << n) - 1
             x = (((a.xmask >> fo) ^ (b.xmask >> to)) | ((a.value >> fo) ^ (b.value >> to))) & m
             if x and x != m:     # constants differ in some bits only: split at the bit level
-                for k in range(n):
-                    dk = bool((x >> k) & 1)
-                    if runs and runs[-1][2] == dk:
-                        runs[-1][1] = pos + k + 1
+                bits = bin(x | (1 << n))[:2:-1]       # bit k of x at index k (the sentinel bit is cut off)
+                for mt in _BITRUN.finditer(bits):
+                    k0, k1 = mt.span()
+                    dk = bits[k0] == "1"
+                    if runs and runs[-1][2] == dk and runs[-1][1] == pos + k0:
+                        runs[-1][1] = pos + k1
                     else:
-                        runs.append([pos + k, pos + k + 1, dk])
+                        runs.append([pos + k0, pos + k1, dk])
                 d = None
             else:
                 d = bool(x)
@@ -996,6 +1002,12 @@ class ExprMixin:
         n = pt.size0()
         ept = pt.elem()
         ew = pt.elem_width()
+        if n * ew > self.ctx.ir_limits.max_net_width:
+            # the IR rejects a value this wide anyway (unresolved parameters default to 32 and multiply):
+            # do not build it element by element
+            self.diag("LIMIT_REACHED", "assignment pattern of %d bits exceeds the net width limit (%d); its value "
+                      "is unknown" % (n * ew, self.ctx.ir_limits.max_net_width), e, True)
+            return SigSpec.x(total)
         slots = [None] * n          # index by position (0 = least significant)
         d0 = pt.dims[0]
         pos_i = 0

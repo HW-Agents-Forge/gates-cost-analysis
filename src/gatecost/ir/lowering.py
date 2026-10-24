@@ -8,6 +8,7 @@ assignments into ``DFF`` nodes with async reset, sync reset and enable recogniti
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from typing import Callable, Sequence
 
 from .builder import Builder, IRBuildError
@@ -46,8 +47,91 @@ def _splice(cur: SigSpec, lo: int, piece: SigSpec) -> SigSpec:
     return SigSpec.concat(parts)
 
 
-def _atoms(sig: SigSpec) -> list:
-    return list(sig.bits())
+def _cutter(sig: SigSpec):
+    """``f(lo, n)`` equal to ``sig.slice(lo, n)`` but binary-searching the chunk list."""
+    chunks = sig.chunks
+    if len(chunks) <= 8:
+        return sig.slice
+    starts = []
+    acc = 0
+    for c in chunks:
+        starts.append(acc)
+        acc += c.width
+
+    def cut(lo: int, n: int) -> SigSpec:
+        if lo == 0 and n == sig.width:
+            return sig
+        i = bisect_right(starts, lo) - 1
+        end = lo + n
+        out = []
+        while i < len(chunks) and starts[i] < end:
+            c = chunks[i]
+            st = starts[i]
+            a = max(lo, st) - st
+            bb = min(end, st + c.width) - st
+            if a == 0 and bb == c.width:
+                out.append(c)
+            elif c.__class__ is Const:
+                out.append(Const(c.value >> a, bb - a, c.xmask >> a))
+            else:
+                out.append(Slice(c.net, c.lo + a, bb - a))
+            i += 1
+        return SigSpec(out)
+    return cut
+
+
+_ONES = re.compile("1+")
+
+
+def _piece_diff(x, oa: int, y, ob: int, n: int):
+    """Bit intervals ``(lo, hi)`` (relative to the piece) where bits ``[oa, oa+n)`` of chunk ``x`` and
+    ``[ob, ob+n)`` of chunk ``y`` name different atoms (net bits, or known / don't-care constant bits)."""
+    if x.__class__ is Slice:
+        if y.__class__ is Slice and x.net is y.net and x.lo + oa == y.lo + ob:
+            return ()
+        return ((0, n),)
+    if y.__class__ is Slice:
+        return ((0, n),)
+    m = (1 << n) - 1
+    # constants keep value bits under xmask at 0, so xmask / value differences cover every atom difference
+    d = (((x.xmask >> oa) ^ (y.xmask >> ob)) | ((x.value >> oa) ^ (y.value >> ob))) & m
+    if d == 0:
+        return ()
+    if d == m:
+        return ((0, n),)
+    return [mt.span() for mt in _ONES.finditer(bin(d)[:1:-1])]
+
+
+def _diff_ivals(a: SigSpec, b: SigSpec) -> list:
+    """Maximal bit intervals ``(lo, hi)`` where ``a`` and ``b`` (equal widths) differ, found by walking
+    the two chunk lists in step."""
+    ca, cb = a.chunks, b.chunks
+    if ca is cb or a.key() == b.key():
+        return []
+    out: list = []
+    i = j = oa = ob = pos = 0
+    w = a.width
+    while pos < w:
+        x, y = ca[i], cb[j]
+        n = min(x.width - oa, y.width - ob)
+        if not (x is y and oa == ob):
+            for lo, hi in _piece_diff(x, oa, y, ob, n):
+                lo += pos
+                hi += pos
+                if out and out[-1][1] == lo:
+                    out[-1] = (out[-1][0], hi)
+                else:
+                    out.append((lo, hi))
+        pos += n
+        oa += n
+        ob += n
+        if oa == x.width:
+            i += 1
+            oa = 0
+        if ob == y.width:
+            j += 1
+            ob = 0
+    return out
 
 
 class LowerBlock:
@@ -431,47 +515,90 @@ class LowerBlock:
 
     def _merge_value(self, w: int, vals: list[SigSpec], dv: SigSpec, selects: list[SigSpec],
                      exclusive: bool, group: int, full: bool = False) -> SigSpec:
+        """Merge the per-arm values of one net.  Works on chunk intervals, never on single bits, so
+        the cost depends on the number of runs and chunks and not on the net width."""
         b = self.b
-        datoms = _atoms(dv)
-        aatoms = [_atoms(v) for v in vals]
-        if exclusive and not full and len(aatoms) > 2 and len(aatoms) * w <= 4_000_000:
-            # exclusive arms: split into runs by the set of arms that differ from the default, so that
-            # arms writing disjoint slices of one wide net (``mem[i] <= x``) do not each span the whole net
-            who: list = [None] * w
-            for n_, a in enumerate(aatoms):
-                for i in range(w):
-                    if a[i] != datoms[i]:
-                        who[i] = (who[i] or ()) + (n_,)
-            diff = who
-        else:
-            diff = [full or any(a[i] != datoms[i] for a in aatoms) for i in range(w)]
-        pieces = []
-        i = 0
-        while i < w:
-            j = i
-            d = diff[i]
-            while j < w and diff[j] == d:
-                j += 1
-            if not d:
-                pieces.append(dv.slice(i, j - i))
-            else:
-                n = j - i
-                dflt = dv.slice(i, n)
-                arms = []
-                for v, s in zip(vals, selects):
-                    sl = v.slice(i, n)
-                    if exclusive and sl == dflt:
-                        continue
-                    arms.append((s, sl))
-                if len(arms) == 1:
-                    pieces.append(b.op("MUX", dflt, arms[0][1], arms[0][0], width=n, group=group,
-                                       raw=True))
+        narms = len(vals)
+        # differing intervals of every arm against the default, then the elementary regions with the
+        # set of arms that differ in each (``who``)
+        ivals = [_diff_ivals(dv, v) for v in vals]
+        events = []
+        for n_, iv in enumerate(ivals):
+            for lo, hi in iv:
+                events.append((lo, 1, n_))
+                events.append((hi, 0, n_))
+        events.sort()
+        regions: list = []                 # (lo, hi, who tuple or None)
+        active: set = set()
+        pos = 0
+        k = 0
+        ne = len(events)
+        while k < ne:
+            p_ = events[k][0]
+            if active and p_ > pos:
+                regions.append((pos, p_, tuple(sorted(active))))
+            while k < ne and events[k][0] == p_:
+                _p, kind, n_ = events[k]
+                if kind:
+                    active.add(n_)
                 else:
-                    op = "PMUX" if exclusive else "PRIORITY"
-                    pieces.append(b.op(op, dflt, SigSpec.concat([a for _, a in arms]),
-                                       SigSpec.concat([s for s, _ in arms]), width=n,
-                                       k=len(arms), group=group, raw=True))
-            i = j
+                    active.discard(n_)
+                k += 1
+            pos = p_
+        by_who = exclusive and not full and narms > 2
+        # runs: (lo, hi, arms that differ somewhere in the run or None when the run equals the default)
+        runs: list = []
+        if full:
+            allw = set()
+            for _lo, _hi, wh in regions:
+                allw.update(wh)
+            runs.append((0, w, tuple(sorted(allw))))
+        else:
+            cur = None           # [lo, hi, set of arms]
+            for lo, hi, wh in regions:
+                if cur is not None and cur[1] == lo and (cur[3] == wh if by_who else True):
+                    cur[1] = hi
+                    cur[2].update(wh)
+                    continue
+                if cur is not None:
+                    runs.append((cur[0], cur[1], cur[2]))
+                    if cur[1] < lo:
+                        runs.append((cur[1], lo, None))
+                elif lo > 0:
+                    runs.append((0, lo, None))
+                cur = [lo, hi, set(wh), wh]
+            if cur is not None:
+                runs.append((cur[0], cur[1], cur[2]))
+                if cur[1] < w:
+                    runs.append((cur[1], w, None))
+            else:
+                runs.append((0, w, None))
+        dcut = _cutter(dv)
+        vcut = [None] * narms
+        pieces = []
+        for lo, hi, arm_set in runs:
+            n = hi - lo
+            if arm_set is None:
+                pieces.append(dcut(lo, n))
+                continue
+            dflt = dcut(lo, n)
+            idxs = sorted(arm_set) if exclusive else range(narms)
+            arms = []
+            for ai in idxs:
+                c = vcut[ai]
+                if c is None:
+                    c = vcut[ai] = _cutter(vals[ai])
+                sl = c(lo, n)
+                if exclusive and sl == dflt:
+                    continue
+                arms.append((selects[ai], sl))
+            if len(arms) == 1:
+                pieces.append(b.op("MUX", dflt, arms[0][1], arms[0][0], width=n, group=group, raw=True))
+            else:
+                op = "PMUX" if exclusive else "PRIORITY"
+                pieces.append(b.op(op, dflt, SigSpec.concat([a for _, a in arms]),
+                                   SigSpec.concat([s for s, _ in arms]), width=n,
+                                   k=len(arms), group=group, raw=True))
         return SigSpec.concat(pieces)
 
     # -- finalization -----------------------------------------------------------

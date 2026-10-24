@@ -163,6 +163,9 @@ def _guard(ev, fn, *a):
         fn(*a)
     except RecursionError:
         ev.diag("LIMIT_REACHED", "expression nesting too deep", a[0] if a else None, True)
+    except MemoryError:
+        ev.diag("LIMIT_REACHED", "memory budget exceeded; the construct is treated as unknown",
+                a[0] if a else None, True)
     except ElabError as exc:
         ev.diag("UNSUPPORTED_CONSTRUCT", str(exc), a[0] if a else None, True)
     except Exception as exc:     # never abort the analysis
@@ -271,6 +274,8 @@ class ModElab(BaseEv):
             if _DEBUG:
                 raise
             self.diag("LIMIT_REACHED", "expression or hierarchy nesting too deep", node, True)
+        except MemoryError:
+            self.diag("LIMIT_REACHED", "memory budget exceeded; the construct is treated as unknown", node, True)
         except ElabError as exc:
             self.diag("UNSUPPORTED_CONSTRUCT", str(exc), node, True)
         except Exception as exc:
@@ -1073,7 +1078,7 @@ class ModElab(BaseEv):
         ins = {}
         outputs = {}
         post = []
-        claimed: set = set()
+        claimed: set = set()      # (net id, lo, hi) bit intervals
         self.allow_implicit = True
         try:
             for i, pc in enumerate(it.conns or ()):
@@ -1087,12 +1092,14 @@ class ModElab(BaseEv):
                     parts = self.lvalue_parts(e)
                     if parts and all(p is not None for p in parts):
                         # a net connected to several ports of one black box is driven by at most one of them
-                        bits = {(id(p.net), p.off + k) for p in parts if p.net is not None and not p.dyn
-                                for k in range(p.w)}
-                        if bits and bits & claimed:
+                        # bit intervals per net (never one entry per bit: ports can be 100k+ bits wide)
+                        bits = [(id(p.net), p.off, p.off + p.w) for p in parts if p.net is not None and not p.dyn
+                                and p.w > 0]
+                        if any(lo < chi and clo < hi for nid, lo, hi in bits
+                               for cn, clo, chi in claimed if cn == nid):
                             ins[pname] = self.val(e).sig
                             continue
-                        claimed |= bits
+                        claimed.update(bits)
                         tw = self.part_width(parts)
                         net = b.net(tw)
                         outputs[pname] = net
