@@ -129,6 +129,9 @@ def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1,
     ty = ty.add("MUX2", R * (D - 1) * W, P["MUX2"]).plus(decode("typ", Pw)).add("MUX2", (Pw - 1) * D * W, P["MUX2"])
     lo = Acc().add("DLAT", D * W, P["DLAT"]).add("ICG", D, P["ICG"])
     lo = lo.add("MUX4_EQ", R * (D - 1) * W, p.C["mux_min"]).plus(decode("min", Pw))
+    if sync_read:  # the registered read data: one W-bit flop bank per read port
+        ty = ty.add("DFF", R * W, P["DFF"])
+        lo = lo.add("DFF", R * W, P["DFF"])
     hi = ty.scaled(p.sigma_other)
     return finalize(Sc(lo, ty, hi, {"min": "latch_array", "typ": "flop_array", "max": "flop_array"}, sigma=True), "mem", "poor", p)
 

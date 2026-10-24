@@ -79,6 +79,25 @@ def add_const_op(n: int, k: int | None, p: Profile, sub: bool = False) -> OpCost
     return cap(finalize(Sc(lo, lerp(lo, mid, p.alpha_add), hi, arch), "addcmp", "good", p), var)
 
 
+def add_narrow_op(n: int, m: int, p: Profile, sub: bool = False) -> OpCost:
+    """ADD/SUB of an n-bit result where one operand has only ``m`` (< n - 1) significant bits.
+
+    The low ``m`` bits are a normal adder; the upper ``n - m`` bits only propagate the carry
+    (an incrementer: one HA per bit, scaled like a constant add). Capped by the full adder."""
+    var = add_op(n, p, sub)
+    if m < 1 or m >= n - 1:
+        return var
+    low = add_op(m, p, sub) if m > 1 else None
+    if low is None:
+        h = Acc().add("HA", 1, p.P["HA"])
+        low = finalize(Sc(h, h.copy(), h.copy(), {"min": "ha", "typ": "ha", "max": "ha"}), "addcmp", "good", p)
+    up = Acc().add("HA", n - m, p.P["HA"])
+    arch = {"min": "carry_inc", "typ": "carry_inc", "max": "carry_inc"}
+    inc = finalize(Sc(up, lerp(up, up.scaled(p.F["add_const_mid"]), p.alpha_add),
+                      up.scaled(p.F["add_const_max"]), arch), "addcmp", "good", p)
+    return cap(low + inc, var)
+
+
 def neg_op(n: int, p: Profile) -> OpCost:
     if n == 1:
         return zero("addcmp")
@@ -95,6 +114,30 @@ def sum_op(k: int, w: int, p: Profile) -> OpCost:
     csa = Acc().add("FA", (k - 2) * w, p.P["FA"])
     one = add_sc(wc, p)
     unfused = add_sc(wc, p).max.times(k - 1)
+    sc = Sc(
+        csa.plus(one.min), csa.plus(one.typ), unfused,
+        {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": "unfused"},
+        sigma=True,
+    )
+    return finalize(sc, "addcmp", "good", p)
+
+
+def sum_terms_op(terms: tuple[int, ...] | list[int], out: int, p: Profile) -> OpCost:
+    """Fused sum of operands with the given effective widths into an ``out``-bit result.
+
+    The CSA tree removes one bit per FA until two rows of at most ``out`` bits remain:
+    ``max(0, sum(terms) - 2*max(terms))`` FA (``(k-2)*w`` for k equal terms), followed by one
+    ``out``-bit carry-propagate adder. max is the unfused chain of narrow-operand adders."""
+    ts = [t for t in terms if t > 0]
+    k = len(ts)
+    if k <= 1 or out <= 0:
+        return zero("addcmp")
+    csa = Acc().add("FA", max(0, sum(ts) - 2 * max(ts)), p.P["FA"])
+    one = add_sc(out, p)
+    unfused = one.max.times(k - 1)
+    narrow, full = add_narrow_op(out, min(ts), p).typ, add_op(out, p).typ
+    if full and narrow < full:  # the chain adds narrow operands: scale by the incrementer saving
+        unfused = unfused.scaled(rdiv(narrow * 1000, full))
     sc = Sc(
         csa.plus(one.min), csa.plus(one.typ), unfused,
         {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": "unfused"},
