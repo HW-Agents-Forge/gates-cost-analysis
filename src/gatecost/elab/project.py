@@ -23,6 +23,9 @@ DEFAULT_LIMITS = {
     "expr_depth": 500,
     "const_func_steps": 100_000,
     "const_func_total_steps": 600_000,     # per function, summed over its calls (bounds wall time)
+    "const_func_fast": 1,                  # 0 disables the pure-integer fast path of constant-argument calls
+    "const_func_fast_steps": 2_000_000,    # loop iterations of one fast-path call before it falls back
+    "const_func_fast_total_steps": 40_000_000,   # per function, summed over its fast-path calls
     "max_hier_depth": 128,
     "const_port_variants": 256,
 }
@@ -40,6 +43,8 @@ class Ctx:
         self.udps = set(parsed.udps)
         self.limits = dict(DEFAULT_LIMITS)
         self.func_steps = {}
+        self.cf_cache = {}             # generated source -> constfunc.FastFn (shared across instances)
+        self.cf_busy = set()           # functions being compiled (recursion guard)
         for k, v in (limits or {}).items():
             if k in self.limits and isinstance(v, int):
                 self.limits[k] = v
