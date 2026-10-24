@@ -172,13 +172,22 @@ class OpsMixin:
             n = n.left
         lead = chain[-1]
         h0 = hint if (lead.op in _LOGIC and hint is not None and hint.kind == "array") else None
+        pre = {}
+        if isinstance(n, N.Aggregate) and lead.op == "&":
+            # ``(x'range => '0') & v``: the aggregate takes its array type from the other operand
+            r0 = self.eval(lead.right, sc, None)
+            pre[id(lead)] = r0
+            h0 = (self.unconstrained_like(hint) if r0.t.kind == "enum" and hint is not None and hint.kind == "array"
+                  else self.unconstrained_like(r0.t))
         acc = self.eval(n, sc, h0)
         for node in reversed(chain):
             op = node.op
             ht = acc.t if (acc.t.kind in ("array", "enum") and op not in ("&", "**") and op not in _SHIFT) else None
             if op == "&" and acc.t.kind == "array":
-                ht = None
-            r = self.eval(node.right, sc, ht)
+                ht = self.unconstrained_like(acc.t) if isinstance(node.right, N.Aggregate) else None
+            r = pre.get(id(node))
+            if r is None:
+                r = self.eval(node.right, sc, ht)
             try:
                 acc = self.binary_op(op, acc, r, node, sc, hint)
             except NotConst:
@@ -190,6 +199,15 @@ class OpsMixin:
                           "operator '%s' on %s and %s cannot be resolved (%s)" % (op, acc.t.name or acc.t.kind, r.t.name or r.t.kind, ex), node)
                 acc = self.unknown(hint if hint is not None else (acc.t if acc.t.kind == "array" else None))
         return acc
+
+    @staticmethod
+    def unconstrained_like(t):
+        """Unconstrained array type with the element type / class of ``t`` (None when ``t`` is no array)."""
+        if t is not None and t.kind == "enum" and t.cls == "sl":
+            return T.array_type(T.T_SLV.name, T.T_SLV.elem, index=T.T_SLV.index, cls=T.T_SLV.cls)
+        if t is None or t.kind != "array":
+            return None
+        return T.array_type(t.name, t.elem, index=t.index, cls=t.cls)
 
     def user_op(self, op, l, r, node, sc, hint):
         syms = [s for s in sc.lookup('"%s"' % op) if s.kind == "func"]
@@ -622,6 +640,9 @@ class OpsMixin:
         for i, ex in enumerate(exprs):
             out.append(self.eval(ex, sc, hints[i] if i < len(hints) else None))
         return out
+
+    def has_builtin(self, name):
+        return name in _BUILTIN or name in ieee.MATH_REAL_FUNCTIONS
 
     def builtin_call(self, name, args, e, sc, hint):
         b = self.b

@@ -765,6 +765,8 @@ class ExprMixin:
             if k == "type":
                 return self.type_convert(syms[0].t, args, sc, e)
             if k == "func":
+                if isinstance(p, N.Ident) and self.has_builtin(p.name) and not self.user_overload_fits(syms, args, sc):
+                    return self.builtin_call(p.name, args, e, sc, hint)
                 return self.call_user(syms, args, e, sc, hint)
             if k == "mem":
                 return self.mem_read(syms[0], args, sc, e)
@@ -1121,7 +1123,7 @@ class ExprMixin:
                     for ch in (it.choices or []):
                         if isinstance(ch, N.Others):
                             continue
-                        if isinstance(ch, N.Range):
+                        if isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
                             l, r, _d = self.eval_range(ch, sc)
                             idxs += [l, r]
                         else:

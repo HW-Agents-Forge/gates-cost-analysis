@@ -104,5 +104,166 @@ class Utf16Sources(Base):
             self.assertGreater(doc["result"]["total"]["ge"]["typ"], 0, top)
 
 
+OVERLOAD_PKG = """library ieee; use ieee.std_logic_1164.all;
+package comp is
+  function ffdre(q : std_logic; d : std_logic; rst : std_logic := '0'; en : std_logic := '1'; constant INIT : std_logic := '0') return std_logic;
+  function ffdre(q : std_logic_vector; d : std_logic_vector; rst : std_logic := '0'; en : std_logic := '1'; constant INIT : std_logic_vector := (0 to 0 => '0')) return std_logic_vector;
+end package;
+package body comp is
+  function ffdre(q : std_logic; d : std_logic; rst : std_logic := '0'; en : std_logic := '1'; constant INIT : std_logic := '0') return std_logic is
+  begin
+    return ((d and en) or (q and not en)) and not rst;
+  end function;
+  function ffdre(q : std_logic_vector; d : std_logic_vector; rst : std_logic := '0'; en : std_logic := '1'; constant INIT : std_logic_vector := (0 to 0 => '0')) return std_logic_vector is
+    variable Result : std_logic_vector(q'range);
+  begin
+    for i in q'range loop
+      Result(i) := ffdre(q => q(i), d => d(i), rst => rst, en => en, INIT => INIT(0));
+    end loop;
+    return Result;
+  end function;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use work.comp.all;
+entity top is port (rst, en : in std_logic; q, d : in std_logic_vector(%d downto 0); y : out std_logic_vector(%d downto 0)); end entity;
+architecture r of top is begin
+  y <= ffdre(q => q, d => d, rst => rst, en => en);
+end architecture;
+"""
+
+
+class VhdlNamedOverload(Base):
+    def test_named_association_picks_scalar_overload(self):
+        # the vector overload calls the scalar one with named actuals; it used to resolve to itself
+        # (recursing to the inline-depth limit with exponential work)
+        self.write("o.vhd", OVERLOAD_PKG % (15, 15))
+        code, doc = run_cost("--top", "top", "o.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        cs = [d["message"] for d in doc["diagnostics"] if d["code"] in ("LIMIT_REACHED", "UNSUPPORTED_CONSTRUCT")]
+        self.assertEqual(cs, [])
+        self.assertGreater(doc["result"]["total"]["ge"]["typ"], 16)
+
+
+RESIZE_SRC = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+package vec is
+  type T_SLM is array (natural range <>, natural range <>) of std_logic;
+  function resize(slm : T_SLM; size : positive) return T_SLM;
+end package;
+package body vec is
+  function resize(slm : T_SLM; size : positive) return T_SLM is
+    variable Result : T_SLM(size - 1 downto 0, slm'high(2) downto slm'low(2)) := (others => (others => '0'));
+  begin
+    for i in slm'range(1) loop
+      for j in slm'high(2) downto slm'low(2) loop
+        Result(i, j) := slm(i, j);
+      end loop;
+    end loop;
+    return Result;
+  end function;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.vec.all;
+entity top is port (a : in unsigned(7 downto 0); b : in std_logic_vector(7 downto 0); y : out unsigned(15 downto 0); z : out std_logic_vector(11 downto 0)); end entity;
+architecture r of top is begin
+  y <= resize(a, 16) + 1;
+  z <= std_logic_vector(resize(unsigned(b), 12) + 3);
+end architecture;
+"""
+
+
+class UserOverloadDoesNotHideBuiltin(Base):
+    def test_user_resize_on_matrix_type_leaves_numeric_std_resize(self):
+        self.write("r.vhd", RESIZE_SRC)
+        code, doc = run_cost("--top", "top", "r.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        bad = [d for d in doc["diagnostics"] if d["code"] in ("UNSUPPORTED_CONSTRUCT", "UNRESOLVED_OVERLOAD")]
+        self.assertEqual(bad, [])
+        self.assertGreater(doc["result"]["total"]["ge"]["typ"], 10)
+
+
+AGG_CONCAT = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is port (a, b : in unsigned(15 downto 0); c : in unsigned(16 downto 0); y : out unsigned(16 downto 0)); end entity;
+architecture r of top is
+  signal s : unsigned(16 downto 0);
+begin
+  s <= ('0' & a) + ('0' & b) + ((a'range => '0') & c(c'high));
+  y <= s;
+end architecture;
+"""
+
+
+class AggregateInConcatenation(Base):
+    def test_range_choice_aggregate_takes_type_from_context(self):
+        self.write("ag.vhd", AGG_CONCAT)
+        code, doc = run_cost("--top", "top", "ag.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        bad = [d for d in doc["diagnostics"] if d["code"] in ("UNSUPPORTED_CONSTRUCT", "UNRESOLVED_OVERLOAD")]
+        self.assertEqual(bad, [])
+        self.assertEqual(doc["status"], "ok")
+
+
+TB_PROC = """library ieee; use ieee.std_logic_1164.all;
+entity tb is generic (N : natural := 4000); port (clk, en, ack : in std_logic; v : out std_logic; o : out std_logic_vector(7 downto 0)); end entity;
+architecture r of tb is begin
+  process
+    variable w : natural := 0;
+  begin
+    v <= '0';
+    wait until en = '1';
+    wait until rising_edge(clk);
+    for t in 0 to 1000 loop
+      w := 0;
+      loop
+        wait until rising_edge(clk);
+        v <= '1';
+        o <= std_logic_vector(to_unsigned(w, 8));
+        wait until falling_edge(clk);
+        if ack = '1' then w := w + 1; end if;
+        exit when w > 1000;
+      end loop;
+    end loop;
+  end process;
+end architecture;
+"""
+
+
+class BehaviouralProcess(Base):
+    def test_multi_wait_process_skipped_fast(self):
+        import time
+        self.write("tb.vhd", TB_PROC)
+        t0 = time.time()
+        code, doc = run_cost("--top", "tb", "tb.vhd", cwd=self.dir)
+        self.assertLess(time.time() - t0, 20)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertTrue(any("wait statements" in d["message"] for d in doc["diagnostics"]), doc["diagnostics"])
+
+
+NESTED_LOOPS = """library ieee; use ieee.std_logic_1164.all;
+entity nl is port (a : in std_logic_vector(1023 downto 0); y : out std_logic); end entity;
+architecture r of nl is begin
+  process (a)
+    variable f : std_logic;
+  begin
+    f := '0';
+    for i in 0 to 1023 loop
+      for j in 0 to 1023 loop
+        if a(j) = '1' and a(i) = '1' then f := '1'; exit; end if;
+      end loop;
+    end loop;
+    y <= f;
+  end process;
+end architecture;
+"""
+
+
+class LoopBudget(Base):
+    def test_nested_exit_loops_bounded(self):
+        import time
+        self.write("nl.vhd", NESTED_LOOPS)
+        t0 = time.time()
+        code, doc = run_cost("--top", "nl", "nl.vhd", cwd=self.dir)
+        self.assertLess(time.time() - t0, 30)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertTrue(any(d["code"] == "LIMIT_REACHED" for d in doc["diagnostics"]))
+
+
 if __name__ == "__main__":
     unittest.main()

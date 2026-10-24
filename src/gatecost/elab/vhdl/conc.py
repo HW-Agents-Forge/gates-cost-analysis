@@ -432,6 +432,14 @@ class ConcMixin:
             return
         if not any(isinstance(n, (N.SignalAssign, N.SelectAssign, N.ProcCall)) for n in walk(p)):
             return
+        waits = [n for n in walk(p) if isinstance(n, N.WaitStmt)]
+        lead = 1 if p.body and isinstance(p.body[0], N.WaitStmt) and p.body[0].until is not None else 0
+        if len(waits) - lead >= 2:
+            # several waits: a behavioural, multi-cycle (testbench-style) process; there is no single
+            # clock edge to map it onto, and unrolling it is both meaningless and very slow
+            self.diag("UNSUPPORTED_CONSTRUCT", "process%s has %d wait statements (multi-cycle behavioural code); skipped"
+                      % ((" '%s'" % p.label) if p.label else "", len(waits)), p)
+            return
         sp = self.split_process(p)
         if sp is not None:
             clocked, others = sp
@@ -475,6 +483,7 @@ class ConcMixin:
         xc.state_vars = self.state_var_names(p) if kind == "clocked" else set()
         saved = self.proc
         self.proc = xc
+        self.loop_iters = self.ctl_iters = 0
         try:
             self.declare_items(p.decls, pscope, xc)
 
