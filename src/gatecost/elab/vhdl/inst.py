@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ...frontend.vhdl import nodes as N
 from ...ir import Const, Design, LowerBlock, SigSpec
-from ...ir.sigspec import mask
+from ...ir.sigspec import Slice, mask
 from . import vtypes as T
 from .core import NotConst, Unsupported, int_val
 from .stmt import XC
@@ -308,7 +308,15 @@ class InstMixin:
                 a = gpos[pos]
             if a is None or isinstance(a.actual, N.Open):
                 return None
-            return self.eval(a.actual, sc, gt)
+            v = self.eval(a.actual, sc, gt)
+            s = v.sig if isinstance(v, Val) else None
+            if s is not None and any(isinstance(c, Slice) for c in s.chunks):
+                # a signal as a generic actual (illegal VHDL): its nets belong to the parent module and
+                # would leak into the child as dangling references
+                self.diag("UNSUPPORTED_CONSTRUCT", "generic '%s' actual is not a constant expression; the default "
+                          "(or an assumed value) is used" % g.name, a.actual)
+                return None
+            return v
 
         def type_provider(g, pos):
             a = gmap.get(g.name)

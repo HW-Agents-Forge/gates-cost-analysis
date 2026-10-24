@@ -336,8 +336,72 @@ class StmtMixin:
             raise StopLimit("interpreter steps")
 
     # ------------------------------------------------------------------ individual statements
+    def mem_slice_parts(self, e, sc):
+        """(memory prefix node, [index, ...]) for ``mem(a to b)`` / ``mem(a to b)`` written as slice or range
+        application on a name that denotes a memory with constant bounds, else None."""
+        if isinstance(e, N.Slice):
+            pre, rng = e.prefix, e.range
+        elif isinstance(e, N.Apply) and len(e.args) == 1 and self.is_range_expr(e.args[0].actual, sc):
+            pre, rng = e.prefix, e.args[0].actual
+        else:
+            return None
+        if not isinstance(pre, (N.Ident, N.Select)):
+            return None
+        syms = self.name_syms(pre, sc)
+        if not syms or syms[0].kind != "mem":
+            return None
+        try:
+            l, r, d = self.eval_range(rng, sc)
+        except Exception:
+            return None
+        idx = list(range(l, r + 1)) if d == "to" else list(range(l, r - 1, -1))
+        return pre, idx
+
+    def st_mem_slice_assign(self, xc, s, sc):
+        """``mem(0 to n-1) <= mem(1 to n)`` (a word shift register) / ``mem(a to b) <= (others => x)``:
+        one assignment per word.  Returns False when the statement has another shape."""
+        if len(s.alts) != 1 or s.alts[0].cond is not None or len(s.alts[0].values) != 1:
+            return False
+        dst = self.mem_slice_parts(s.target, sc)
+        if dst is None:
+            return False
+        pre, didx = dst
+        rhs = s.alts[0].values[0]
+        src = self.mem_slice_parts(rhs, sc)
+
+        def elem(prefix, i):
+            lit = N.Literal("int", i, None, line=s.line, col=s.col)
+            return N.Apply(prefix, [N.Assoc(None, lit, line=s.line, col=s.col)], line=s.line, col=s.col)
+
+        if src is not None:
+            spre, sidx = src
+            if len(sidx) != len(didx):
+                return False
+            values = [elem(spre, j) for j in sidx]
+        elif isinstance(rhs, N.Aggregate) and len(rhs.items) == 1 and rhs.items[0].choices \
+                and len(rhs.items[0].choices) == 1 and isinstance(rhs.items[0].choices[0], N.Others):
+            values = [rhs.items[0].value] * len(didx)
+        else:
+            return False
+        # the right-hand sides all read the old contents: evaluate them before any word is written
+        syn = []
+        for i, v in zip(didx, values):
+            syn.append(N.SignalAssign(s.label, elem(pre, i), [N.Alt([v], None, line=s.line, col=s.col)], s.kind,
+                                      s.guarded, line=s.line, col=s.col))
+        if xc.clocked or src is None:
+            for st in syn:
+                self.st_assign(xc, st, sc)
+            return True
+        # combinational / variable shift: read all sources first, then write
+        read = [self.eval(st.alts[0].values[0], sc, self.lvalue(st.target, sc).t) for st in syn]
+        for st, v in zip(syn, read):
+            self.do_assign(xc, self.lvalue(st.target, sc), v, s)
+        return True
+
     def st_assign(self, xc, s, sc):
         tgt = s.target
+        if isinstance(tgt, (N.Slice, N.Apply)) and self.st_mem_slice_assign(xc, s, sc):
+            return
         if isinstance(tgt, N.Aggregate) or True:
             lv = self.lvalue(tgt, sc)
         alts = s.alts
@@ -797,7 +861,12 @@ class StmtMixin:
         if fn is None:
             raise Unsupported("return outside a function")
         if s.value is not None:
-            v = self.eval(s.value, sc, fn.ret_t if fn.ret_t is not None and fn.ret_t.width else None)
+            rh = fn.ret_t if fn.ret_t is not None and fn.ret_t.width else None
+            if rh is None:
+                rd = getattr(fn, "ret_decl", None)
+                if rd is not None and rd.kind == "array" and isinstance(s.value, N.Aggregate):
+                    rh = rd         # unconstrained return type: lets ``(x'range => '0')`` find its element type
+            v = self.eval(s.value, sc, rh)
             if fn.ret_t is not None and fn.ret_t.width and not (fn.ret_t.kind == "array" and fn.ret_t.width is None):
                 v = self.fit(v, fn.ret_t, s)
             sig = self.sig_of(v)

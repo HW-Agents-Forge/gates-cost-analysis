@@ -173,7 +173,7 @@ class OpsMixin:
         lead = chain[-1]
         h0 = hint if (lead.op in _LOGIC and hint is not None and hint.kind == "array") else None
         pre = {}
-        if isinstance(n, N.Aggregate) and lead.op == "&":
+        if lead.op == "&" and (isinstance(n, N.Aggregate) or (isinstance(n, N.Literal) and n.kind == "str")):
             # ``(x'range => '0') & v``: the aggregate takes its array type from the other operand
             r0 = self.eval(lead.right, sc, None)
             pre[id(lead)] = r0

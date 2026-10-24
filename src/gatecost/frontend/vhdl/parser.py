@@ -322,6 +322,8 @@ class Parser:
                     else:
                         self.units.append(r)
                         ctx = []
+                elif t.kind == "id" and t.val in ("vunit", "vprop", "vmode"):
+                    self.skip_psl_unit(t)
                 else:
                     u = None
                     if t.kind == "kw" and t.val == "entity":
@@ -351,6 +353,34 @@ class Parser:
             if self.i == start and self.tok.kind != "eof":
                 self.adv()
         return self.units
+
+    def skip_psl_unit(self, t):
+        """A PSL verification unit ``vunit name (entity) { ... }`` is verification only: skip its braces."""
+        self.info_skip("PSL verification unit", t)
+        while self.tok.kind != "eof" and not (self.tok.kind == "op" and self.tok.val == "{"):
+            if self.at_unit_start():
+                return
+            self.adv()
+        depth = 0
+        while self.tok.kind != "eof":
+            if self.tok.kind == "op":
+                if self.tok.val == "{":
+                    depth += 1
+                elif self.tok.val == "}":
+                    depth -= 1
+                    if depth == 0:
+                        self.adv()
+                        return
+            self.adv()
+
+    def is_psl_directive(self, t):
+        """``cover {..}`` / ``assume always ..`` / ``restrict ..`` (optionally labelled) in a concurrent region."""
+        if t.val not in PSL_WORDS and not (t.val == "default" and self.peek(1).kind in ("id", "kw")):
+            return False
+        n = self.peek(1)
+        if n.kind == "op":
+            return n.val == "{"
+        return n.kind in ("id", "kw") and not (n.kind == "kw" and n.val in ("port", "generic", "map"))
 
     def sync_unit(self):
         while self.tok.kind != "eof":
@@ -1454,10 +1484,9 @@ class Parser:
                 return self.parse_instance(label, None)
             if v == "end":
                 self.err("unexpected 'end'")
-        elif k in ("id", "xid") and label is None:
+        elif k in ("id", "xid"):
             # PSL directives
-            if t.val in PSL_WORDS and self.peek(1).kind in ("id", "kw") or \
-                    (t.val == "default" and self.peek(1).kind in ("id", "kw")):
+            if self.is_psl_directive(t):
                 self.info_skip("PSL directive", t)
                 self.sync(())
                 return N.Skipped("psl", None, line=t.line, col=t.col)

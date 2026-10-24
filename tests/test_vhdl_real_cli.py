@@ -90,6 +90,34 @@ class NestedFilelist(Base):
         self.assertNotEqual(code, 0)
 
 
+class BadConfigValues(Base):
+    def check(self, toml, needle):
+        self.write("t.v", "module t(input a, output y); assign y = ~a; endmodule\n")
+        self.write("gatecost.toml", toml)
+        code, doc = run_cost("--top", "t", cwd=self.dir)
+        self.assertEqual(doc["error"]["code"], "BAD_CONFIG", doc)
+        self.assertIn(needle, doc["error"]["message"])
+        self.assertNotEqual(doc["error"]["code"], "INTERNAL")
+
+    def test_non_string_list_items(self):
+        self.check("[project]\nincdirs = [5]\n", "project.incdirs")
+        self.check("[project]\nsources = [1, 2]\n", "project.sources")
+
+    def test_unknown_language(self):
+        self.check('[project]\nlanguages = ["cobol"]\n', "languages")
+        self.check("[project]\nlanguages = []\n", "languages")
+
+    def test_non_positive_limit(self):
+        self.check("[limits]\nloop_unroll = -5\n", "limits.loop_unroll")
+        self.check("[limits]\ngenerate_iterations = 0\n", "limits.generate_iterations")
+
+    def test_capitalised_language_accepted(self):
+        self.write("t.v", "module t(input a, output y); assign y = ~a; endmodule\n")
+        self.write("gatecost.toml", '[project]\nlanguages = ["Verilog"]\n')
+        code, doc = run_cost("--top", "t", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+
+
 class NoSourcesMessage(Base):
     def test_message_names_path(self):
         (self.dir / "empty").mkdir()
@@ -360,6 +388,205 @@ class RunawayWidth(Base):
         doc = json.loads(p.stdout)
         self.assertEqual(p.returncode, 0, doc.get("error"))
         self.assertFalse([d for d in doc["diagnostics"] if "MemoryError" in d["message"]], doc["diagnostics"])
+
+
+RET_AGG = """library ieee; use ieee.std_logic_1164.all;
+package p is
+  function zeros (constant arg : std_logic_vector) return std_logic_vector;
+end package;
+package body p is
+  function zeros (constant arg : std_logic_vector) return std_logic_vector is
+  begin
+    return (arg'range => '0');
+  end;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use work.p.all;
+entity top is port (a : in std_logic_vector(7 downto 0); y : out std_logic_vector(7 downto 0)); end entity;
+architecture r of top is begin
+  y <= a or zeros(a);
+end architecture;
+"""
+
+
+class ReturnAggregateUnconstrained(Base):
+    def test_return_range_aggregate_in_unconstrained_function(self):
+        self.write("r.vhd", RET_AGG)
+        code, doc = run_cost("--top", "top", "r.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual([d for d in doc["diagnostics"] if d["code"] == "UNSUPPORTED_CONSTRUCT"], [])
+
+
+PSL_SRC = """library ieee; use ieee.std_logic_1164.all;
+entity top is port (clk, rst, a : in std_logic; y : out std_logic); end entity;
+architecture r of top is
+  signal q : std_logic;
+  sequence seq (boolean d0, d1) is {d0; d1};
+  default clock is rising_edge(clk);
+begin
+  process (clk) begin if rising_edge(clk) then q <= a; end if; end process;
+  y <= q;
+  a_1 : assume always stable(a);
+  f_1 : assert always {a; q};
+  c_1 : cover {a = '1'; q = '1'}
+    report "hit";
+  r_1 : restrict {rst = '0'; rst = '1'}[*1];
+  cover {a; q};
+end architecture;
+
+vunit top_vu (top(r)) {
+  default clock is rising_edge(clk);
+  assert always (a -> next q);
+  sequence s2 is {a; {q; q}};
+}
+"""
+
+
+class PslIsSkipped(Base):
+    def test_psl_directives_and_vunit_are_ignored_not_errors(self):
+        self.write("psl.vhd", PSL_SRC)
+        code, doc = run_cost("--top", "top", "psl.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual([d for d in doc["diagnostics"] if d["code"] == "PARSE_ERROR"], [])
+        self.assertGreater(doc["result"]["total"]["ge"]["typ"], 0)
+
+
+NESTED_EDGE = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is port (clk, rst, cen : in std_logic; d : in unsigned(7 downto 0); q : out unsigned(7 downto 0)); end entity;
+architecture r of top is
+  signal c : unsigned(7 downto 0);
+begin
+  process (clk, rst)
+  begin
+    if rst = '0' then
+      c <= (others => '0');
+    %s
+      if clk'event and clk = '1' and cen = '1' then
+        c <= c + d;
+      end if;
+    %s
+  end process;
+  q <= c;
+end architecture;
+"""
+
+
+class ElseIfClockEdge(Base):
+    def test_edge_in_nested_if_after_async_reset(self):
+        self.write("a.vhd", NESTED_EDGE % ("else", "end if;"))
+        code, a = run_cost("--top", "top", "a.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, a.get("error"))
+        self.assertEqual([d for d in a["diagnostics"] if "outside an edge" in d["message"]], [])
+        self.assertGreater(a["result"]["total"]["ge"]["typ"], 80)
+
+
+SIGNAL_AS_GENERIC = """library ieee; use ieee.std_logic_1164.all;
+entity leaf is generic (G : std_logic_vector(3 downto 0) := "0000"); port (clk : in std_logic; d : in std_logic_vector(3 downto 0); q : out std_logic_vector(3 downto 0)); end entity;
+architecture r of leaf is
+  signal r1 : std_logic_vector(3 downto 0);
+begin
+  process (clk) begin if rising_edge(clk) then if d = G then r1 <= d; else r1 <= G; end if; end if; end process;
+  q <= r1;
+end architecture;
+library ieee; use ieee.std_logic_1164.all;
+entity mid is generic (G : std_logic_vector(3 downto 0)); port (clk : in std_logic; d : in std_logic_vector(3 downto 0); q : out std_logic_vector(3 downto 0)); end entity;
+architecture r of mid is begin
+  u : entity work.leaf generic map (G => G) port map (clk => clk, d => d, q => q);
+end architecture;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port (clk : in std_logic; d : in std_logic_vector(3 downto 0); q : out std_logic_vector(3 downto 0)); end entity;
+architecture r of top is
+  signal s : std_logic_vector(3 downto 0);
+begin
+  s <= d;
+  u : entity work.mid generic map (G => s) port map (clk => clk, d => d, q => q);
+end architecture;
+"""
+
+
+class SignalAsGenericActual(Base):
+    def test_signal_actual_does_not_corrupt_child_module(self):
+        self.write("s.vhd", SIGNAL_AS_GENERIC)
+        code, doc = run_cost("--top", "top", "s.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual([d for d in doc["diagnostics"] if d["code"] == "INTERNAL"], [])
+        self.assertTrue(any("not a constant" in d["message"] for d in doc["diagnostics"]))
+
+
+STR_CONCAT_AND_ASSERT_IF = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is generic (N : natural := 4); port (clk : in std_logic; a, b : in unsigned(7 downto 0); q : out unsigned(8 downto 0); r : out std_logic_vector(7 downto 0)); end entity;
+architecture r of top is
+  signal rr : std_logic_vector(7 downto 0);
+begin
+  process (clk) begin
+    if N > 100 then assert false report "N out of range" severity error; end if;
+    if rising_edge(clk) then
+      q <= ("0" & a) + b;
+      rr <= std_logic_vector(a);
+    end if;
+  end process;
+  r <= rr;
+end architecture;
+"""
+
+
+class StringConcatAndLeadingIf(Base):
+    def test_string_literal_concat_takes_unsigned_and_clock_after_assert_if(self):
+        self.write("s.vhd", STR_CONCAT_AND_ASSERT_IF)
+        code, doc = run_cost("--top", "top", "s.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        bad = [d["message"] for d in doc["diagnostics"] if d["code"] in ("UNRESOLVED_OVERLOAD", "UNSUPPORTED_CONSTRUCT")]
+        self.assertEqual(bad, [])
+        self.assertEqual(doc["status"], "ok")
+
+
+WORD_SHIFT = """library ieee; use ieee.std_logic_1164.all;
+entity top is port (clk, v : in std_logic; d : in std_logic_vector(7 downto 0); q : out std_logic_vector(8 downto 0)); end entity;
+architecture r of top is
+  type a_t is array (0 to 20) of std_logic_vector(8 downto 0);
+  signal dd : a_t;
+begin
+  process (clk) begin
+    if rising_edge(clk) then
+      dd(0 to dd'high - 1) <= dd(1 to dd'high);
+      if v = '1' then dd(dd'high) <= '1' & d; else dd(dd'high) <= (others => '0'); end if;
+    end if;
+  end process;
+  q <= dd(0);
+end architecture;
+"""
+
+MEM_SLICE = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity top is port (clk, we : in std_logic; a : in unsigned(3 downto 0); d : in std_logic_vector(7 downto 0); q : out std_logic_vector(7 downto 0)); end entity;
+architecture r of top is
+  type m_t is array (0 to 15) of std_logic_vector(7 downto 0);
+  signal m : m_t;
+begin
+  process (clk) begin
+    if rising_edge(clk) then
+      if we = '1' then m(to_integer(a)) <= d; end if;
+      m(8 to 11) <= m(4 to 7);
+      q <= m(to_integer(a));
+    end if;
+  end process;
+end architecture;
+"""
+
+
+class WordShiftRegister(Base):
+    def test_constant_slice_shift_of_word_array_is_a_register_chain(self):
+        self.write("s.vhd", WORD_SHIFT)
+        code, doc = run_cost("--top", "top", "s.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual(doc["status"], "ok", doc["diagnostics"])
+        ge = doc["result"]["total"]["ge"]["typ"]
+        self.assertTrue(400 < ge < 3000, ge)        # ~189 flip-flops; it used to be 20 000 (a 21-port RAM)
+
+    def test_slice_copy_inside_a_real_memory(self):
+        self.write("m.vhd", MEM_SLICE)
+        code, doc = run_cost("--top", "top", "m.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        bad = [d["message"] for d in doc["diagnostics"] if "whole memory" in d["message"]]
+        self.assertEqual(bad, [])
 
 
 TB_PROC = """library ieee; use ieee.std_logic_1164.all;

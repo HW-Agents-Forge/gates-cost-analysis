@@ -120,7 +120,7 @@ def collect_sources(args, settings, cfg):
     """(files as absolute paths, incdirs, defines, diagnostics) per CLI.md / DISTRIBUTION.md 4."""
     root = settings.root
     langs = tuple(cfg.get("project", "languages", None) or ("verilog", "vhdl"))
-    langs = tuple("verilog" if l in ("verilog", "systemverilog") else l for l in langs)
+    langs = tuple("verilog" if l in ("verilog", "systemverilog") else l for l in (x.lower() for x in langs))
     diags: list[Diagnostic] = []
     files: list[Path] = []
     incdirs = list(settings.incdirs)

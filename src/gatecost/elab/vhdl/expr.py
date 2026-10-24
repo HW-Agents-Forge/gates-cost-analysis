@@ -622,6 +622,14 @@ class ExprMixin:
             t.width = t.length * el.width if el.width is not None else None
         return t
 
+    def mem_type(self, pre, sc):
+        """Array type of ``pre`` when it names a memory (its attributes need no value), else None."""
+        if isinstance(pre, (N.Ident, N.Select)):
+            syms = self.name_syms(pre, sc)
+            if syms and syms[0].kind == "mem":
+                return syms[0].t
+        return None
+
     def eval_range(self, r, sc):
         """(left, right, dir) of a range-valued expression."""
         if isinstance(r, N.Range):
@@ -639,6 +647,8 @@ class ExprMixin:
             return rg
         if isinstance(r, N.Attr) and r.name in ("range", "reverse_range"):
             t = self.try_type(r.prefix, sc)
+            if t is None:
+                t = self.mem_type(r.prefix, sc)
             if t is None:
                 t = self.eval(r.prefix, sc).t
             if r.arg is not None and t.kind == "array":
@@ -685,6 +695,8 @@ class ExprMixin:
             return self.string_val("", None)
         t = self.try_type(pre, sc)
         v = None
+        if t is None:
+            t = self.mem_type(pre, sc)
         if t is None:
             v = self.eval(pre, sc)
             t = v.t
