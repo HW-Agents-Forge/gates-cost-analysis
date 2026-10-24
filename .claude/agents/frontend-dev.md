@@ -1,6 +1,7 @@
 ---
 name: frontend-dev
 description: Développeur des front-ends HDL de gatecost (lexer, préprocesseur, parser Verilog/SystemVerilog et VHDL, récupération d'erreurs). À utiliser pour tout bug ou ajout de syntaxe dans src/gatecost/frontend/.
+model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 

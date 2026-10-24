@@ -1,6 +1,7 @@
 ---
 name: elaborator-dev
 description: Développeur de l'élaborateur (paramètres, expressions constantes, inférence de largeur/signe, hiérarchie, abaissement procédural vers l'IR, Verilog et VHDL). À utiliser pour les bugs de largeur, de casts, de boucles combinatoires, d'instances, de génération dans src/gatecost/elab/.
+model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 

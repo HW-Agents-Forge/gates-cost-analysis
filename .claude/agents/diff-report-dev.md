@@ -1,6 +1,7 @@
 ---
 name: diff-report-dev
 description: Développeur du différ, des baselines/snapshots, des rapports (agent/json/text/markdown), du schéma JSON et de la CLI. À utiliser pour src/gatecost/diff/, report/, cli/, baseline.py, snapshot.py, schema/.
+model: sonnet
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 

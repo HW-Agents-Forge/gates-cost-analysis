@@ -1,6 +1,7 @@
 ---
 name: cost-model-dev
 description: Développeur du modèle de coût (formules par opération, profils TOML, scénarios min/typ/max, arithmétique milli-GE, confiance, commande estimate). À utiliser pour src/gatecost/cost/, src/gatecost/profiles/, estimate*.py.
+model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 

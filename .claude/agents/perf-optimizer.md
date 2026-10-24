@@ -1,6 +1,7 @@
 ---
 name: perf-optimizer
 description: Profile et optimise les performances du pipeline (complexité quadratique, temps de démarrage, grands designs). À utiliser quand une analyse est lente ou après un changement touchant des boucles sur les largeurs/tableaux/netlists.
+model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 
