@@ -16,6 +16,11 @@ class SourceFile:
 
 def decode(raw: bytes) -> str:
     """UTF-8 with a Latin-1 fallback; CRLF and CR become LF. Never raises."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return decode(raw.decode("utf-16").encode("utf-8"))
+        except UnicodeDecodeError:
+            pass
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:

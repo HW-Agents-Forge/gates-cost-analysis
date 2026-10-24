@@ -26,6 +26,11 @@ class SourceFile:
 def _decode(data: bytes) -> tuple[str, str]:
     if data.startswith(b"\xef\xbb\xbf"):
         data = data[3:]
+    elif data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            data = data.decode("utf-16").encode("utf-8")      # UTF-16 with a byte-order mark
+        except UnicodeDecodeError:
+            pass
     try:
         text = data.decode("utf-8")
         enc = "utf-8"

@@ -51,8 +51,12 @@ def parse_filelist(path: Path, root: Path, *, _seen=None, _depth=0) -> tuple[lis
     seen.add(path)
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise GatecostError("BAD_ARGUMENT", f"cannot read filelist {path.name}: {exc.strerror}") from None
+    except (OSError, ValueError) as exc:
+        if _depth > 0:
+            diags.append(Diagnostic("SOURCE_NOT_FOUND", f"nested filelist {path.name} cannot be read: "
+                                    f"{getattr(exc, 'strerror', None) or exc}", "warning", True, "after", None, None))
+            return files, inc, defs, diags
+        raise GatecostError("BAD_ARGUMENT", f"cannot read filelist {path.name}: {getattr(exc, 'strerror', None) or exc}") from None
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     base = path.parent
 
@@ -164,7 +168,8 @@ def collect_sources(args, settings, cfg):
             seen_i.add(d)
             inc_u.append(d)
     if not uniq:
-        raise GatecostError("NO_SOURCES", f"no RTL files found under . (searched {SEARCHED})")
+        where = ", ".join(explicit) if explicit else "."
+        raise GatecostError("NO_SOURCES", f"no RTL files found under {where} (searched {SEARCHED})")
     return uniq, inc_u, defines, diags
 
 
