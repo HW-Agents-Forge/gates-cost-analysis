@@ -39,6 +39,7 @@ class BaseEv(ExprMixin, DeclMixin, StmtMixin):
         self.block_locals = []
         self.depth = 0
         self.fsteps = 0
+        self.fkey = 0
         self._ctrl_memo = {}
         self._reset_memo = {}
         self.mem_ports = {}

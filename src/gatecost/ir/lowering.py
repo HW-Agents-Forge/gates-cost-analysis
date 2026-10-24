@@ -7,6 +7,7 @@ assignments into ``DFF`` nodes with async reset, sync reset and enable recogniti
 """
 from __future__ import annotations
 
+import re
 from typing import Callable, Sequence
 
 from .builder import Builder, IRBuildError
@@ -433,7 +434,17 @@ class LowerBlock:
         b = self.b
         datoms = _atoms(dv)
         aatoms = [_atoms(v) for v in vals]
-        diff = [full or any(a[i] != datoms[i] for a in aatoms) for i in range(w)]
+        if exclusive and not full and len(aatoms) > 2 and len(aatoms) * w <= 4_000_000:
+            # exclusive arms: split into runs by the set of arms that differ from the default, so that
+            # arms writing disjoint slices of one wide net (``mem[i] <= x``) do not each span the whole net
+            who: list = [None] * w
+            for n_, a in enumerate(aatoms):
+                for i in range(w):
+                    if a[i] != datoms[i]:
+                        who[i] = (who[i] or ()) + (n_,)
+            diff = who
+        else:
+            diff = [full or any(a[i] != datoms[i] for a in aatoms) for i in range(w)]
         pieces = []
         i = 0
         while i < w:
@@ -475,20 +486,15 @@ class LowerBlock:
                 net = self._order[nid]
                 amask = self.env.assigned[nid]
                 final = self.env.val[nid]
-                i = 0
-                while i < net.width:
-                    if not (amask >> i) & 1:
-                        i += 1
-                        continue
-                    j = i
-                    while j < net.width and (amask >> j) & 1:
-                        j += 1
+                # runs of assigned bits, lowest first (a shift per bit is quadratic on very wide nets)
+                bits = bin(amask & ((1 << net.width) - 1))[:1:-1]
+                for m in re.finditer("1+", bits):
+                    i, j = m.span()
                     run = final.slice(i, j - i)
                     if self.kind == "clocked" and nid not in self._variables:
                         self._finish_reg(net, i, run)
                     else:
                         self._finish_comb(net, i, run)
-                    i = j
             discards, self._discards = self._discards, []
             for run in discards:
                 b.discard(run)
@@ -763,9 +769,11 @@ class LowerBlock:
                 d = self._strip(seg, net, lo + i, memo)
                 q = b.latch(d, en, inferred=True, origin=b.origin)
                 b.connect(dst, q)
-                b.module.diag("INFERRED_LATCH",
-                              f"latch inferred for {net.name or net.id}[{lo+i+n-1}:{lo+i}]: "
-                              "not assigned on every path", "warning", False, b.origin)
+                # reported by ``finalize`` only if something reads the signal (a process-local variable that
+                # is always written before it is read leaves an unread hold path, not a latch)
+                b.defer_diag(net, "INFERRED_LATCH",
+                             f"latch inferred for {net.name or net.id}[{lo+i+n-1}:{lo+i}]: "
+                             "not assigned on every path", "warning", False, b.origin)
             i += n
         self._discards.append(run)      # collected after ALL targets are finished (runs share sub-expressions)
 

@@ -426,7 +426,8 @@ class _VhdlSide:
             self.diags.append(Diagnostic("PARSE_ERROR", f"VHDL front-end failure ({type(exc).__name__}: {exc})",
                                          "error", True, side, None, None, None))
             return
-        self.diags.extend(replace(d, side=side) for d in self.parsed.diagnostics)
+        self.diags.extend(replace(d, side=side, file=ctx.disp(d.file) if d.file else d.file)
+                          for d in self.parsed.diagnostics)
         self.ok = True
         bind = getattr(self.fn, "bind", None) if self.fn is not None and VhdlElaborator is None else None
         if callable(bind):

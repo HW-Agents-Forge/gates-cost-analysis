@@ -159,6 +159,7 @@ def cut_loops(m: ModuleIR) -> int:
         # find a cycle by DFS from the first item
         state: dict[int, int] = {}
         found = None
+        cyc_path: list = []
         for start in cyc:
             if id(start) in state:
                 continue
@@ -183,13 +184,36 @@ def cut_loops(m: ModuleIR) -> int:
                     stack.append((d, 0))
                     path.append(d)
             if found is not None:
+                cyc_path = path[[id(x) for x in path].index(id(found[1])):]
                 break
         if found is None:
             return cuts
         it, d, ch = found
+        # a connection with a multi-chunk source is one dependency item: reading one bit of its net also
+        # "reads" the other chunks (``ent <- {v, f(ent[32])}``).  Split such connections of the cycle by
+        # chunk and look again before declaring a loop.
+        wide = [x for x in cyc_path if isinstance(x, Conn) and len(x.src.chunks) > 1]
+        if wide:
+            for x in wide:
+                _split_conn(m, x)
+            continue
         _cut_edge(m, it, ch)
         cuts += 1
     return cuts
+
+
+def _split_conn(m: ModuleIR, conn: Conn) -> None:
+    """Replace ``conn`` by one connection per source chunk (same destination bits, same origin)."""
+    parts = []
+    pos = 0
+    for c in conn.src.chunks:
+        parts.append(Conn(conn.net, conn.lo + pos, SigSpec((c,)), conn.origin))
+        pos += c.width
+    i = next(k for k, x in enumerate(m.conns) if x is conn)
+    m.conns[i:i + 1] = parts
+    lst = m.conns_by_net[conn.net.id]
+    j = next(k for k, x in enumerate(lst) if x is conn)
+    lst[j:j + 1] = parts
 
 
 def _cut_edge(m: ModuleIR, item, chunk: Slice) -> None:

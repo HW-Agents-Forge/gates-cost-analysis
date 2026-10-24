@@ -109,12 +109,54 @@ def constrain(t, left, right, dir):
 
 
 def record_type(name, fields):
+    """A record; ``width`` is None while any field is an unconstrained array (see ``unconstrained_paths``)."""
     offs = {}
     off = 0
+    unconstrained = False
     for fname, ft in fields:
         offs[fname] = (off, ft.width or 0)
         off += ft.width or 0
-    return VType("record", name, None, fields=list(fields), offs=offs, width=off)
+        if ft.width is None:
+            unconstrained = True
+    return VType("record", name, None, fields=list(fields), offs=offs, width=None if unconstrained else off)
+
+
+def unconstrained_paths(t, prefix=""):
+    """[(dotted field path, field type)] of the unconstrained array fields of record ``t`` (nested records too)."""
+    out = []
+    if t.kind != "record":
+        return out
+    for fname, ft in t.fields:
+        path = prefix + fname
+        if ft.kind == "record":
+            out.extend(unconstrained_paths(ft, path + "."))
+        elif ft.kind == "array" and ft.width is None:
+            out.append((path, ft))
+    return out
+
+
+def field_at(t, path):
+    """Type of the field ``a.b.c`` of record ``t`` (None when absent)."""
+    for part in path.split("."):
+        if t is None or t.kind != "record":
+            return None
+        t = dict(t.fields).get(part)
+    return t
+
+
+def constrain_fields(t, new, prefix=""):
+    """Copy of record ``t`` with the fields of ``new`` ({dotted path: constrained type}) replaced."""
+    fields = []
+    for fname, ft in t.fields:
+        path = prefix + fname
+        if path in new:
+            ft = new[path]
+        elif ft.kind == "record":
+            ft = constrain_fields(ft, new, path + ".")
+        fields.append((fname, ft))
+    r = record_type(t.name, fields)
+    r.cls = t.cls
+    return r
 
 
 T_BOOLEAN = enum_type("boolean", ["false", "true"], "bool")
@@ -127,7 +169,7 @@ T_NATURAL = int_type("natural", 0, 2 ** 31 - 1, "nat")
 T_POSITIVE = int_type("positive", 1, 2 ** 31 - 1, "nat")
 T_UINT = int_type("universal_integer", None, None)
 T_REAL = VType("real", "real", "real")
-T_TIME = VType("other", "time", "time")
+T_TIME = int_type("time", -2 ** 63, 2 ** 63 - 1, "time")      # integer count of femtoseconds
 T_SLV = array_type("std_logic_vector", T_STD_LOGIC, cls="slv")
 T_SUV = array_type("std_ulogic_vector", T_STD_LOGIC, cls="suv")
 T_UNSIGNED = array_type("unsigned", T_STD_LOGIC, cls="u")

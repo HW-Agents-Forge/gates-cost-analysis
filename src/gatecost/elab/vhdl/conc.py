@@ -177,6 +177,17 @@ class ConcMixin:
 
     # ------------------------------------------------------------------ concurrent assignment
     def conc_assign(self, s, sc):
+        if isinstance(s, N.SignalAssign) and len(s.alts) >= 1 and any(
+                a.cond is not None and self.parse_edge(a.cond) is not None for a in s.alts):
+            # ``q <= d when rising_edge(clk);`` is the process ``if rising_edge(clk) then q <= d; end if;`` (LRM 11.6)
+            def one(a):
+                return N.SignalAssign(None, s.target, [N.Alt(a.values, None)], s.kind, s.guarded, line=s.line, col=s.col)
+            branches = [N.IfBranch(a.cond, [one(a)]) for a in s.alts if a.cond is not None]
+            last = s.alts[-1]
+            els = [one(last)] if last.cond is None else None
+            ifs = N.IfStmt(None, branches, els, line=s.line, col=s.col)
+            self.elab_process(N.ProcessStmt(s.label, "all", [], [ifs], False, False, line=s.line, col=s.col), sc)
+            return
         if isinstance(s, N.SignalAssign) and len(s.alts) == 1 and s.alts[0].cond is None:
             lv = self.lvalue(s.target, sc)
             if lv.parts is None and lv.mem is None and not lv.dyn:
@@ -247,11 +258,12 @@ class ConcMixin:
                 i, clk = ev
                 key = expr_key(clk)
                 for j, t in enumerate(terms):
-                    if j == i or not isinstance(t, N.Binary) or t.op != "=":
+                    if j == i or not isinstance(t, N.Binary) or t.op not in ("=", "/="):
                         continue
                     for a, b in ((t.left, t.right), (t.right, t.left)):
                         if expr_key(a) == key and isinstance(b, N.Literal) and b.kind == "char" and b.value in "01":
-                            edge = (clk, "pos" if b.value == "1" else "neg")
+                            lvl = b.value if t.op == "=" else ("0" if b.value == "1" else "1")   # clk /= '0' is a rise
+                            edge = (clk, "pos" if lvl == "1" else "neg")
                             used.update((i, j))
                 if edge is None:
                     # `not clk'stable and clk = '1'`
@@ -371,13 +383,77 @@ class ConcMixin:
         scan(p.body or [], set())
         return state
 
+    def edge_branches(self, ifs):
+        """Clocked branches of one ``if`` chain: [(clk_node, edge, rest_terms, preceding_branches, branch)]."""
+        out = []
+        for k, br in enumerate(ifs.branches):
+            pe = self.parse_edge(br.cond)
+            if pe is None:
+                pe = self.parse_any_edge(br.cond)
+            if pe is None:
+                continue
+            if pe[1] == "both":
+                self.ctx.assume("`%s'event` without a level test: costed as one rising-edge register set (a "
+                            "double-data-rate register on the same signal is not modelled)" % expr_key(pe[0]))
+                pe = (pe[0], "pos", pe[2])
+            out.append((pe[0], pe[1], pe[2], [x for x in ifs.branches[:k] if self.parse_edge(x.cond) is None
+                                              and self.parse_any_edge(x.cond) is None], br))
+        return out
+
+    def parse_any_edge(self, cond):
+        """Bare ``clk'event`` (no level test): a change on either edge ('both')."""
+        terms = self.split_and(cond)
+        for i, t in enumerate(terms):
+            if isinstance(t, N.Attr) and t.name == "event":
+                return t.prefix, "both", [u for j, u in enumerate(terms) if j != i]
+        return None
+
+    def split_process(self, p):
+        """(clocked ifs, other statements) when the process mixes clocked and combinational code, or has
+        several clock edges; None for the plain single-clocked-statement / purely combinational shapes."""
+        body = [x for x in (p.body or []) if not isinstance(x, N.WaitStmt)]
+        if p.body and isinstance(p.body[0], N.WaitStmt) and p.body[0].until is not None:
+            return None
+        clocked = [s for s in body if isinstance(s, N.IfStmt) and self.edge_branches(s)]
+        if not clocked:
+            return None
+        others = [s for s in body if not any(s is c for c in clocked)]
+        has_out = any(isinstance(n, (N.SignalAssign, N.SelectAssign, N.ProcCall)) for s in others for n in walk(s))
+        multi = len(clocked) > 1 or len(self.edge_branches(clocked[0])) > 1
+        bare = any(self.parse_edge(b.cond) is None and self.parse_any_edge(b.cond) is not None
+                   for c in clocked for b in c.branches)
+        if not has_out and not multi and not bare:
+            return None
+        return clocked, (others if has_out else [])
+
     def elab_process(self, p, sc):
         if p.sim_only:
             self.diag("SIMULATION_ONLY_PROCESS", "process%s is simulation-only and skipped" % ((" '%s'" % p.label) if p.label else ""), p)
             return
-        kind, clk_node, edge, resets, body, rest = self.classify_process(p, sc)
         if not any(isinstance(n, (N.SignalAssign, N.SelectAssign, N.ProcCall)) for n in walk(p)):
             return
+        sp = self.split_process(p)
+        if sp is not None:
+            clocked, others = sp
+            targets = lambda stmts: {nm for s in stmts for n in walk(s) if isinstance(n, N.SignalAssign)
+                                     for nm in base_names(n.target)}
+            reg_t = targets(clocked)
+            if others and targets(others) & reg_t:
+                others = [o for o in others if not (isinstance(o, N.SignalAssign) and set(base_names(o.target)) <= reg_t)]
+                self.diag("UNSUPPORTED_CONSTRUCT", "process assigns the same signal inside and outside the clock edge; "
+                          "the register is kept and the unconditional assignment is ignored", p, severity="info",
+                          affects=False)
+                self.ctx.assume("process mixing clocked and combinational drivers of one signal: register wins")
+            for ifs in clocked:
+                for clk_node, edge, rest, resets, br in self.edge_branches(ifs):
+                    self.build_process_block(p, sc, "clocked", clk_node, edge, resets, br.body, rest)
+            if others:
+                self.build_process_block(p, sc, "comb", None, None, [], others, [])
+            return
+        kind, clk_node, edge, resets, body, rest = self.classify_process(p, sc)
+        self.build_process_block(p, sc, kind, clk_node, edge, resets, body, rest)
+
+    def build_process_block(self, p, sc, kind, clk_node, edge, resets, body, rest):
         pscope = Scope(sc, label=p.label or "")
         clk_sig = None
         if kind == "clocked":

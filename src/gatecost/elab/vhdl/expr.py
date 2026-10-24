@@ -6,11 +6,19 @@ import math
 from ...frontend.vhdl import ieee, nodes as N
 from ...ir import Const, Origin, SigSpec
 from ...ir.sigspec import mask
+from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from . import vtypes as T
 from .core import NotConst, StopLimit, Unsupported, bool_const, int_val, real_val, range_int_type
 from .vtypes import VType, minbits
 from .values import Val, Sym
 
+_CONTROL_CHARS = {n: i for i, n in enumerate((
+    "nul soh stx etx eot enq ack bel bs ht lf vt ff cr so si dle dc1 dc2 dc3 dc4 nak syn etb can em sub esc "
+    "fsp gsp rsp usp").split())}
+_CONTROL_CHARS["del"] = 127
+_CONTROL_CHARS.update({"c%d" % i: i for i in range(128, 160)})
+_TIME_FS = {"fs": 1, "ps": 10 ** 3, "ns": 10 ** 6, "us": 10 ** 9, "ms": 10 ** 12, "sec": 10 ** 15,
+            "min": 6 * 10 ** 16, "hr": 36 * 10 ** 17}
 _HEXVAL = {c: i for i, c in enumerate("0123456789ABCDEF")}
 _SLBIT = {"0": (0, 0), "1": (1, 0), "L": (0, 0), "H": (1, 0), "U": (0, 1), "X": (0, 1), "W": (0, 1), "-": (0, 1), "Z": (0, 1)}
 
@@ -233,6 +241,8 @@ class ExprMixin:
             return self.builtin_call(name, [], e, sc, hint)
         if name == "now":
             return int_val(0)
+        if name in _CONTROL_CHARS:       # NUL .. DEL of STANDARD.CHARACTER
+            return Val(T.T_CHARACTER, None, _CONTROL_CHARS[name])
         self.diag("UNSUPPORTED_CONSTRUCT", "unknown name '%s'" % name, e)
         return self.unknown(hint)
 
@@ -311,7 +321,16 @@ class ExprMixin:
                 ev, ex = et.enc[et.lits.index(nm)] if nm in et.lits else (0, 1)
                 value |= ev << ((n - 1 - i) * ew)
                 xm |= (mask(ew) if ex else 0) << ((n - 1 - i) * ew)
-        t = T.constrain(base if base.kind == "array" else T.T_SLV, n - 1, 0, "downto") if n else T.constrain(base, -1, 0, "downto")
+        if base.kind == "array" and base.cls == "str":
+            # a string literal is indexed from its subtype's lower bound (`string`: positive, so 1 to n) -- 'left,
+            # 'right and slices of string parameters depend on it (open-logic trim/toUpper/compareNoCase)
+            if hint is not None and hint.kind == "array" and hint.left is not None and hint.length == n:
+                l0, r0, d0 = hint.left, hint.right, hint.dir
+            else:
+                l0, r0, d0 = 1, n, "to"
+            t = T.constrain(base, l0, r0, d0)
+        else:
+            t = T.constrain(base if base.kind == "array" else T.T_SLV, n - 1, 0, "downto") if n else T.constrain(base, -1, 0, "downto")
         t = t.copy(elem=et, ewidth=ew) if t.elem is not et else t
         t.width = n * ew
         return Val(t, SigSpec.const(value, n * ew, xm), None, zm)
@@ -355,7 +374,17 @@ class ExprMixin:
         return Val(t, SigSpec.const(value, n, xm), None, zm)
 
     def ev_physical(self, e, sc, hint):
-        return int_val(0)
+        syms = [x for x in sc.lookup(e.unit) if x.kind == "const" and x.val is not None]
+        if not syms:
+            mult = _TIME_FS.get(e.unit.lower())
+            if mult is None:
+                return int_val(0)          # unit of an undeclared physical type
+            k = self.const_val(self.eval(e.value, sc))
+            return Val(T.T_TIME, None, int(round(k * mult)) if isinstance(k, float) else int(k) * mult)
+        n = self.eval(e.value, sc)
+        mult = self.const_int(syms[0].val)
+        k = self.const_val(n)
+        return Val(syms[0].t, None, int(round(k * mult)) if isinstance(k, float) else int(k) * mult)
 
     def ev_others(self, e, sc, hint):
         raise Unsupported("'others' outside an aggregate")
@@ -524,7 +553,7 @@ class ExprMixin:
         if ics and base.kind == "array":
             return self.constrain_array(base, ics, sc)
         if ics and base.kind == "record":
-            return base
+            return self.constrain_record(base, ics, sc)
         if ind.range is not None and base.kind in ("int", "real"):
             if base.kind == "real":
                 return base
@@ -542,6 +571,36 @@ class ExprMixin:
             except Exception:
                 pass
         return base
+
+    def constrain_record(self, base, ics, sc):
+        """``my_rec(v(7 downto 0), w(3 downto 0)(1 downto 0))``: constrain the unconstrained array fields."""
+        new = {}
+        for ic in ics:
+            ranges = []
+            n = ic
+            while isinstance(n, (N.Slice, N.Apply, N.Select)):
+                if isinstance(n, N.Slice):
+                    ranges.append(n.range)
+                elif isinstance(n, N.Apply):
+                    ranges.extend(a.actual for a in reversed(n.args))
+                else:
+                    break
+                n = n.prefix
+            path = []
+            while isinstance(n, N.Select):
+                path.append(n.suffix)
+                n = n.prefix
+            if not isinstance(n, N.Ident) or not ranges:
+                continue
+            path = ".".join([n.name] + path[::-1])
+            ft = T.field_at(base, path)
+            if ft is None or ft.kind != "array" or ft.width is not None:
+                continue
+            try:
+                new[path] = self.constrain_array(ft, ranges[::-1], sc)
+            except Exception:
+                self.diag("UNSUPPORTED_CONSTRUCT", "record field constraint '%s' is not constant" % path, ic, severity="info", affects=False)
+        return T.constrain_fields(base, new) if new else base
 
     def constrain_array(self, base, ics, sc):
         first = ics[0]
@@ -664,7 +723,9 @@ class ExprMixin:
         raise Unsupported("attribute '%s" % nm)
 
     def attr_scalar(self, nm, t, e, sc):
-        a = self.eval(e.arg, sc, t if nm != "pos" else None)
+        # a character literal under 'pos takes its type from the prefix: character'pos('z') is 122, not std_logic 'Z'
+        char_lit = isinstance(e.arg, N.Literal) and e.arg.kind == "char" and t.kind == "enum"
+        a = self.eval(e.arg, sc, t if nm != "pos" or char_lit else None)
         if nm == "pos":
             if a.c is not None:
                 return int_val(a.c)
@@ -749,33 +810,37 @@ class ExprMixin:
             return self.dyn_slice_val(base, e, sc)
         return self.slice_val(base, l, r, d, e)
 
-    def split_offset(self, x, sc):
-        """``(base expression, constant offset)`` of ``x`` written as ``base +/- constant`` (else ``(x, 0)``)."""
-        off = 0
-        while isinstance(x, N.Binary) and x.op in ("+", "-"):
-            try:
-                c = self.const_int(self.eval(x.right, sc))
-                x, off = x.left, off + (c if x.op == "+" else -c)
-                continue
-            except NotConst:
-                pass
-            if x.op == "+":
+    def linear_form(self, x, sc):
+        """``({atom repr: coefficient}, constant)`` of ``x`` built from + - and constant factors, else one atom."""
+        try:
+            return {}, self.const_int(self.eval(x, sc))
+        except NotConst:
+            pass
+        if isinstance(x, N.Binary) and x.op in ("+", "-"):
+            la, lc = self.linear_form(x.left, sc)
+            ra, rc = self.linear_form(x.right, sc)
+            sg = 1 if x.op == "+" else -1
+            atoms = dict(la)
+            for k, v in ra.items():
+                atoms[k] = atoms.get(k, 0) + sg * v
+            return {k: v for k, v in atoms.items() if v}, lc + sg * rc
+        if isinstance(x, N.Binary) and x.op == "*":
+            for a, b in ((x.left, x.right), (x.right, x.left)):
                 try:
-                    c = self.const_int(self.eval(x.left, sc))
-                    x, off = x.right, off + c
-                    continue
+                    f = self.const_int(self.eval(a, sc))
                 except NotConst:
-                    pass
-            break
-        return x, off
+                    continue
+                ba, bc = self.linear_form(b, sc)
+                return {k: v * f for k, v in ba.items() if v * f}, bc * f
+        return {repr(x): 1}, 0
 
     def dyn_slice_bounds(self, rng, sc):
         """For ``a(i+3 downto i)``: ``(width in elements, low-index expression, direction)`` or raises Unsupported."""
         if not isinstance(rng, N.Range):
             raise Unsupported("slice with a non-constant range")
-        lb, lo_ = self.split_offset(rng.left, sc)
-        rb, ro = self.split_offset(rng.right, sc)
-        if repr(lb) != repr(rb):
+        la, lo_ = self.linear_form(rng.left, sc)
+        ra, ro = self.linear_form(rng.right, sc)
+        if la != ra:
             raise Unsupported("slice bounds with a non-constant width")
         n = abs(lo_ - ro) + 1
         if rng.direction == "downto":
@@ -1066,6 +1131,12 @@ class ExprMixin:
                 left, right, d = max(idxs), min(idxs), "downto"
             t = T.constrain(t, left, right, d)
         length = t.length
+        lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
+        if length * ew > lim.max_net_width:
+            # the IR rejects a value this wide anyway: do not build it element by element
+            self.diag("LIMIT_REACHED", "aggregate of %d bits exceeds the net width limit (%d); its value is unknown"
+                      % (length * ew, lim.max_net_width), e)
+            return Val(t, SigSpec.x(length * ew))
         tmp = {}
         pos_i = 0
         for it in e.items:

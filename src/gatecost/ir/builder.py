@@ -500,6 +500,12 @@ class Builder:
         return self.inst(name, inst_name, inputs, outputs, count, origin, op="BLACKBOX", **attrs)
 
     # ------------------------------------------------------------- finalize
+    def defer_diag(self, net, code: str, message: str, severity: str = "warning", affects_cost: bool = False,
+                   origin: Origin | None = None) -> None:
+        """Diagnostic about ``net`` that is kept only if the net is read (or is a port) in the finished module."""
+        pend = self.__dict__.setdefault("_deferred_diags", [])
+        pend.append((net, code, message, severity, affects_cost, origin))
+
     def finalize(self, check: str = "raise") -> ModuleIR:
         """Finish the module: cut combinational loops, filter removed objects and check
         invariants (``check``: ``"raise"``, ``"diag"`` or ``"off"``)."""
@@ -514,6 +520,9 @@ class Builder:
         m.nodes = [n for n in m.nodes if n.alive]
         m.nets = [n for n in m.nets if n.driver != "dead"]
         m.recount_fanout()
+        for net, code, message, severity, affects, origin in self.__dict__.get("_deferred_diags", ()):
+            if net.fanout > 0 or net.port:
+                m.diag(code, message, severity, affects, origin)
         cut_loops(m)
         if check != "off":
             problems = check_module(m)
@@ -863,6 +872,18 @@ def _bitwise2(b, ops, w, sa, sb, o, n, g, at, op):
             return A
         if A == B:
             return A
+        for X, Y in ((A, B), (B, A)):       # partial constant mask: zero bits drop the other operand's bits
+            c = X.const_value()
+            if c is not None and c.xmask == 0:
+                parts, i = [], 0
+                while i < w:
+                    bit = (c.value >> i) & 1
+                    j = i
+                    while j < w and (c.value >> j) & 1 == bit:
+                        j += 1
+                    parts.append(Y.slice(i, j - i) if bit else SigSpec.const(0, j - i))
+                    i = j
+                return SigSpec.concat(parts)
     elif op == "OR":
         if _is_zero(A):
             return B

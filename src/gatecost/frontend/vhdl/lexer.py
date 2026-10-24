@@ -153,6 +153,8 @@ def lex(text: str):
             pos = end
             continue
         if kind == "bcom":
+            if end - pos < 4 or text[end - 2:end] != "*/":
+                errors.append((line, col, "unterminated block comment"))
             pm = _PRAGMA_BLOCK.match(text, pos)
             if pm:
                 which = pm.group(1).lower()

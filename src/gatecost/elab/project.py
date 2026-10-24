@@ -22,6 +22,7 @@ DEFAULT_LIMITS = {
     "max_instances": 100_000,
     "expr_depth": 500,
     "const_func_steps": 100_000,
+    "const_func_total_steps": 600_000,     # per function, summed over its calls (bounds wall time)
     "max_hier_depth": 128,
     "const_port_variants": 256,
 }
@@ -38,6 +39,7 @@ class Ctx:
         self.pkgmap = parsed.package_map()
         self.udps = set(parsed.udps)
         self.limits = dict(DEFAULT_LIMITS)
+        self.func_steps = {}
         for k, v in (limits or {}).items():
             if k in self.limits and isinstance(v, int):
                 self.limits[k] = v
@@ -326,6 +328,8 @@ def find_roots(parsed, exclude_lower=(), ctx=None):
     names = []
     seen = set()
     for m in parsed.modules:
+        if m.kind == "primitive":
+            continue                      # lowered user-defined primitive: never a root
         if m.name not in seen:
             seen.add(m.name)
             names.append(m.name)

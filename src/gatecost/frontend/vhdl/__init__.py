@@ -57,7 +57,7 @@ Subtypes and types
     ``EnumType(literals: [str])`` (character literals keep their quotes, ``"'0'"``),
     ``ArrayType(indexes, unconstrained: bool, element: SubtypeInd)`` (indexes: ``Range``/``SubtypeInd``/
     expression naming a type or ``x'range``), ``RecordType(fields: [RecordField(name, subtype)])``,
-    ``RangeType(range)`` (integer/real), ``Skipped(kind)`` for physical/access/file/protected types,
+    ``RangeType(range)`` (integer/real), ``PhysicalType(range, units: [UnitDecl(name, value, ref)])``, ``Skipped(kind)`` for access/file/protected types,
     ``None`` for an incomplete type.
 ``SubtypeDecl(name, subtype)``, ``AliasDecl(name, subtype, target)``, ``AttributeDecl(name, type_mark)``,
 ``AttributeSpec(attr, targets: [str], entity_class, value)``, ``ComponentDecl(name, generics, ports)``,

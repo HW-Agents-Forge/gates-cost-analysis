@@ -43,7 +43,10 @@ class ParsedVhdl:
         """Entity by name; ``lib`` None searches every library (``work`` first)."""
         name = name.lower()
         if lib is not None:
-            return self.entities.get((lib.lower(), name))
+            hit = self.entities.get((lib.lower(), name))
+            if hit is None and self.library_unused(lib):
+                return self.find_entity(name)
+            return hit
         for key in (("work", name),):
             if key in self.entities:
                 return self.entities[key]
@@ -52,10 +55,22 @@ class ParsedVhdl:
                 return e
         return None
 
+    def library_unused(self, lib):
+        """True for a library name no unit was compiled into (not a standard one): a project compiled in a single
+        library and referring to it by its real name (``library neorv32; use neorv32.pkg.all``) is resolved by
+        unit name instead."""
+        lib = lib.lower()
+        if lib in STD_LIBS or lib == "work":
+            return False
+        return not any(u.library == lib for u in self.units)
+
     def find_package(self, name, lib=None):
         name = name.lower()
         if lib is not None:
-            return self.packages.get((lib.lower(), name))
+            hit = self.packages.get((lib.lower(), name))
+            if hit is None and self.library_unused(lib):
+                return self.find_package(name)
+            return hit
         if ("work", name) in self.packages:
             return self.packages[("work", name)]
         for (l, n), p in self.packages.items():
@@ -259,6 +274,8 @@ def _finish(out: ParsedVhdl, architectures, side):
                             or (u.library, pkg) in out.contexts:
                         continue
                 elif (lib, pkg) in out.packages or (lib, pkg) in out.contexts:
+                    continue
+                elif out.library_unused(lib) and (out.find_package(pkg) is not None or any(k[1] == pkg for k in out.contexts)):
                     continue
                 key = (u.file, lib, pkg)
                 if key in seen:

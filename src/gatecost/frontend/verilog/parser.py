@@ -27,6 +27,7 @@ STRENGTH = frozenset(("supply0", "supply1", "strong0", "strong1", "pull0", "pull
 GATES = frozenset(("and", "nand", "or", "nor", "xor", "xnor", "buf", "not", "bufif0", "bufif1", "notif0",
                    "notif1", "nmos", "pmos", "rnmos", "rpmos", "cmos", "rcmos", "tran", "rtran", "tranif0",
                    "tranif1", "rtranif0", "rtranif1", "pullup", "pulldown"))
+ELAB_TASKS = frozenset(("$error", "$warning", "$info", "$fatal"))     # IEEE 1800 20.11, legal as generate items
 ASSIGN_OPS = frozenset(("=", "<=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "<<<=", ">>>="))
 UNARY = frozenset(("+", "-", "!", "~", "&", "|", "^", "~&", "~|", "~^", "^~"))
 BINPREC = {
@@ -108,6 +109,11 @@ class Parser:
         self.unit = ParsedUnit()
         self.lex_err = set()
         for off, msg in toks.errors:
+            if msg == "unterminated block comment":
+                ol = bisect_left(self.nl, off)
+                col = off - self.nl[ol - 1] if ol else off + 1
+                sink.add("PREPROC_ERROR", msg, self.lf[ol], self.ll[ol], col)
+                continue
             idx = self._tok_at_offset(off)
             self.lex_err.add(idx)
             self._diag("PARSE_ERROR", msg, idx)
@@ -499,7 +505,10 @@ class Parser:
                 self.adv()
                 args = self.parse_call_args(sysc=True)
                 self.expect(")")
-            return A.SysCall(self.loc(i), texts[i], args)
+            sc = A.SysCall(self.loc(i), texts[i], args)
+            if self.k == "'(":      # ``$bits(T)'(x)`` / ``$clog2(N)'(x)``: size cast
+                return self.parse_cast_tail(sc)
+            return sc
         elif k == "STR":
             self.adv()
             t = texts[i]
@@ -572,7 +581,7 @@ class Parser:
                 args = self.parse_call_args()
                 self.expect(")")
                 e = A.Call(e.loc, e, args)
-            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number):
+            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number, A.Member):
                 return self.parse_cast_tail(e)
             elif k == "'{" and e.__class__ in (A.Ident, A.ScopedName):
                 return self.parse_pattern(e)
@@ -875,7 +884,9 @@ class Parser:
     def is_decl_start(self):
         k = self.k
         if k in TYPE_KW or k in DECL_PREFIX:
-            return True
+            # a cast starts an expression statement: ``void'(f(x));``, ``int'(y)`` is not a declaration either
+            return self.kinds[self.i + 1] not in ("'(", "'{") or k in DECL_PREFIX
+
         if k == "ID":
             return self._named_type_ahead()
         return False
@@ -958,6 +969,27 @@ class Parser:
             out.append(A.Port(loc, direction, net, dt, name, dims, init, None, None))
         self.expect(";")
 
+    def packed_type_then_name(self, j):
+        """True when the ``[..]`` dimensions starting at token ``j`` are followed by an identifier, i.e. the
+        preceding identifier is a type (``sp2v_e [N-1:0] in``) and not a name with unpacked dimensions."""
+        kinds = self.kinds
+        n = len(kinds)
+        while j < n and kinds[j] == "[":
+            depth = 0
+            while j < n:
+                kd = kinds[j]
+                if kd == "[":
+                    depth += 1
+                elif kd == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                elif kd == "EOF":
+                    return False
+                j += 1
+        return j < n and kinds[j] == "ID"
+
     def parse_ansi_ports(self, default_dir=None, ports=None):
         """After '(' ; stops at ')' (not consumed)."""
         if ports is None:
@@ -983,14 +1015,16 @@ class Parser:
                 self.adv()
                 mp = self.ident()
                 cur = (None, None, None, ifc, mp)
-            elif k == "ID" and self.kinds[i + 1] == "ID" and default_dir is None:
+            elif k == "ID" and self.kinds[i + 1] == "ID" and default_dir is None and (cur is None or cur[0] is None):
                 ifc = self.texts[i]
                 self.adv()
                 cur = (None, None, None, ifc, None)
-            elif cur is None and (k in TYPE_KW or k == "[" or k == "signed" or k == "unsigned" or
-                                  (k == "ID" and self.kinds[i + 1] in ("ID", "::"))):
+            elif (k in TYPE_KW or k == "[" or k == "signed" or k == "unsigned" or
+                  (k == "ID" and self.kinds[i + 1] in ("ID", "::") and (cur is None or cur[3] is None)) or
+                  (k == "ID" and self.kinds[i + 1] == "[" and self.packed_type_then_name(i + 1))):
+                # a data type starts a new port; without a direction it inherits the previous one
                 dt = self.parse_data_type()
-                cur = (default_dir or "input", None, dt, None, None)
+                cur = ((cur[0] if cur is not None and cur[0] else None) or default_dir or "input", None, dt, None, None)
             elif cur is None:
                 cur = (default_dir, None, None, None, None)
             j = self.i
@@ -1036,15 +1070,16 @@ class Parser:
                     dtype = self.parse_data_type()
             i = self.i
             name = self.ident()
+            udims = ()
             if self.k == "[":
-                self.parse_dims()
+                udims = tuple(self.parse_dims())
             init = None
             if self.accept("="):
                 if is_type:
                     init = self.parse_data_type()
                 else:
                     init = self.parse_expr()
-            out.append(A.ParamDecl(self.loc(i), local, dtype, name, init, is_type))
+            out.append(A.ParamDecl(self.loc(i), local, dtype, name, init, is_type, udims))
             if self.k != ",":
                 break
             self.adv()
@@ -1148,10 +1183,13 @@ class Parser:
             if semi:
                 self.expect(";")
             return A.ProcAssign(loc, lhs, "+=" if op == "++" else "-=", A.Number(loc, None, "d", True, "1", 1, False), True)
+        if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.SysCall):     # ``void'($value$plusargs(...));``
+            lhs = lhs.expr
         if isinstance(lhs, A.SysCall):
             if semi:
                 self.expect(";")
-            self.ns += 1
+            if lhs.name not in ("$error", "$fatal", "$warning", "$info", "$finish", "$stop", "$exit"):
+                self.ns += 1         # assertion-style reporting in an unreachable branch keeps a function synthesizable
             self.info(i, f"system task {lhs.name} ignored")
             return A.Null(loc)
         if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.Call):
@@ -1746,14 +1784,23 @@ class Parser:
         self.adv()
         params = ()
         if self.k == "#":
-            self.adv()
-            self.expect("(")
-            params = self.parse_param_assigns()
-            self.expect(")")
+            if self.kinds[self.i + 1] in ("NUM", "REAL", "TIME"):
+                self.skip_delay()            # '#1': delay of a user-defined primitive instance
+            else:
+                self.adv()
+                self.expect("(")
+                params = self.parse_param_assigns()
+                self.expect(")")
         while True:
             j = self.i
-            name = self.ident()
-            dims = self.parse_dims()
+            if self.k == "(":
+                # unnamed instance (user-defined primitives may omit the instance name)
+                lc = self.loc(j)
+                name = f"{modname}${lc[1]}_{lc[2]}"
+                dims = ()
+            else:
+                name = self.ident()
+                dims = self.parse_dims()
             self.expect("(")
             conns = self.parse_conns()
             self.expect(")")
@@ -1877,6 +1924,8 @@ class Parser:
         k1 = kinds[j]
         if k1 == "#":
             return self.parse_instance(out)
+        if k1 == "(" and j == i + 1:
+            return self.parse_instance(out)      # unnamed instance (user-defined primitive)
         if k1 == "ID":
             k2 = kinds[j + 1]
             if k2 == "(":
@@ -1932,6 +1981,10 @@ class Parser:
             return None
         if k in ASSERT_KW:
             self.info(self.i, f"{k} ignored")
+            self.skip_to_semi()
+            return None
+        if k == "SYSID" and self.texts[self.i] in ELAB_TASKS:
+            self.info(self.i, f"elaboration system task {self.texts[self.i]} ignored")
             self.skip_to_semi()
             return None
         raise ParseError(self.i, f"unexpected {self.desc()} at module item level")
@@ -2173,8 +2226,14 @@ class Parser:
                     u.packages.append(self.parse_package())
                 elif k == "primitive":
                     nm = self.texts[self.i + 1] if self.kinds[self.i + 1] == "ID" else "<unnamed>"
-                    self.info(self.i, f"user-defined primitive '{nm}' ignored (black box)")
-                    u.udps.append(nm)
+                    from .udp import lower_udp
+                    mod, why = lower_udp(self, self.i)
+                    if mod is not None:
+                        u.modules.append(mod)
+                    else:
+                        self.unsupported(self.i, f"user-defined primitive '{nm}' not lowered ({why}); "
+                                         "instances are treated as black boxes")
+                        u.udps.append(nm)
                     self.skip_balanced("primitive", "endprimitive")
                 elif k == "extern":
                     self.i_extern(u.unit_items)

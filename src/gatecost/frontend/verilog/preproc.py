@@ -242,7 +242,8 @@ class Preprocessor:
                 body = m.group()
                 if len(body) < 14:
                     continue
-                tm = _TRANSLATE_RE.search(body)
+                # a pragma starts the comment: prose such as "this shouldn't add pragma translate_off" is not one
+                tm = _TRANSLATE_RE.match(body[2:].lstrip(" \t*"))
                 if tm is not None:
                     emit_range(flush, s)
                     nl = body.count("\n")
@@ -533,6 +534,8 @@ class Preprocessor:
         pos = 0
         flush = 0
         search = _TICKSTR_RE.search
+        conds: list[list] = []      # conditional directives inside the body: [parent_active, taken, active]
+        active = True
         while True:
             m = search(s, pos)
             if m is None:
@@ -541,14 +544,45 @@ class Preprocessor:
                 pos = m.end()
                 continue
             name = m.group("tick")
-            out.append(s[flush:m.start()])
-            if name in _COND_DIRS or name in _IGNORED_DIRS or name in ("define", "undef", "include", "default_nettype"):
+            if active:
+                out.append(s[flush:m.start()])
+            if name in _COND_DIRS:
+                pos = flush = m.end()
+                if name == "else":
+                    if conds:
+                        c = conds[-1]
+                        c[2] = c[0] and not c[1]
+                        c[1] = True
+                elif name == "endif":
+                    if conds:
+                        conds.pop()
+                else:
+                    im = _IDENT_AFTER.match(s, pos)
+                    defined = False
+                    if im is not None:
+                        defined = (im.group(1) in self.macros) == (name != "ifndef")
+                        pos = flush = im.end()
+                    if name == "elsif":
+                        if conds:
+                            c = conds[-1]
+                            c[2] = c[0] and not c[1] and defined
+                            c[1] = c[1] or defined
+                    else:
+                        parent = conds[-1][2] if conds else True
+                        conds.append([parent, parent and defined, parent and defined])
+                active = conds[-1][2] if conds else True
+                continue
+            if not active:
+                pos = flush = m.end()
+                continue
+            if name in _IGNORED_DIRS or name in ("define", "undef", "include", "default_nettype"):
                 pos = flush = m.end()
                 continue
             rep, endp = self._use(name, s, m.end(), depth, stack, site, st)
             out.append(rep)
             pos = flush = endp
-        out.append(s[flush:])
+        if active:
+            out.append(s[flush:])
         return "".join(out)
 
     # ------------------------------------------------------------------ include

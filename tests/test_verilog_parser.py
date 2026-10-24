@@ -299,11 +299,12 @@ class Constructs(unittest.TestCase):
                        "covergroup declaration ignored", "clocking declaration ignored", "specify block ignored",
                        "class declaration ignored", "program declaration ignored", "checker declaration ignored",
                        "DPI import ignored", "bind ignored", "always with delay ignored",
-                       "user-defined primitive 'udp' ignored (black box)", "system task $display ignored",
+                       "system task $display ignored",
                        "assert statement ignored"):
             self.assertTrue(any(needle in m for m in info), needle)
         self.assertTrue(all(x.code == "IGNORED_REGION" and not x.affects_cost for x in d.diagnostics))
-        self.assertEqual(d.udps, ("udp",))
+        self.assertEqual(d.udps, ())                 # lowered to a module (kind "primitive")
+        self.assertEqual([(x.name, x.kind) for x in d.modules[1:]], [("udp", "primitive")])
         m = d.modules[0]
         self.assertEqual([type(i).__name__ for i in m.items], ["Always"])
         self.assertEqual(len(m.items[0].body.items), 1)                  # only q <= #1 d remains
@@ -397,6 +398,41 @@ class Constructs(unittest.TestCase):
         d = parse_text("module m; assign y = " + "(" * 5000 + "a" + ")" * 5000 + "; endmodule")
         self.assertEqual([x.code for x in d.diagnostics], ["PARSE_ERROR"])
         self.assertIn("nesting too deep", d.diagnostics[0].message)
+
+
+class ElaborationTasks(unittest.TestCase):
+    def test_elaboration_system_tasks_are_legal_generate_items(self):
+        src = """module a #(parameter int N = 4)(input logic x, output logic y);
+  if (N < 2) begin : g_chk
+    $error("N must be >= 2, got %0d", N);
+  end
+  $info("elaborating");
+  $warning("w"); $fatal(1, "f");
+  assign y = x;
+endmodule
+"""
+        d = parse_text(src, "a.sv")
+        self.assertEqual([x.code for x in d.diagnostics if x.severity != "info"], [])
+        self.assertEqual(len(d.modules), 1)
+
+
+class TypedPorts(unittest.TestCase):
+    def ports(self, src):
+        d = parse_text(src, "a.sv")
+        self.assertEqual([x.code for x in d.diagnostics if x.severity != "info"], [])
+        return d
+
+    def test_function_arguments_each_with_a_type(self):
+        d = self.ports("package p; function automatic int max(int a, int b); return a > b ? a : b; endfunction endpackage\n")
+        (pk,) = [x for x in d.packages if x.name == "p"]
+        (f,) = [x for x in pk.items if isinstance(x, A.Function)]
+        self.assertEqual([p.name for p in f.ports], ["a", "b"])
+
+    def test_module_port_with_new_type_inherits_direction(self):
+        d = self.ports("module m(input logic a, logic b, input my_t c, my_t e, output [3:0] y, z); endmodule\n")
+        got = [(p.name, p.direction, p.iface) for p in d.modules[0].ports]
+        self.assertEqual(got, [("a", "input", None), ("b", "input", None), ("c", "input", None),
+                               ("e", "input", None), ("y", "output", None), ("z", "output", None)])
 
 
 if __name__ == "__main__":

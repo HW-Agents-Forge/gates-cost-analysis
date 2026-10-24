@@ -345,5 +345,28 @@ class Reader(unittest.TestCase):
         self.assertEqual([x.code for x in d.diagnostics], ["SOURCE_NOT_FOUND"])
 
 
+class ConditionalsInMacroBodies(unittest.TestCase):
+    def body(self, defs, use):
+        r, d = pp(defs + use + "\n")
+        self.assertEqual(d, [])
+        return " ".join(r.text.split())
+
+    def test_ifndef_inside_body_is_evaluated_at_expansion(self):
+        defs = "`define M(x) a `ifndef OFF b `endif c(x)\n"
+        self.assertEqual(self.body(defs, "`M(1)"), "a b c(1)")
+        self.assertEqual(self.body("`define OFF 1\n" + defs, "`M(1)"), "a c(1)")
+
+    def test_else_and_nesting_inside_body(self):
+        defs = "`define M `ifdef A p `ifdef B q `else r `endif `else s `endif t\n"
+        self.assertEqual(self.body(defs, "`M"), "s t")
+        self.assertEqual(self.body("`define A\n" + defs, "`M"), "p r t")
+        self.assertEqual(self.body("`define A\n`define B\n" + defs, "`M"), "p q t")
+
+    def test_inactive_branch_does_not_expand_macros(self):
+        r, d = pp("`define M `ifdef NOPE `UNDEFINED_ONE `endif ok\n`M\n")
+        self.assertEqual(d, [])
+        self.assertEqual(" ".join(r.text.split()), "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

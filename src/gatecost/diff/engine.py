@@ -695,6 +695,8 @@ def _config_diffs(b: DesignCostTree, a: DesignCostTree) -> list[str]:
     cb, ca = b.config or {}, a.config or {}
     for k in ("profile", "defines", "top"):
         if k in cb and k in ca and cb[k] != ca[k]:
+            if k == "top" and (cb[k] is None or ca[k] is None):
+                continue                # auto-detected on one side, pinned to the same module on the other
             out.append(k)
     return out
 

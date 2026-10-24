@@ -36,6 +36,19 @@ tri1 triand trior trireg type typedef union unique unique0 unsigned uwire var ve
 wand weak0 weak1 while wire wor xnor xor modport with
 """.split())
 
+# SystemVerilog-only keywords that plain Verilog designs commonly use as identifiers (``reg [3:0] bit;``,
+# ``.ref(x)``).  ``lex`` demotes one of them to an identifier when the context cannot be a keyword use.
+SOFT_KEYWORDS = frozenset("""
+bit byte shortint int longint string void chandle alias bind checker class cover covergroup do expect export
+extern final inside interface modport priority program property ref restrict sequence static tagged type
+unique unique0 var virtual with
+""".split())
+_SOFT_TYPES = frozenset("bit byte shortint int longint string void chandle".split())
+# tokens that may follow an identifier but never a keyword of SOFT_KEYWORDS
+_AFTER_IDENT = frozenset("""
+<= = ; ) ] , . + - * / % == != === !== & | ^ ~^ ^~ && || ? : } < > >= << >> <<< >>> +: -: += -= *= /= ++ --
+""".split())
+
 RECORDED_ATTRS = frozenset(("full_case", "parallel_case", "keep", "fsm_encoding", "enum_encoding",
                             "ram_style", "rom_style", "syn_keep", "keep_hierarchy"))
 
@@ -51,6 +64,7 @@ _OPS.sort(key=len, reverse=True)
 OPERATORS = frozenset(_OPS)
 
 _SKIP = r"(?:[ \t\r\n\f\v]+|//[^\n]*|/\*(?:.*?\*/|.*\Z))*+"
+_CMT_SCAN = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/|(?P<open>/\*)', re.S)
 _BASED = r"(?:\d[\d_]*[ \t]*)?'[sS]?[bBoOdDhH][ \t]*[0-9a-fA-FxXzZ?_]+"
 _REAL = r"\d[\d_]*(?:\.\d[\d_]*(?:[eE][+-]?\d+)?|[eE][+-]?\d+)(?![\w.])"
 _TIME = r"\d[\d_]*(?:\.\d[\d_]*)?(?:fs|ps|ns|us|ms|s)(?![\w])"
@@ -66,6 +80,7 @@ _MASTER = re.compile(
     r"|(?P<ATTR>\(\*(?!\))(?:.*?\*\)|.*\Z))"
     r'|(?P<STR>"(?:[^"\\\n]|\\.)*(?:"|(?=\n)|\Z))'
     r"|(?P<ESC>\\\S+)"
+    r"|(?P<TICKSP>'[ \t\r\n]+[({])"
     r"|(?P<OP>" + "|".join(re.escape(o) for o in _OPS) + r")"
     r"|(?P<END>\Z)"
     r"|(?P<BAD>\S)"
@@ -110,12 +125,21 @@ def lex(text: str) -> Tokens:
     kw = KEYWORDS
     attrs = toks.attrs
     pending_attr: set | None = None
+    soft: list[int] = []
     for m in _MASTER.finditer(text):
         g = m.lastgroup
         s = m.group(g)
         if g == "ID":
-            ka(s if s in kw else "ID")
+            if s in kw:
+                ka(s)
+                if s in SOFT_KEYWORDS:
+                    soft.append(len(kinds) - 1)
+            else:
+                ka("ID")
         elif g == "OP":
+            ka(s)
+        elif g == "TICKSP":     # ``w ' (x)`` / ``n ' {a, b}``: whitespace after the cast tick
+            s = "'" + s[-1]
             ka(s)
         elif g == "NUM2":
             ka("NUM")
@@ -139,7 +163,19 @@ def lex(text: str) -> Tokens:
             pending_attr = None
         ta(s)
         oa(m.end() - len(s))
+    for i in soft:
+        prev = kinds[i - 1] if i else ""
+        nxt = kinds[i + 1] if i + 1 < len(kinds) else "EOF"
+        k = kinds[i]
+        if prev == "." or nxt in _AFTER_IDENT or (prev == "]" and k in _SOFT_TYPES):
+            kinds[i] = "ID"
     n = len(text)
+    i = text.rfind("/*")
+    if i >= 0 and text.find("*/", i + 2) < 0:
+        for m in _CMT_SCAN.finditer(text):
+            if m.lastgroup == "open":
+                toks.errors.append((m.start(), "unterminated block comment"))
+                break
     for _ in range(4):
         ka("EOF")
         ta("")

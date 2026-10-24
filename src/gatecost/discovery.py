@@ -37,7 +37,10 @@ def discover(root: Path, *, excludes: list[str], skill_dir: Path, globs: list[st
         for pattern in globs:
             for p in sorted(root.glob(pattern)):
                 if p.is_file() and language_of(p) in languages:
-                    rtl.append(p.relative_to(root))
+                    rel = p.relative_to(root)
+                    dirs = [Path(*rel.parts[:i + 1]) for i in range(len(rel.parts) - 1)]
+                    if not any(_skip_dir(d, d.name, excludes, skill_dir, root / d) for d in dirs):
+                        rtl.append(rel)
         return sorted(set(rtl)), flists
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)

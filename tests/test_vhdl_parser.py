@@ -455,10 +455,12 @@ class SkippedRegionTests(unittest.TestCase):
         self.assertEqual(errors(r), [])
         self.assertTrue(any("shared variable of protected type" in d.message for d in self.infos(r)))
 
-    def test_physical_type_skipped(self):
+    def test_physical_type_units_parsed(self):
         r, a = arch("", "", "type d is range 0 to 1000 units um; mm = 1000 um; end units d;\nsignal s : bit;")
         self.assertEqual(errors(r), [])
-        self.assertIsInstance(a.decls[0].definition, N.Skipped)
+        df = a.decls[0].definition
+        self.assertIsInstance(df, N.PhysicalType)
+        self.assertEqual([(u.name, u.ref) for u in df.units], [("um", None), ("mm", "um")])
         self.assertEqual(a.decls[1].name, "s")
 
     def test_psl_skipped(self):
