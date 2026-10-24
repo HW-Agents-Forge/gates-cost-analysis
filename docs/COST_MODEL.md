@@ -54,8 +54,11 @@ For classes with several architectures, `typ = min_arch + α_c · (mid_arch − 
 | ADD/SUB with constant K | `(n − tz(K))·HA` (`tz` = trailing zeros) | ×1.3 | ×2 |
 | NEG | `(n−1)·(OR2 + XOR2)` | same | ×σ |
 | k-operand ADD (fused) | `(k−2)·w·FA + ADD_ripple(w + ⌈log2 k⌉)` | CSA tree + Brent–Kung CPA | unfused: `(k−1)·ADD_max` |
+| ADD/SUB, result `n` bits, narrow operand `m < n−1` bits | `ADD(m)` + `(n−m)·HA` | `ADD(m)` + `1.3·(n−m)·HA` at α = 1 | `ADD_max(m)` + `2·(n−m)·HA`, each capped by the full `n`-bit ADD |
 
-A 1-bit ADD is an XOR2. A carry-out-only use is costed as a comparator.
+A 1-bit ADD is an XOR2. A carry-out-only use is costed as a comparator. When one operand has only `m` significant bits (after stripping known-zero and sign-replicated bits) and `m < n−1`, the upper `n−m` bits only propagate a carry and are costed as an incrementer (one HA per bit, scaled like an add with a constant), so `x + flag` costs about half of a full `n`-bit adder.
+
+A fused k-operand sum built by the netlist builder uses the effective width `t_i` of every term rather than the result width: the CSA tree needs `max(0, Σt_i − 2·max t_i)` FA (equal to `(k−2)·w` for k terms of width `w`), followed by one CPA of the result width. A 32-input popcount therefore costs about 26 FA, not `30 × 6` FA.
 
 ### 3.2 Comparators and bitwise operations
 
@@ -123,6 +126,7 @@ Clock gating is not the default for typ because it only occurs when the flow ena
   - typ = `D·W·(DFF + MUX2) + R·(D−1)·W·MUX2 + P_w·DECODE(log2 D) + (P_w−1)·D·W·MUX2`
   - min = `D·W·(DLAT + ICG/W) + R·(D−1)·W·1.17 + DECODE`
   - max = `σ·typ`
+- A synchronous read port on a flop-based array adds a register of `W` flops per read port (`R·W·DFF`, in min and typ; max scales typ). The macro formula already contains its read register.
 - **Macro**, used only when all hold: synchronous read, `D·W ≥ macro_min_bits` (default 4096), `D ≥ 16`, and macros enabled in the profile. Cost `c0 + c_bit·D·W + c_row·D + c_col·W` (defaults 3000, 0.6, 4, 30); min = 0.5×, max = 2×. Category `memory_macro`; confidence is capped at `low` unless the profile supplies a `(D, W) → GE` table, which is bilinearly interpolated.
 - **ROM** (`D × W` constant table): constant columns cost 0; columns equal to an address bit or its complement cost 0 or INV; duplicate and complemented columns are shared. For each remaining column, typ = `2.0·D / log2 D`, min = `0.5·typ`, max = `(D/2)·MUX2`. For `log2 D ≤ 6`, a cheap two-level minimization (literal count × 0.75) replaces typ.
 
@@ -130,7 +134,7 @@ Clock gating is not the default for typ because it only occurs when the flow ena
 
 Naive per-operator costing over-estimates what synthesis produces. The IR and cost evaluation implement the following, all in linear time. A general logic optimizer is explicitly out of scope.
 
-1. **Bit-level constness.** Each net carries a known-bit mask `(kmask, kval)` and a sign-replication marker. Before costing: a MUX2 with one constant input becomes AND2/OR2; identical inputs become a wire; both inputs constant yields a wire or INV(sel); a known-zero operand bit in an ADD makes that bit a wire.
+1. **Bit-level constness.** Each net carries a known-bit mask `(kmask, kval)` and a sign-replication marker. Before costing: a MUX2 with one constant input becomes AND2/OR2; identical inputs become a wire, and so do the individual bits of a MUX whose two arms resolve to the same net bit through `^ 0`, `& 1`, `| 0` or `~^ 1` (the `if (x) n = n ^ K` idiom of CRCs and LFSRs needs selectors only where `K` is 1); both inputs constant yields a wire or INV(sel); a known-zero operand bit in an ADD makes that bit a wire.
 2. **Demanded bits.** A backward pass from outputs, register D pins, and memory ports yields an MSB/LSB demand per operation. Effective ADD width is `min(demand, max(w_a', w_b') + 1)`, where `w'` strips known-zero and sign-replicated MSBs. MUL widths strip trailing zeros (they become shifts) and known-zero MSBs.
 3. **Dead and duplicate logic.** Logic without a transitive path to an output, register, or memory port costs 0. A register whose D input is a constant equal to its reset value costs 0. Structural hashing on `(op, operand ids, constants, attributes)` merges common subexpressions and equivalent flops (merged in min/typ, retained in max).
 4. **Datapath fusion.** Chains of ADD/SUB/NEG/MUL whose intermediates have fanout 1 become one `SUM` cluster: `a*b + c` folds into the multiplier reduction tree (about `w·FA`); `a+b+c+d` becomes a CSA tree plus one CPA. min and typ use the fused cost; max uses the unfused cost.

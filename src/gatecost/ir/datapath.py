@@ -4,7 +4,7 @@ from __future__ import annotations
 from .core import ARITH_FUSABLE, ModuleIR, Net, Node
 from .graph import consumers
 from .knownbits import _tz, sig_known
-from .sigspec import SigSpec, Slice, mask, top_rep
+from .sigspec import Const, SigSpec, Slice, mask, top_rep
 
 
 def popcount(x: int) -> int:
@@ -30,6 +30,58 @@ def opinfo(sig: SigSpec) -> dict:
         "kmask": km,
         "kval": kv,
     }
+
+
+def _bit_atom(sig: SigSpec, i: int) -> tuple:
+    """Atom of bit ``i``: ``(net, bit)`` for a net bit, ``(None, v)`` for a constant bit."""
+    pos = 0
+    for c in sig.chunks:
+        if i < pos + c.width:
+            j = i - pos
+            if isinstance(c, Const):
+                return (None, 2 if (c.xmask >> j) & 1 else (c.value >> j) & 1)
+            return (c.net, c.lo + j)
+        pos += c.width
+    return (None, 2)
+
+
+def canon_atom(atom: tuple, depth: int = 8) -> tuple:
+    """Resolve a net bit through bitwise nodes whose other operand bit is a neutral constant
+    (``x ^ 0``, ``x ~^ 1``, ``x & 1``, ``x | 0``): the result is the bit it passes through."""
+    while depth > 0:
+        net, bit = atom
+        if net is None:
+            return atom
+        nd = net.driver
+        if not isinstance(nd, Node) or nd.op not in ("XOR", "XNOR", "AND", "OR") or len(nd.outputs) != 1 \
+                or nd.outputs[0] is not net:
+            return atom
+        ins = dict(nd.inputs)
+        a, b = _bit_atom(ins["A"], bit), _bit_atom(ins["B"], bit)
+        neutral = 1 if nd.op in ("AND", "XNOR") else 0
+        if b[0] is None and b[1] == neutral:
+            atom = a
+        elif a[0] is None and a[1] == neutral:
+            atom = b
+        else:
+            return atom
+        depth -= 1
+    return atom
+
+
+def _same_bits(sa: SigSpec, sb: SigSpec, mask_bits: int) -> int:
+    """Subset of ``mask_bits`` where both signals resolve to the same net bit."""
+    out = 0
+    i = 0
+    m = mask_bits
+    while m:
+        if m & 1:
+            x, y = _bit_atom(sa, i), _bit_atom(sb, i)
+            if x[0] is not None and canon_atom(x) == canon_atom(y):
+                out |= 1 << i
+        m >>= 1
+        i += 1
+    return out
 
 
 def compute_eff(nd: Node) -> dict:
@@ -129,6 +181,7 @@ def compute_eff(nd: Node) -> dict:
             free = dm & ~km
             ak, bk = a["kmask"], b["kmask"]
             both_var = free & ~ak & ~bk
+            both_var &= ~_same_bits(ins["A"], ins["B"], both_var)
             const_a = free & ak & ~bk
             const_b = free & bk & ~ak
             both_const = free & ak & bk
