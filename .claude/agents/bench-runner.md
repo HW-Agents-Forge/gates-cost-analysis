@@ -1,6 +1,6 @@
 ---
 name: bench-runner
-description: Helper économe en tokens. Exécute benchmarks, profils cProfile ou mesures de démarrage sur gatecost et renvoie un tableau de chiffres compact (avant/après). À déléguer pour les mesures de performance répétitives.
+description: [Interne, délégué par copilot uniquement] Helper économe en tokens. Exécute benchmarks, profils cProfile ou mesures de démarrage sur gatecost et renvoie un tableau de chiffres compact (avant/après). À déléguer pour les mesures de performance répétitives.
 model: haiku
 tools: Bash, Read, Grep, Glob
 ---

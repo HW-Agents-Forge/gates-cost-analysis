@@ -1,6 +1,6 @@
 ---
 name: test-runner
-description: Helper économe en tokens. Lance des tests, benchmarks, mypy ou le smoke et renvoie un résumé court (verts/rouges, premières erreurs utiles). À déléguer pour tout lancement de tests dont seul le verdict compte.
+description: [Interne, délégué par copilot uniquement] Helper économe en tokens. Lance des tests, benchmarks, mypy ou le smoke et renvoie un résumé court (verts/rouges, premières erreurs utiles). À déléguer pour tout lancement de tests dont seul le verdict compte.
 model: haiku
 tools: Bash, Read, Grep, Glob
 ---
