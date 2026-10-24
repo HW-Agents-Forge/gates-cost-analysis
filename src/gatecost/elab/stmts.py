@@ -4,6 +4,7 @@ from __future__ import annotations
 from gatecost.frontend.verilog import ast as A
 from gatecost.ir import LowerBlock, SigSpec
 
+from .constfunc import fast_value, get_fast
 from .expr import ElabError
 from .symbols import BIT, PSym, Scope, V, VSym
 
@@ -786,6 +787,10 @@ class StmtMixin:
         if self.depth >= limit:
             self.diag("LIMIT_REACHED", f"function call depth limit ({limit}) reached at '{ast.name}'", node, True)
             return xres
+        if want_value and rt is not None and not ast.is_task and self.ctx.limits.get("const_func_fast", 1):
+            fv = self._fast_invoke(f, args, rt)
+            if fv is not None:
+                return fv
         own_blk = self.blk is None
         outer = self.scope
         saved = (self.ctl, self.created, self.block_locals, self._tm, self.tmp_cands)
@@ -881,6 +886,38 @@ class StmtMixin:
             if own_blk:
                 self.blk = None
         return result
+
+    def _fast_invoke(self, f, args, rt):
+        """Constant-argument call answered by the pure-integer interpreter (``constfunc``), else None."""
+        fast = get_fast(self, f)
+        if not fast or fast.rt.w != rt.w or bool(fast.rt.signed) != bool(rt.signed):
+            return None
+        ast = f.ast
+        bound = {}
+        pos = 0
+        for a in args:
+            if isinstance(a, A.NamedArg):
+                bound[a.name] = a.value
+            else:
+                if pos < len(ast.ports):
+                    bound[ast.ports[pos].name] = a
+                pos += 1
+        vals = []
+        for p, pw in zip(ast.ports, fast.pw):
+            a = bound.get(p.name)
+            if a is None:
+                a = p.default
+                if a is None:
+                    return None
+            sig = self.assign_val(a, pw, None)
+            c = sig.const_value()
+            if c is None or c.xmask:
+                return None
+            vals.append(c.value)
+        r = fast_value(fast, tuple(vals))
+        if r is None:
+            return None
+        return V(SigSpec.const(r, rt.w), bool(rt.signed))
 
     def _nontail_return(self, last) -> bool:
         """True when the last statement contains a return that is not simply the final statement."""

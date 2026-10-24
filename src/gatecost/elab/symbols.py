@@ -119,13 +119,14 @@ class VSym:
 
 
 class FSym:
-    __slots__ = ("ast", "scope", "rt")
+    __slots__ = ("ast", "scope", "rt", "fast")
     kind = "func"
 
     def __init__(self, ast, scope):
         self.ast = ast
         self.scope = scope
         self.rt = None
+        self.fast = None        # constfunc.FastFn, or False when the function is outside the fast subset
 
 
 class KSym:

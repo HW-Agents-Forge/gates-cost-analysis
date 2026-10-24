@@ -73,8 +73,11 @@ endmodule
     def test_total_steps_of_one_function_are_bounded(self):
         full = run(self.SRC)
         self.assertFalse([d for d in full.diagnostics if d.code == "LIMIT_REACHED"])
-        cut = run(self.SRC, limits={"const_func_total_steps": 50})
+        # the budget bounds the general (symbolic) path; the pure-integer fast path has its own, much larger one
+        cut = run(self.SRC, limits={"const_func_total_steps": 50, "const_func_fast": 0})
         self.assertTrue([d for d in cut.diagnostics if d.code == "LIMIT_REACHED"])
+        fast_cut = run(self.SRC, limits={"const_func_total_steps": 50, "const_func_fast_steps": 3})
+        self.assertTrue([d for d in fast_cut.diagnostics if d.code == "LIMIT_REACHED"])
 
 
 class VhdlConcurrentEdge(unittest.TestCase):
