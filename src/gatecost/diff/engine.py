@@ -890,10 +890,11 @@ def diff_trees(
         reasons.append(f"configuration mismatch ({', '.join(cfg)} differ)")
     if top_changed:
         reasons.append(f"top module changed ({top_b} -> {top_a})")
-    broken = sorted({x.code for x in new if x.affects_cost and x.severity == "error"})
+    broken = sorted({x.code for x in new + resolved if x.affects_cost and x.severity == "error"})
     if broken:
-        # an edit that breaks the sources (parse error, ...) is not "no change" at high confidence
-        reasons.append(f"the edit introduces {', '.join(broken)} (the affected code is costed as recovered or ignored)")
+        # an edit that breaks (or repairs) the sources is not "no change" at high confidence
+        reasons.append(f"the edit introduces or removes {', '.join(broken)} "
+                       "(the affected code is costed as recovered or ignored on one side)")
     if cfg or top_changed or broken:
         conf = Confidence("low", tuple(reasons), conf.range_ratio)
     if "profile" in cfg:

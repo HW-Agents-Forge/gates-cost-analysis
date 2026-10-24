@@ -115,6 +115,19 @@ class BrokenEdit(GitCase):
         self.assertEqual(r["confidence"]["level"], "low")
         self.assertTrue(any("PARSE_ERROR" in x for x in r["confidence"]["reasons"]))
 
+    def test_repairing_a_parse_error_lowers_confidence(self):
+        self.p.edit("rtl/c.v", "reg [7:0] t;", "reg [7:0] t")
+        self.p.commit("broken")
+        self.p.edit("rtl/c.v", "reg [7:0] t\n", "reg [7:0] t;\n")
+        code, j = self.p.diff_json()
+        self.assertEqual(j["result"]["confidence"]["level"], "low")
+
+    def test_clean_edit_keeps_high_confidence(self):
+        self.p.edit("rtl/c.v", "reg [7:0] t;", "reg [7:0] t;  // comment")
+        code, j = self.p.diff_json()
+        self.assertEqual(j["result"]["verdict"], "NO_CHANGE")
+        self.assertEqual(j["result"]["confidence"]["level"], "high")
+
 
 if __name__ == "__main__":
     unittest.main()
