@@ -1,6 +1,6 @@
 ---
 name: repo-scout
-description: [Interne, délégué par claude uniquement] Helper économe en tokens, lecture seule. Localise du code, des tests, des sections de docs ou des usages d'un symbole dans gatecost et renvoie des références fichier:ligne avec un court résumé. À déléguer avant de modifier du code inconnu.
+description: Helper économe en tokens, lecture seule. Localise du code, des tests, des sections de docs ou des usages d'un symbole dans gatecost et renvoie des références fichier:ligne avec un court résumé. À déléguer avant de modifier du code inconnu.
 model: haiku
 tools: Read, Grep, Glob, Bash
 ---

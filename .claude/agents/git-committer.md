@@ -1,6 +1,6 @@
 ---
 name: git-committer
-description: [Interne, délégué par claude uniquement] Helper économe en tokens. Inspecte le diff, crée une branche si besoin, fait des commits atomiques avec message clair et pousse. À déléguer pour toute opération git de routine (jamais de PR sauf demande explicite).
+description: Helper économe en tokens. Inspecte le diff, crée une branche si besoin, fait des commits atomiques avec message clair et pousse. À déléguer pour toute opération git de routine (jamais de PR sauf demande explicite).
 model: haiku
 tools: Bash, Read, Grep, Glob
 ---

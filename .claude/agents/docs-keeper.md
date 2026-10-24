@@ -1,6 +1,6 @@
 ---
 name: docs-keeper
-description: [Interne, délégué par claude uniquement] Garde la documentation synchronisée avec le code (SKILL.md, README.md, docs/*.md, exemples, table de statut). À utiliser après tout changement de comportement, de CLI, de format de sortie ou de modèle de coût.
+description: Garde la documentation synchronisée avec le code (SKILL.md, README.md, docs/*.md, exemples, table de statut). À utiliser après tout changement de comportement, de CLI, de format de sortie ou de modèle de coût.
 model: sonnet
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---

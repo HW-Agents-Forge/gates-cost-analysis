@@ -1,6 +1,6 @@
 ---
 name: test-engineer
-description: [Interne, délégué par claude uniquement] Ingénieur de test : écrit des tests de régression, fuzz, corpus et propriétés, diagnostique les tests rouges, et chasse les bugs sur du RTL réel via le harnais smoke. À utiliser après un changement ou pour renforcer la couverture.
+description: Ingénieur de test : écrit des tests de régression, fuzz, corpus et propriétés, diagnostique les tests rouges, et chasse les bugs sur du RTL réel via le harnais smoke. À utiliser après un changement ou pour renforcer la couverture.
 model: sonnet
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---

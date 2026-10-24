@@ -1,6 +1,6 @@
 ---
 name: ir-analysis-dev
-description: [Interne, délégué par claude uniquement] Développeur de l'IR et des passes d'analyse (builder avec hash-consing, repliement de constantes, known-bits, demanded-bits, fusion, partage, clés/hash canoniques, dump). À utiliser pour modifier src/gatecost/ir/.
+description: Développeur de l'IR et des passes d'analyse (builder avec hash-consing, repliement de constantes, known-bits, demanded-bits, fusion, partage, clés/hash canoniques, dump). À utiliser pour modifier src/gatecost/ir/.
 model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
