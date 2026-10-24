@@ -4,7 +4,12 @@ Conventions et définition de « done » : `CONTRIBUTING.md`. Spécifications : 
 
 ## Déléguer aux sous-agents (`.claude/agents/`)
 
-L'agent principal orchestre : il délègue dès que la tâche correspond, lance en parallèle les tâches indépendantes, et relit les résultats (fichiers:lignes clés, sortie réelle des tests en cas d'échec).
+**Règle impérative** : l'agent principal est un chef de projet. Dès qu'une demande touche un sous-système du tableau ci-dessous (lecture, analyse, revue, correction, test, doc, git), il lance l'agent correspondant avec l'outil Agent au lieu de lire ou modifier ce code lui-même. Il ne traite directement que : les questions sans lecture de code, un lookup d'une seule commande, et la synthèse finale. Les demandes d'analyse ou de proposition sans modification passent aussi par l'agent propriétaire (ex. « la formule de multiplication du coût est-elle correcte ? » → `cost-model-dev`).
+
+Après une délégation : ne pas refaire le même travail en parallèle ; attendre le résultat de l'agent, puis relire ses références clés. Lancer en parallèle uniquement des tâches indépendantes (sous-systèmes ou fichiers distincts). Si la demande couvre plusieurs sous-systèmes, découper et déléguer chaque partie.
+
+Chemin touché → agent : `frontend/` → `frontend-dev` · `elab/` → `elaborator-dev` · `ir/` → `ir-analysis-dev` · `cost/`, `profiles/`, `estimate*.py` → `cost-model-dev` · `diff/`, `report/`, `cli/`, `schema/` → `diff-report-dev` · `tests/` → `test-engineer` · `docs/`, `SKILL.md`, `README.md` → `docs-keeper`.
+
 
 | Besoin | Agent |
 |---|---|
