@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ...frontend.vhdl import nodes as N
 from ...ir import LowerBlock, SigSpec
+from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from ...ir.sigspec import mask
 from . import vtypes as T
 from .core import NotConst, StopLimit, Unsupported, bool_const, int_val
@@ -213,6 +214,12 @@ class StmtMixin:
                 return
             blk.mem_write(lv.mem, lv.addr, sg.resize(mw, False), origin=o)
             return
+        lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
+        if lv.width > lim.max_net_width:
+            # a target this wide (typically from a garbage-in generic) would only be resized, never costed
+            self.diag("LIMIT_REACHED", "assignment to a target of %d bits exceeds the net width limit (%d); skipped"
+                      % (lv.width, lim.max_net_width), node)
+            return
         nb = self.is_nb(xc, lv) if nonblocking is None else nonblocking
         t = lv.t
         v = self.fit(val, t, node) if t is not None else val
@@ -329,8 +336,72 @@ class StmtMixin:
             raise StopLimit("interpreter steps")
 
     # ------------------------------------------------------------------ individual statements
+    def mem_slice_parts(self, e, sc):
+        """(memory prefix node, [index, ...]) for ``mem(a to b)`` / ``mem(a to b)`` written as slice or range
+        application on a name that denotes a memory with constant bounds, else None."""
+        if isinstance(e, N.Slice):
+            pre, rng = e.prefix, e.range
+        elif isinstance(e, N.Apply) and len(e.args) == 1 and self.is_range_expr(e.args[0].actual, sc):
+            pre, rng = e.prefix, e.args[0].actual
+        else:
+            return None
+        if not isinstance(pre, (N.Ident, N.Select)):
+            return None
+        syms = self.name_syms(pre, sc)
+        if not syms or syms[0].kind != "mem":
+            return None
+        try:
+            l, r, d = self.eval_range(rng, sc)
+        except Exception:
+            return None
+        idx = list(range(l, r + 1)) if d == "to" else list(range(l, r - 1, -1))
+        return pre, idx
+
+    def st_mem_slice_assign(self, xc, s, sc):
+        """``mem(0 to n-1) <= mem(1 to n)`` (a word shift register) / ``mem(a to b) <= (others => x)``:
+        one assignment per word.  Returns False when the statement has another shape."""
+        if len(s.alts) != 1 or s.alts[0].cond is not None or len(s.alts[0].values) != 1:
+            return False
+        dst = self.mem_slice_parts(s.target, sc)
+        if dst is None:
+            return False
+        pre, didx = dst
+        rhs = s.alts[0].values[0]
+        src = self.mem_slice_parts(rhs, sc)
+
+        def elem(prefix, i):
+            lit = N.Literal("int", i, None, line=s.line, col=s.col)
+            return N.Apply(prefix, [N.Assoc(None, lit, line=s.line, col=s.col)], line=s.line, col=s.col)
+
+        if src is not None:
+            spre, sidx = src
+            if len(sidx) != len(didx):
+                return False
+            values = [elem(spre, j) for j in sidx]
+        elif isinstance(rhs, N.Aggregate) and len(rhs.items) == 1 and rhs.items[0].choices \
+                and len(rhs.items[0].choices) == 1 and isinstance(rhs.items[0].choices[0], N.Others):
+            values = [rhs.items[0].value] * len(didx)
+        else:
+            return False
+        # the right-hand sides all read the old contents: evaluate them before any word is written
+        syn = []
+        for i, v in zip(didx, values):
+            syn.append(N.SignalAssign(s.label, elem(pre, i), [N.Alt([v], None, line=s.line, col=s.col)], s.kind,
+                                      s.guarded, line=s.line, col=s.col))
+        if xc.clocked or src is None:
+            for st in syn:
+                self.st_assign(xc, st, sc)
+            return True
+        # combinational / variable shift: read all sources first, then write
+        read = [self.eval(st.alts[0].values[0], sc, self.lvalue(st.target, sc).t) for st in syn]
+        for st, v in zip(syn, read):
+            self.do_assign(xc, self.lvalue(st.target, sc), v, s)
+        return True
+
     def st_assign(self, xc, s, sc):
         tgt = s.target
+        if isinstance(tgt, (N.Slice, N.Apply)) and self.st_mem_slice_assign(xc, s, sc):
+            return
         if isinstance(tgt, N.Aggregate) or True:
             lv = self.lvalue(tgt, sc)
         alts = s.alts
@@ -692,7 +763,18 @@ class StmtMixin:
             lp = {"label": label, "exit": ex, "next": None}
             xc.loops.append(lp)
         try:
+            # nested unrolling multiplies (1024 x 1024 ...), and every exit/next flag makes each later
+            # iteration costlier (quadratic): bound the work per process
+            budget = self.ctx.limits.get("process_loop_iterations", 16384)
+            cbudget = self.ctx.limits.get("process_ctl_loop_iterations", 1024)
             for var, v in it:
+                self.loop_iters += 1
+                if has_ctl:
+                    self.ctl_iters += 1
+                if self.loop_iters > budget or self.ctl_iters > cbudget:
+                    self.diag("LIMIT_REACHED", "loop unrolling budget of %d iterations per process exhausted; "
+                              "remaining iterations skipped" % (cbudget if self.ctl_iters > cbudget else budget), s)
+                    break
                 isc = Scope(sc)
                 if var is not None:
                     isc.declare(Sym("const", var, T.T_UINT, val=int_val(v)))
@@ -779,7 +861,12 @@ class StmtMixin:
         if fn is None:
             raise Unsupported("return outside a function")
         if s.value is not None:
-            v = self.eval(s.value, sc, fn.ret_t if fn.ret_t is not None and fn.ret_t.width else None)
+            rh = fn.ret_t if fn.ret_t is not None and fn.ret_t.width else None
+            if rh is None:
+                rd = getattr(fn, "ret_decl", None)
+                if rd is not None and rd.kind == "array" and isinstance(s.value, N.Aggregate):
+                    rh = rd         # unconstrained return type: lets ``(x'range => '0')`` find its element type
+            v = self.eval(s.value, sc, rh)
             if fn.ret_t is not None and fn.ret_t.width and not (fn.ret_t.kind == "array" and fn.ret_t.width is None):
                 v = self.fit(v, fn.ret_t, s)
             sig = self.sig_of(v)
@@ -815,21 +902,38 @@ class StmtMixin:
         self.call_procedure(xc, syms, args, s, sc)
 
     # ------------------------------------------------------------------ subprograms
-    def user_params_match(self, fd, vals):
+    def user_params_match(self, fd, vals, args=None):
+        """Do the argument types fit the parameters?  `args` (association list) maps named
+        associations onto their formals; without it `vals` is positional."""
         params = fd.node.params
-        if len(params) != len(vals):
-            return False
-        for p, v in zip(params, vals):
+        if args is None:
+            if len(params) != len(vals):
+                return False
+            pairs = list(zip(params, vals))
+        else:
+            by_name = {a.formal.name: v for a, v in zip(args, vals) if isinstance(a.formal, N.Ident)}
+            pos = [v for a, v in zip(args, vals) if a.formal is None]
+            pairs = []
+            pi = 0
+            for p in params:
+                if p.name in by_name:
+                    pairs.append((p, by_name[p.name]))
+                elif pi < len(pos):
+                    pairs.append((p, pos[pi]))
+                    pi += 1
+        for p, v in pairs:
             try:
                 pt = self.resolve_subtype(p.subtype, fd.scope)
             except Exception:
-                return True
+                continue
             if pt is v.t:
                 continue
             if pt.kind != v.t.kind:
                 return False
             if pt.kind == "array" and pt.cls != v.t.cls and pt.cls is not None and v.t.cls is not None:
                 return False
+            if pt.kind == "array" and pt.elem is not None and v.t.elem is not None and pt.elem.kind != v.t.elem.kind:
+                return False        # e.g. a 2-D matrix type (array of arrays) against a plain vector
             if pt.kind == "enum" and pt.lits is not v.t.lits and pt.cls != v.t.cls:
                 return False
         return True
@@ -856,11 +960,39 @@ class StmtMixin:
             vals = [self.eval(a.actual, sc) for a in args]
         except Exception:
             pass
-        if len(vals) == n and all(a.formal is None for a in args):
+        if len(vals) == n:
+            if all(a.formal is None for a in args):
+                for s in cands:
+                    if len(s.val.node.params) == n and self.user_params_match(s.val, vals):
+                        return s.val
+            # named associations, or parameters left to their defaults: match the supplied ones
             for s in cands:
-                if len(s.val.node.params) == n and self.user_params_match(s.val, vals):
+                if self.user_params_match(s.val, vals, args):
                     return s.val
         return cands[-1].val
+
+    def user_overload_fits(self, syms, args, sc):
+        """False only when every user overload of arity-compatible shape is ruled out by the argument types
+        (a user ``resize(T_SLM, ...)`` must not hide ``numeric_std.resize``)."""
+        n = len(args)
+        cands = []
+        for s in syms:
+            fd = s.val
+            if fd is None:
+                continue
+            ps = fd.node.params
+            req = sum(1 for p in ps if p.default is None)
+            if req <= n <= len(ps) and all(
+                    a.formal is None or any(isinstance(a.formal, N.Ident) and a.formal.name == p.name for p in ps)
+                    for a in args):
+                cands.append(fd)
+        if not cands:
+            return False
+        try:
+            vals = [self.eval(a.actual, sc) for a in args]
+        except Exception:
+            return True
+        return any(self.user_params_match(fd, vals, args) for fd in cands)
 
     def bind_params(self, fd, args, sc, fscope, xc_caller=None, procedure=False, outer_xc=None):
         node = fd.node
@@ -947,6 +1079,8 @@ class StmtMixin:
         xc = None
         if self.call_depth == 1:
             self.steps = 0
+            if self.proc is None:
+                self.loop_iters = self.ctl_iters = 0
         saved_file = self.file
         saved_origin = self.b.origin
         try:

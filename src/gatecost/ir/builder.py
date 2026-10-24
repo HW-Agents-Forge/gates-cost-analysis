@@ -89,6 +89,7 @@ class Builder:
         m = self.module
         if width > self.limits.max_net_width:
             self._limit("net width", f"{name or 'net'} has {width} bits (limit {self.limits.max_net_width})")
+            width = self.limits.max_net_width      # the module is abandoned; keep later masks / slices bounded
         elif len(m.nets) - self._removed_nets >= self.limits.max_nets:
             self._limit("net count", f"more than {self.limits.max_nets} nets")
         n = Net(m.next_net_id, width, signed, name, port)

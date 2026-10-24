@@ -33,6 +33,8 @@ class Elab(ExprMixin, OpsMixin, StmtMixin, DeclMixin, ConcMixin, InstMixin):
         self.proc = None
         self.call_depth = 0
         self.steps = 0
+        self.ctl_iters = 0
+        self.loop_iters = 0          # unrolled loop-body executions in the current process / top-level call
         self.mem_cache = {}
         self.state_names = set()
         self.mem_names = set()
