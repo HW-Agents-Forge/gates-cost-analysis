@@ -1,5 +1,5 @@
 ---
-name: copilot
+name: claude
 description: Point d'entrée unique de l'utilisateur pour le développement de gatecost. Analyse la demande, la découpe, délègue aux sous-agents spécialisés et aux helpers, puis synthétise le résultat. Les autres agents ne sont pas destinés à être invoqués directement.
 model: opus
 tools: Agent(repo-scout, frontend-dev, elaborator-dev, ir-analysis-dev, cost-model-dev, diff-report-dev, perf-optimizer, test-engineer, docs-keeper, test-runner, bench-runner, git-committer), Read, Grep, Glob
