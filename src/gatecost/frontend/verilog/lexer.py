@@ -80,6 +80,7 @@ _MASTER = re.compile(
     r"|(?P<ATTR>\(\*(?!\))(?:.*?\*\)|.*\Z))"
     r'|(?P<STR>"(?:[^"\\\n]|\\.)*(?:"|(?=\n)|\Z))'
     r"|(?P<ESC>\\\S+)"
+    r"|(?P<TICKSP>'[ \t\r\n]+[({])"
     r"|(?P<OP>" + "|".join(re.escape(o) for o in _OPS) + r")"
     r"|(?P<END>\Z)"
     r"|(?P<BAD>\S)"
@@ -136,6 +137,9 @@ def lex(text: str) -> Tokens:
             else:
                 ka("ID")
         elif g == "OP":
+            ka(s)
+        elif g == "TICKSP":     # ``w ' (x)`` / ``n ' {a, b}``: whitespace after the cast tick
+            s = "'" + s[-1]
             ka(s)
         elif g == "NUM2":
             ka("NUM")

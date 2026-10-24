@@ -434,7 +434,17 @@ class LowerBlock:
         b = self.b
         datoms = _atoms(dv)
         aatoms = [_atoms(v) for v in vals]
-        diff = [full or any(a[i] != datoms[i] for a in aatoms) for i in range(w)]
+        if exclusive and not full and len(aatoms) > 2 and len(aatoms) * w <= 4_000_000:
+            # exclusive arms: split into runs by the set of arms that differ from the default, so that
+            # arms writing disjoint slices of one wide net (``mem[i] <= x``) do not each span the whole net
+            who: list = [None] * w
+            for n_, a in enumerate(aatoms):
+                for i in range(w):
+                    if a[i] != datoms[i]:
+                        who[i] = (who[i] or ()) + (n_,)
+            diff = who
+        else:
+            diff = [full or any(a[i] != datoms[i] for a in aatoms) for i in range(w)]
         pieces = []
         i = 0
         while i < w:

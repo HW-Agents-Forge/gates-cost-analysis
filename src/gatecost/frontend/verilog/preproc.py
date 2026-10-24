@@ -242,7 +242,8 @@ class Preprocessor:
                 body = m.group()
                 if len(body) < 14:
                     continue
-                tm = _TRANSLATE_RE.search(body)
+                # a pragma starts the comment: prose such as "this shouldn't add pragma translate_off" is not one
+                tm = _TRANSLATE_RE.match(body[2:].lstrip(" \t*"))
                 if tm is not None:
                     emit_range(flush, s)
                     nl = body.count("\n")

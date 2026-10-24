@@ -1311,7 +1311,7 @@ class ExprMixin:
                     self._unpacked_index(r, sym, use, o, need)
                 else:
                     r.net = sym.net
-                    if r.net is None:
+                    if r.net is None and need:      # type-only queries (``$bits(port.field)``) need no storage
                         self.diag("UNSUPPORTED_CONSTRUCT", f"'{sym.name}' has no storage here", e, True)
                         return None
             else:

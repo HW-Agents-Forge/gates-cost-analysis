@@ -872,6 +872,18 @@ def _bitwise2(b, ops, w, sa, sb, o, n, g, at, op):
             return A
         if A == B:
             return A
+        for X, Y in ((A, B), (B, A)):       # partial constant mask: zero bits drop the other operand's bits
+            c = X.const_value()
+            if c is not None and c.xmask == 0:
+                parts, i = [], 0
+                while i < w:
+                    bit = (c.value >> i) & 1
+                    j = i
+                    while j < w and (c.value >> j) & 1 == bit:
+                        j += 1
+                    parts.append(Y.slice(i, j - i) if bit else SigSpec.const(0, j - i))
+                    i = j
+                return SigSpec.concat(parts)
     elif op == "OR":
         if _is_zero(A):
             return B
