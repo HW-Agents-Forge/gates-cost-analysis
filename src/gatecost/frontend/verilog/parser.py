@@ -581,7 +581,7 @@ class Parser:
                 args = self.parse_call_args()
                 self.expect(")")
                 e = A.Call(e.loc, e, args)
-            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number):
+            elif k == "'(" and e.__class__ in (A.Ident, A.ScopedName, A.Number, A.Member):
                 return self.parse_cast_tail(e)
             elif k == "'{" and e.__class__ in (A.Ident, A.ScopedName):
                 return self.parse_pattern(e)
@@ -884,7 +884,9 @@ class Parser:
     def is_decl_start(self):
         k = self.k
         if k in TYPE_KW or k in DECL_PREFIX:
-            return True
+            # a cast starts an expression statement: ``void'(f(x));``, ``int'(y)`` is not a declaration either
+            return self.kinds[self.i + 1] not in ("'(", "'{") or k in DECL_PREFIX
+
         if k == "ID":
             return self._named_type_ahead()
         return False
@@ -967,6 +969,27 @@ class Parser:
             out.append(A.Port(loc, direction, net, dt, name, dims, init, None, None))
         self.expect(";")
 
+    def packed_type_then_name(self, j):
+        """True when the ``[..]`` dimensions starting at token ``j`` are followed by an identifier, i.e. the
+        preceding identifier is a type (``sp2v_e [N-1:0] in``) and not a name with unpacked dimensions."""
+        kinds = self.kinds
+        n = len(kinds)
+        while j < n and kinds[j] == "[":
+            depth = 0
+            while j < n:
+                kd = kinds[j]
+                if kd == "[":
+                    depth += 1
+                elif kd == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                elif kd == "EOF":
+                    return False
+                j += 1
+        return j < n and kinds[j] == "ID"
+
     def parse_ansi_ports(self, default_dir=None, ports=None):
         """After '(' ; stops at ')' (not consumed)."""
         if ports is None:
@@ -997,7 +1020,8 @@ class Parser:
                 self.adv()
                 cur = (None, None, None, ifc, None)
             elif (k in TYPE_KW or k == "[" or k == "signed" or k == "unsigned" or
-                  (k == "ID" and self.kinds[i + 1] in ("ID", "::") and (cur is None or cur[3] is None))):
+                  (k == "ID" and self.kinds[i + 1] in ("ID", "::") and (cur is None or cur[3] is None)) or
+                  (k == "ID" and self.kinds[i + 1] == "[" and self.packed_type_then_name(i + 1))):
                 # a data type starts a new port; without a direction it inherits the previous one
                 dt = self.parse_data_type()
                 cur = ((cur[0] if cur is not None and cur[0] else None) or default_dir or "input", None, dt, None, None)
@@ -1159,6 +1183,8 @@ class Parser:
             if semi:
                 self.expect(";")
             return A.ProcAssign(loc, lhs, "+=" if op == "++" else "-=", A.Number(loc, None, "d", True, "1", 1, False), True)
+        if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.SysCall):     # ``void'($value$plusargs(...));``
+            lhs = lhs.expr
         if isinstance(lhs, A.SysCall):
             if semi:
                 self.expect(";")
