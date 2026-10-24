@@ -273,6 +273,14 @@ def select_sources(tree: _Tree, settings, restrict: list[str] | None = None) -> 
     if restrict:
         rtl = [f for f in rtl if _under(f, restrict)]
     sel: set[str] = set(rtl) | set(flists)
+    if settings.sources:
+        # `sources` globs name what is compiled; headers are never compiled on their own but an edit of
+        # one (a macro, a width) changes every file that includes it, so they stay part of the source set.
+        import copy
+
+        unrestricted = copy.copy(settings)
+        unrestricted.sources = []
+        sel |= {f for f in tree.rtl_candidates(unrestricted)[0] if Path(f).suffix.lower() in (".vh", ".svh")}
 
     inc_dirs: list[str] = []
     for spec in settings.incdirs:

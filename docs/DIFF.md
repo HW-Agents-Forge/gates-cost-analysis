@@ -138,6 +138,7 @@ The differ computes a verdict consumed by all reporters:
 | Situation | Behavior |
 |---|---|
 | Baseline contains parse errors | Analyze what parsed; diagnostics from both sides are shown, and confidence is capped at `low` if the damaged region intersects the changed cone. |
+| The edit introduces or repairs an error-severity diagnostic that affects cost (parse error, ...) | Confidence is `low` with the diagnostic code as the reason, whatever the verdict (a broken file can read `NO_CHANGE`). |
 | Top module differs between sides | Compare the designs as wholes and emit `TOP_CHANGED`. |
 | A file is added, deleted, or moved | Modules are matched by name; the move itself yields no delta. |
 | Module renamed with identical body | Reported as `renamed`, zero delta. |
