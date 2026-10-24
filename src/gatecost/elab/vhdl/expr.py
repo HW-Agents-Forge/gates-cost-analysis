@@ -6,6 +6,7 @@ import math
 from ...frontend.vhdl import ieee, nodes as N
 from ...ir import Const, Origin, SigSpec
 from ...ir.sigspec import mask
+from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from . import vtypes as T
 from .core import NotConst, StopLimit, Unsupported, bool_const, int_val, real_val, range_int_type
 from .vtypes import VType, minbits
@@ -1089,6 +1090,12 @@ class ExprMixin:
                 left, right, d = max(idxs), min(idxs), "downto"
             t = T.constrain(t, left, right, d)
         length = t.length
+        lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
+        if length * ew > lim.max_net_width:
+            # the IR rejects a value this wide anyway: do not build it element by element
+            self.diag("LIMIT_REACHED", "aggregate of %d bits exceeds the net width limit (%d); its value is unknown"
+                      % (length * ew, lim.max_net_width), e)
+            return Val(t, SigSpec.x(length * ew))
         tmp = {}
         pos_i = 0
         for it in e.items:

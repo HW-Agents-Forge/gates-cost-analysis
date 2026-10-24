@@ -324,6 +324,8 @@ class ExprMixin:
         if k == "param":
             return (sym.val.sig.width, sym.val.signed)
         if k == "var":
+            if sym.udims:
+                return (sym.pt.w * self._array_count(sym), False)
             return (sym.pt.w, sym.pt.signed)
         if k == "type":
             return (sym.pt.w, sym.pt.signed)
@@ -531,10 +533,63 @@ class ExprMixin:
         if k == "param":
             return sym.val.sig.resize(w, s)
         if k == "var":
+            if sym.udims:
+                return self._read_array(sym, e).resize(w, False)
             if sym.net is None and sym.mem is None and sym.elems is None:
                 return SigSpec.x(w)
             return self.read_sym(sym).resize(w, s)
         return SigSpec.x(w)
+
+    # ---- whole unpacked arrays, element-wise (first element in the most significant bits, the order
+    # ---- an unpacked-array port is flattened to)
+    @staticmethod
+    def _array_count(sym) -> int:
+        n = 1
+        for l, r in sym.udims:
+            n *= abs(l - r) + 1
+        return n
+
+    def _array_order(self, sym, node):
+        """Flat element indices (row-major storage order) from the most significant element down."""
+        total = self._array_count(sym)
+        if total > 4096:
+            self.diag("LIMIT_REACHED", f"whole-array use of '{sym.name}' with {total} elements is not supported",
+                      node, True)
+            return None
+        order = [0]
+        for l, r in sym.udims:
+            n = abs(l - r) + 1
+            # flat index contribution of the position-th element from the left of this dimension
+            pos = list(range(n)) if l <= r else list(range(n - 1, -1, -1))
+            order = [o * n + q for o in order for q in pos]
+        return order
+
+    def _array_elem_ref(self, sym, flat: int, total: int):
+        r = Ref()
+        r.vsym = sym
+        r.pt = sym.pt
+        r.w = sym.pt.w
+        if sym.mem is not None:
+            r.mem = sym.mem
+            r.addr = SigSpec.const(flat, max(1, (total - 1).bit_length()))
+        else:
+            r.net = self.elem_net(sym, flat)
+        return r
+
+    def _array_refs(self, sym, node):
+        order = self._array_order(sym, node)
+        if order is None:
+            return None
+        total = self._array_count(sym)
+        return [self._array_elem_ref(sym, f, total) for f in order]
+
+    def _read_array(self, sym, node) -> SigSpec:
+        refs = self._array_refs(sym, node)
+        if refs is None:
+            return SigSpec.x(sym.pt.w * self._array_count(sym))
+        parts = [self.read_ref(r) for r in refs]
+        parts.reverse()
+        return SigSpec.concat(parts)
 
     def read_sym(self, sym: VSym) -> SigSpec:
         if sym.const_sig is not None:
@@ -1514,7 +1569,12 @@ class ExprMixin:
         return self._dyn_read(base, r.off, r.w, r.dyn)
 
     def _dyn_read(self, base: SigSpec, off: int, w: int, dyn) -> SigSpec:
+        if w < 1 or off < 0 or off >= base.width:
+            # only reachable when a type was clamped at the net-width limit (offsets then exceed the net)
+            return SigSpec.x(max(w, 0))
         if not dyn:
+            if off + w > base.width:
+                return SigSpec.x(w)
             return base.slice(off, w)
         b = self.b
         idx, stride, count = dyn[0]
@@ -1523,7 +1583,7 @@ class ExprMixin:
         rest = dyn[1:]
         if count > _MAXDYN:
             count = _MAXDYN
-        if stride == 1 and not rest and w > 1 and count > 2:
+        if stride == 1 and not rest and w > 1 and count > 2 and base.width - off >= w:
             span = min(base.width - off, w + count - 1)
             win = base.slice(off, span)
             sh = b.shr(win, idx, span)
@@ -1552,8 +1612,8 @@ class ExprMixin:
                 self.diag("UNRESOLVED_NAME", f"assignment to undeclared identifier '{e.name}' skipped", e, True)
                 return [None]
             if isinstance(sym, VSym) and sym.udims:
-                self.diag("UNSUPPORTED_CONSTRUCT", f"assignment to whole array '{e.name}'", e, True)
-                return [None]
+                refs = self._array_refs(sym, e)
+                return refs if refs is not None else [None]
             if not isinstance(sym, VSym) or sym.net is None:
                 self.diag("UNSUPPORTED_CONSTRUCT", f"'{e.name}' is not assignable", e, True)
                 return [None]
