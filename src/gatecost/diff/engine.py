@@ -232,6 +232,15 @@ def match_ops(obs, oas, aligner: Aligner):
         la = ga.get(base)
         if not la:
             continue
+        if len(lb) > 64 or len(la) > 64:          # huge groups: key equality only (keeps the matching linear)
+            by_key = {o.named_key: o for o in la}
+            for ob in lb:
+                oa = by_key.pop(ob.named_key, None)
+                if oa is not None:
+                    used_a.add(oa.id)
+                    matched_b.add(ob.id)
+                    pairs.append((ob, oa, 1))
+            continue
         free_a = list(la)
         todo_b = []
         for ob in lb:
