@@ -194,25 +194,75 @@ def _skey(o: CostOp):
     return (o.line, o.column, o.id)
 
 
+def _nk_base(o: CostOp) -> tuple:
+    """Named key without the '#i' tie-break suffix of operations sharing a role path."""
+    nk = tuple(o.named_key)
+    if len(nk) > 2 and isinstance(nk[2], str):
+        head, sep, tail = nk[2].rpartition("#")
+        if sep and tail.isdigit():
+            return nk[:2] + (head,) + nk[3:]
+    return nk
+
+
+def _same_op(ob: CostOp, oa: CostOp) -> bool:
+    """Operations that cost and are shaped alike: pairing them can only give a zero delta."""
+    return (ob.cost == oa.cost and ob.effective_widths == oa.effective_widths
+            and ob.declared_widths == oa.declared_widths and ob.op == oa.op)
+
+
 def match_ops(obs, oas, aligner: Aligner):
     """Operation matching tiers 1-4. Returns (pairs [(ob, oa, tier)], removed, added)."""
     obs = sorted(obs, key=_skey)
     oas = sorted(oas, key=_skey)
     pairs: list[tuple[CostOp, CostOp, int]] = []
     used_a: set[int] = set()
-    idx: dict = defaultdict(list)
+    # Tier 1: same named key.  Operations that share a role path are told apart by a "#i" suffix whose order
+    # follows their (label dependent) shape hash, so a renamed signal or instance can permute the suffixes of
+    # otherwise identical operations.  Within such a group, identical operations are paired first.
+    gb: dict = defaultdict(list)
+    ga: dict = defaultdict(list)
+    for o in obs:
+        if o.named_key:
+            gb[_nk_base(o)].append(o)
     for o in oas:
         if o.named_key:
-            idx[o.named_key].append(o)
-    rem_b: list[CostOp] = []
-    for ob in obs:
-        lst = idx.get(ob.named_key) if ob.named_key else None
-        if lst:
-            oa = lst.pop(0)
-            used_a.add(oa.id)
-            pairs.append((ob, oa, 1))
-        else:
-            rem_b.append(ob)
+            ga[_nk_base(o)].append(o)
+    matched_b: set[int] = set()
+    for base, lb in gb.items():
+        la = ga.get(base)
+        if not la:
+            continue
+        free_a = list(la)
+        todo_b = []
+        for ob in lb:
+            hit = next((oa for oa in free_a if oa.named_key == ob.named_key and _same_op(ob, oa)), None)
+            if hit is None:
+                todo_b.append(ob)
+                continue
+            free_a.remove(hit)
+            used_a.add(hit.id)
+            matched_b.add(ob.id)
+            pairs.append((ob, hit, 1))
+        if len(lb) > 1 or len(la) > 1:
+            left_b = []
+            for ob in todo_b:
+                hit = next((oa for oa in free_a if _same_op(ob, oa)), None)
+                if hit is None:
+                    left_b.append(ob)
+                    continue
+                free_a.remove(hit)
+                used_a.add(hit.id)
+                matched_b.add(ob.id)
+                pairs.append((ob, hit, 1))
+            todo_b = left_b
+        for ob in todo_b:
+            hit = next((oa for oa in free_a if oa.named_key == ob.named_key), None)
+            if hit is not None:
+                free_a.remove(hit)
+                used_a.add(hit.id)
+                matched_b.add(ob.id)
+                pairs.append((ob, hit, 1))
+    rem_b: list[CostOp] = [o for o in obs if o.id not in matched_b]
     rem_a = [o for o in oas if o.id not in used_a]
     if rem_b and rem_a:
         sidx: dict = defaultdict(list)
@@ -831,7 +881,11 @@ def diff_trees(
         reasons.append(f"configuration mismatch ({', '.join(cfg)} differ)")
     if top_changed:
         reasons.append(f"top module changed ({top_b} -> {top_a})")
-    if cfg or top_changed:
+    broken = sorted({x.code for x in new if x.affects_cost and x.severity == "error"})
+    if broken:
+        # an edit that breaks the sources (parse error, ...) is not "no change" at high confidence
+        reasons.append(f"the edit introduces {', '.join(broken)} (the affected code is costed as recovered or ignored)")
+    if cfg or top_changed or broken:
         conf = Confidence("low", tuple(reasons), conf.range_ratio)
     if "profile" in cfg:
         verdict = "NOT_COMPARABLE"

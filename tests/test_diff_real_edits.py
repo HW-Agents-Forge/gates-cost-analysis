@@ -64,5 +64,57 @@ class HeaderEdit(GitCase):
         self.assertAlmostEqual(r["delta"]["ge"]["typ"], tot[1] - tot[0], places=2)
 
 
+class MatchOpsTieBreak(unittest.TestCase):
+    """Operations sharing a role path carry a "#i" suffix ordered by label-dependent shape hashes; renaming an
+    instance or signal permutes the suffixes of picorv32's control-state PRIORITY/MUX ops.  Identical operations
+    must still pair with each other (a rename is an exact zero delta)."""
+
+    @staticmethod
+    def _op(i, width, typ, suffix):
+        from gatecost.result import Ge3
+        from gatecost.diff.engine import CostOp
+
+        key = ("m", "tgt", "case0" + suffix, "PRIORITY")
+        return CostOp(id=i, op="PRIORITY", category="select", quality="good", cost=Ge3(typ - 1, typ, typ + 1), sigma=1,
+                      file="a.v", line=10, named_key=key, declared_widths=(width,), effective_widths=(width,))
+
+    def test_permuted_suffixes_pair_identical_ops(self):
+        from gatecost.diff.align import Aligner
+        from gatecost.diff.engine import match_ops
+
+        before = [self._op(1, 1, 2000, ""), self._op(2, 2, 4000, "#1")]
+        after = [self._op(1, 2, 4000, ""), self._op(2, 1, 2000, "#1")]
+        pairs, rem_b, rem_a = match_ops(before, after, Aligner(None, None))
+        self.assertEqual((rem_b, rem_a), ([], []))
+        for ob, oa, _tier in pairs:
+            self.assertEqual(ob.cost, oa.cost)
+            self.assertEqual(ob.effective_widths, oa.effective_widths)
+
+    def test_real_change_in_a_group_still_pairs_by_key(self):
+        from gatecost.diff.align import Aligner
+        from gatecost.diff.engine import match_ops
+
+        before = [self._op(1, 1, 2000, ""), self._op(2, 2, 4000, "#1")]
+        after = [self._op(1, 1, 2000, ""), self._op(2, 3, 6000, "#1")]
+        pairs, rem_b, rem_a = match_ops(before, after, Aligner(None, None))
+        self.assertEqual((rem_b, rem_a), ([], []))
+        self.assertEqual(sorted((ob.id, oa.id) for ob, oa, _ in pairs), [(1, 1), (2, 2)])
+
+
+class BrokenEdit(GitCase):
+    """An edit that breaks the sources must not be reported as a confident "no change"."""
+
+    FILES = {"rtl/c.v": "module c(input clk, input [7:0] d, output reg [7:0] q);\n"
+                        "  reg [7:0] t;\n  always @(posedge clk) begin t <= d; q <= t; end\nendmodule\n"}
+
+    def test_parse_error_lowers_confidence(self):
+        self.p.edit("rtl/c.v", "reg [7:0] t;", "reg [7:0] t")
+        code, j = self.p.diff_json()
+        r = j["result"]
+        self.assertEqual(r["verdict"], "NO_CHANGE")
+        self.assertEqual(r["confidence"]["level"], "low")
+        self.assertTrue(any("PARSE_ERROR" in x for x in r["confidence"]["reasons"]))
+
+
 if __name__ == "__main__":
     unittest.main()
