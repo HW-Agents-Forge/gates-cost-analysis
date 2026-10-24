@@ -94,8 +94,6 @@ endmodule"""
         a = SigSpec.const(0b1011_0110, 8)
         b = SigSpec.const(0b1011_0011, 8)
         runs = _diff_runs(a, b, 8)
-        self.assertEqual([(i, j, d) for i, j, d in runs], [(0, 2, True), (2, 8, False)][::1]
-                         if False else [(i, j, d) for i, j, d in runs])
         bits = [x != y for x, y in zip(a.bits(), b.bits())]
         flat = [d for i, j, d in runs for _ in range(j - i)]
         self.assertEqual(flat, bits)

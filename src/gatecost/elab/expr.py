@@ -57,12 +57,24 @@ def _diff_runs(f, t, w):
         n = min(a.width - fo, b.width - to, w - pos)
         if isinstance(a, Const) and isinstance(b, Const):
             m = (1 << n) - 1
-            d = ((a.xmask >> fo) & m) != ((b.xmask >> to) & m) or ((a.value >> fo) & m) != ((b.value >> to) & m)
+            x = (((a.xmask >> fo) ^ (b.xmask >> to)) | ((a.value >> fo) ^ (b.value >> to))) & m
+            if x and x != m:     # constants differ in some bits only: split at the bit level
+                for k in range(n):
+                    dk = bool((x >> k) & 1)
+                    if runs and runs[-1][2] == dk:
+                        runs[-1][1] = pos + k + 1
+                    else:
+                        runs.append([pos + k, pos + k + 1, dk])
+                d = None
+            else:
+                d = bool(x)
         elif isinstance(a, Slice) and isinstance(b, Slice):
             d = a.net is not b.net or a.lo + fo != b.lo + to
         else:
             d = True
-        if runs and runs[-1][2] == d:
+        if d is None:
+            pass
+        elif runs and runs[-1][2] == d:
             runs[-1][1] = pos + n
         else:
             runs.append([pos, pos + n, d])
