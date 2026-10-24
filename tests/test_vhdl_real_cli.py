@@ -67,6 +67,14 @@ class UndefinedMacroWithArgs(Base):
         self.assertNotIn("PARSE_ERROR", codes(doc))
 
 
+class UselibDirective(Base):
+    def test_uselib_is_ignored(self):
+        self.write("u.v", "`uselib lib = ecp3\nmodule u(input a, output y); assign y = ~a; endmodule\n")
+        code, doc = run_cost("--top", "u", "u.v", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual([d["code"] for d in doc["diagnostics"] if d["code"] in ("UNDEFINED_MACRO", "PARSE_ERROR")], [])
+
+
 class NestedFilelist(Base):
     def test_missing_nested_filelist_warns(self):
         self.write("t.sv", "module t(input a, output y); assign y = ~a; endmodule\n")
@@ -198,6 +206,160 @@ class AggregateInConcatenation(Base):
         bad = [d for d in doc["diagnostics"] if d["code"] in ("UNSUPPORTED_CONSTRUCT", "UNRESOLVED_OVERLOAD")]
         self.assertEqual(bad, [])
         self.assertEqual(doc["status"], "ok")
+
+
+ARR_OF_UNCONSTRAINED = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+package arr is
+  type StlvArray_t is array (natural range <>) of std_logic_vector;
+  function unflat(a : in std_logic_vector; elementSize : positive) return StlvArray_t;
+end package;
+package body arr is
+  function unflat(a : in std_logic_vector; elementSize : positive) return StlvArray_t is
+    constant N : natural := a'length / elementSize;
+    variable U : StlvArray_t(0 to N - 1)(elementSize - 1 downto 0);
+  begin
+    for i in 0 to N - 1 loop
+      U(i) := a((i + 1) * elementSize - 1 downto i * elementSize);
+    end loop;
+    return U;
+  end function;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.arr.all;
+entity top is port (a : in std_logic_vector(31 downto 0); sel : in unsigned(1 downto 0); y : out std_logic_vector(7 downto 0)); end entity;
+architecture r of top is
+  signal u : StlvArray_t(0 to 3)(7 downto 0);
+begin
+  u <= unflat(a, 8);
+  y <= u(to_integer(sel));
+end architecture;
+"""
+
+STRING_GENERIC = """library ieee; use ieee.std_logic_1164.all;
+entity top is generic (POLY : std_logic_vector; NAME : string); port (a : in std_logic_vector(7 downto 0); y : out std_logic); end entity;
+architecture r of top is
+begin
+  y <= a(0) xor a(1) when NAME = "x" else a(2);
+end architecture;
+"""
+
+
+class Vhdl2008Constraints(Base):
+    def test_element_constraint_of_array_of_unconstrained(self):
+        self.write("a.vhd", ARR_OF_UNCONSTRAINED)
+        code, doc = run_cost("--top", "top", "a.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertEqual(doc["status"], "ok", doc["diagnostics"])
+        self.assertGreater(doc["result"]["total"]["ge"]["typ"], 20)
+
+    def test_unconstrained_generic_without_default_is_one_diagnostic(self):
+        self.write("g.vhd", STRING_GENERIC)
+        code, doc = run_cost("--top", "top", "g.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        cs = [d["code"] for d in doc["diagnostics"]]
+        self.assertEqual(cs.count("UNRESOLVED_PARAM"), 2)
+        self.assertNotIn("UNSUPPORTED_CONSTRUCT", cs)
+
+
+NULL_PORT = """library ieee; use ieee.std_logic_1164.all;
+entity ram is generic (W : positive := 8); port (clk : in std_logic; d : in std_logic_vector(W - 1 downto 0);
+  be : in std_logic_vector(W / 8 - 1 downto 0) := (others => '1'); q : out std_logic_vector(W - 1 downto 0)); end entity;
+architecture r of ram is begin
+  process (clk) begin if rising_edge(clk) then q <= d; end if; end process;
+end architecture;
+library ieee; use ieee.std_logic_1164.all;
+entity top is port (clk : in std_logic; d : in std_logic_vector(0 downto 0); q : out std_logic_vector(0 downto 0)); end entity;
+architecture r of top is begin
+  u : entity work.ram generic map (W => 1) port map (clk => clk, d => d, q => q);
+end architecture;
+"""
+
+
+class NullWidthPortDefault(Base):
+    def test_others_default_on_null_width_port(self):
+        self.write("n.vhd", NULL_PORT)
+        code, doc = run_cost("--top", "top", "n.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        self.assertNotIn("UNSUPPORTED_CONSTRUCT", [d["code"] for d in doc["diagnostics"]])
+
+
+DEFAULT_OVERLOAD = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+package base is
+  function rev (constant arg : std_logic_vector; constant keep : boolean := true) return std_logic_vector;
+  function rev (constant arg : unsigned) return unsigned;
+end package;
+package body base is
+  function rev (constant arg : std_logic_vector; constant keep : boolean := true) return std_logic_vector is
+    variable r : std_logic_vector(arg'range);
+  begin
+    for i in arg'range loop r(i) := arg(arg'right + arg'left - i); end loop;
+    return r;
+  end;
+  function rev (constant arg : unsigned) return unsigned is
+  begin
+    return unsigned(rev(std_logic_vector(arg)));
+  end;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.base.all;
+entity top is port (a : in std_logic_vector(15 downto 0); u : in unsigned(15 downto 0);
+  y : out std_logic_vector(15 downto 0); z : out unsigned(15 downto 0)); end entity;
+architecture r of top is begin
+  y <= rev(a);
+  z <= rev(u);
+end architecture;
+"""
+
+
+class OverloadWithDefaults(Base):
+    def test_defaulted_parameter_overload_not_mistaken_for_last_candidate(self):
+        self.write("d.vhd", DEFAULT_OVERLOAD)
+        code, doc = run_cost("--top", "top", "d.vhd", cwd=self.dir)
+        self.assertEqual(code, 0, doc.get("error"))
+        bad = [d for d in doc["diagnostics"] if d["code"] in ("LIMIT_REACHED", "UNSUPPORTED_CONSTRUCT", "UNRESOLVED_OVERLOAD")]
+        self.assertEqual(bad, [])
+
+
+HUGE_ARRAY = """library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+package p is
+  type nat_vec is array (natural range <>) of natural;
+  function pick (constant word : nat_vec; constant addr : std_logic_vector) return natural;
+end package;
+package body p is
+  function pick (constant word : nat_vec; constant addr : std_logic_vector) return natural is
+    alias arg : nat_vec(0 to word'length - 1) is word;
+    variable retval : nat_vec(0 to 2 ** addr'length - 1);
+  begin
+    retval := (others => 0);
+    if retval'length < arg'length then retval := arg(retval'range); else retval(arg'range) := arg; end if;
+    return retval(to_integer(unsigned(addr)));
+  end;
+end package body;
+library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.p.all;
+entity top is port (addr : in std_logic_vector(31 downto 0); y : out natural range 0 to 255); end entity;
+architecture r of top is
+  constant tbl : nat_vec(0 to 3) := (1, 2, 3, 4);
+begin
+  y <= pick(tbl, addr);
+end architecture;
+"""
+
+
+class RunawayWidth(Base):
+    def test_giant_array_bound_does_not_allocate_gigabytes(self):
+        import resource
+        import subprocess
+        import sys
+        from gatecost import REPO_ROOT
+        self.write("h.vhd", HUGE_ARRAY)
+
+        def limit():
+            resource.setrlimit(resource.RLIMIT_AS, (3 << 30, 3 << 30))
+        env = {**os.environ, "GATECOST_CACHE_DIR": str(self.dir / "_c")}
+        p = subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "gatecost"), "cost", "--format", "json",
+                            "--top", "top", "h.vhd"], cwd=self.dir, env=env, capture_output=True, text=True,
+                           preexec_fn=limit, timeout=120)
+        doc = json.loads(p.stdout)
+        self.assertEqual(p.returncode, 0, doc.get("error"))
+        self.assertFalse([d for d in doc["diagnostics"] if "MemoryError" in d["message"]], doc["diagnostics"])
 
 
 TB_PROC = """library ieee; use ieee.std_logic_1164.all;

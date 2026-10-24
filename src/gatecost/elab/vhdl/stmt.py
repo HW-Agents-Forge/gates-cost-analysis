@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ...frontend.vhdl import nodes as N
 from ...ir import LowerBlock, SigSpec
+from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from ...ir.sigspec import mask
 from . import vtypes as T
 from .core import NotConst, StopLimit, Unsupported, bool_const, int_val
@@ -212,6 +213,12 @@ class StmtMixin:
                 blk.mem_write(lv.mem, lv.addr, sg.resize(lv.width, False), origin=o, lane=(lv.off, lv.width))
                 return
             blk.mem_write(lv.mem, lv.addr, sg.resize(mw, False), origin=o)
+            return
+        lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
+        if lv.width > lim.max_net_width:
+            # a target this wide (typically from a garbage-in generic) would only be resized, never costed
+            self.diag("LIMIT_REACHED", "assignment to a target of %d bits exceeds the net width limit (%d); skipped"
+                      % (lv.width, lim.max_net_width), node)
             return
         nb = self.is_nb(xc, lv) if nonblocking is None else nonblocking
         t = lv.t
@@ -889,10 +896,10 @@ class StmtMixin:
                 for s in cands:
                     if len(s.val.node.params) == n and self.user_params_match(s.val, vals):
                         return s.val
-            else:
-                for s in cands:
-                    if self.user_params_match(s.val, vals, args):
-                        return s.val
+            # named associations, or parameters left to their defaults: match the supplied ones
+            for s in cands:
+                if self.user_params_match(s.val, vals, args):
+                    return s.val
         return cands[-1].val
 
     def user_overload_fits(self, syms, args, sc):

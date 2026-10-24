@@ -37,6 +37,8 @@ class ExprMixin:
 
     def unknown(self, hint=None, why=None):
         if hint is not None and hint.kind in ("array", "record", "enum", "int") and hint.width:
+            if hint.width > (1 << 20):
+                return Val(T.T_STD_LOGIC, SigSpec.x(1))      # an all-X value this wide cannot be built (memory)
             return Val(hint, SigSpec.x(hint.width))
         return Val(T.T_STD_LOGIC, SigSpec.x(1))
 
@@ -1040,6 +1042,10 @@ class ExprMixin:
     # ------------------------------------------------------------------ aggregates
     def ev_aggregate(self, e, sc, hint):
         t = hint
+        if t is not None and t.kind == "enum" and len(e.items) == 1 and e.items[0].choices is not None \
+                and len(e.items[0].choices) == 1 and isinstance(e.items[0].choices[0], N.Others):
+            # ``(others => '1')`` against a scalar: a null-width / one-bit stand-in port (see entity_ports)
+            return self.eval(e.items[0].value, sc, t)
         if t is None or t.kind not in ("array", "record"):
             return self.agg_unhinted(e, sc)
         if t.kind == "record":
@@ -1138,6 +1144,9 @@ class ExprMixin:
             # the IR rejects a value this wide anyway: do not build it element by element
             self.diag("LIMIT_REACHED", "aggregate of %d bits exceeds the net width limit (%d); its value is unknown"
                       % (length * ew, lim.max_net_width), e)
+            if length * ew > (1 << 24):
+                # not even an all-X constant of this size can be built (it is one big integer: gigabytes)
+                raise Unsupported("aggregate of %d bits is too wide to represent" % (length * ew))
             return Val(t, SigSpec.x(length * ew))
         tmp = {}
         pos_i = 0

@@ -61,6 +61,7 @@ _IGNORED_DIRS = frozenset((
     "delay_mode_distributed", "delay_mode_path", "delay_mode_unit", "delay_mode_zero",
     "suppress_faults", "nosuppress_faults", "enable_portfaults", "disable_portfaults",
     "protect", "endprotect", "protected", "endprotected",
+    "uselib",           # library search directive (`uselib lib = x file = y); no meaning for costing
 ))
 _COND_DIRS = frozenset(("ifdef", "ifndef", "elsif", "else", "endif"))
 

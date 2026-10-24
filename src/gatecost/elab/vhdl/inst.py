@@ -92,6 +92,11 @@ class InstMixin:
             return self.fit(Val(gt, None, 0), gt)
         if gt.width:
             return Val(gt, SigSpec.const(0, gt.width))
+        if gt.kind == "array" and gt.width is None and gt.elem is not None and gt.elem.width:
+            # an unconstrained array / string generic: a short all-zero value keeps the name defined
+            # (otherwise every use degrades to "unknown name" / "scalar to array" diagnostics)
+            ct = T.constrain(gt, 1, 8, "to") if gt.cls == "str" else T.constrain(gt, 7, 0, "downto")
+            return Val(ct, SigSpec.const(0, ct.width))
         return int_val(32)
 
     def bind_generics(self, ent, esc, provider, type_provider=None):

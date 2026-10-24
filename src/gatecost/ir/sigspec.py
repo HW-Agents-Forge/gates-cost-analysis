@@ -13,8 +13,15 @@ _CONST_CACHE: dict[tuple[int, int, int], "Const"] = {}
 _CACHE_LIMIT = 200_000
 
 
+#: no legitimate value is anywhere near this wide (nets are limited to 65 536 bits); a larger request
+#: comes from a runaway generic / array bound and would allocate gigabytes as one Python integer
+MAX_CONST_WIDTH = 1 << 24
+
+
 def mask(width: int) -> int:
     """All-ones mask of ``width`` bits."""
+    if width > MAX_CONST_WIDTH:
+        raise ValueError("value of %d bits is too wide" % width)
     return (1 << width) - 1 if width > 0 else 0
 
 
@@ -29,6 +36,8 @@ class Const:
     def __new__(cls, value: int, width: int, xmask: int = 0) -> "Const":
         if width < 0:
             raise ValueError("negative constant width")
+        if width > MAX_CONST_WIDTH:
+            raise ValueError("constant of %d bits is too wide" % width)
         m = (1 << width) - 1
         xmask &= m
         value = value & m & ~xmask

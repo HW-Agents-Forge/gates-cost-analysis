@@ -717,8 +717,10 @@ class Parser:
         box = False
         if self.op("("):
             index = self.parse_index_constraint()
-            while self.op("("):  # element constraints: parsed and dropped
-                self.parse_index_constraint()
+            while self.op("("):  # element constraints (VHDL-2008): further dimensions of the array-of-arrays
+                more = self.parse_index_constraint()
+                if index:
+                    index = index + more
         elif self.kw("range"):
             self.adv()
             if self.op("<>"):
