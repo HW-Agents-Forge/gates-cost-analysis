@@ -12,6 +12,9 @@ import math
 from fractions import Fraction
 
 FIXED_CLASSES = ("uf", "sf")
+#: packages that projects often compile into ``work`` (an instance of ``fixed_generic_pkg`` or a vendor copy of
+#: ieee_proposed); when the sources are absent the built-in model stands in for them
+WORK_MODEL_PACKAGES = frozenset(("fixed_pkg", "float_pkg", "fixed_float_types"))
 FIXED_OVERFLOW_STYLES = ("fixed_wrap", "fixed_saturate")
 FIXED_ROUND_STYLES = ("fixed_round", "fixed_truncate")
 #: package defaults: ``fixed_overflow_style`` / ``fixed_round_style``

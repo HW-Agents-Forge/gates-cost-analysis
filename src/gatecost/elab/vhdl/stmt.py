@@ -1125,6 +1125,23 @@ class StmtMixin:
             fscope.declare(Sym("const", p.name, v.t, val=v))
         return post
 
+    def unknown_ret(self, fd, hint):
+        """All-X value of the declared return type of ``fd`` (a failed call keeps its type: no cascade of
+        ``no '**' for sl and str`` style diagnostics on the consumers)."""
+        try:
+            rt = self.resolve_subtype(fd.node.return_type, fd.scope) if fd.node.return_type is not None else None
+        except Exception:
+            rt = None
+        if rt is None:
+            return self.unknown(hint)
+        if rt.kind == "array" and rt.width is None:
+            if hint is not None and hint.kind == "array" and hint.width:
+                return self.unknown(hint)
+            rt = T.constrain(rt, 1, 1, "to") if rt.cls == "str" else T.constrain(rt, 0, 0, "downto")
+        if rt.width:
+            return Val(rt, SigSpec.x(rt.width))
+        return self.unknown(hint)
+
     def call_user(self, syms, args, e, sc, hint):
         fd = self.pick_overload(syms, args, sc, hint)
         if fd is None:
@@ -1136,10 +1153,10 @@ class StmtMixin:
         body = fd.body_node
         if body is None or not body.body and not body.decls and not body.has_body:
             self.diag("UNSUPPORTED_CONSTRUCT", "function '%s' has no body" % node.name, e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         if self.call_depth >= self.ctx.limits["inline_depth"]:
             self.diag("LIMIT_REACHED", "function inlining depth %d reached at '%s'" % (self.ctx.limits["inline_depth"], node.name), e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         self.call_depth += 1
         xc = None
         if self.call_depth == 1:
@@ -1162,7 +1179,7 @@ class StmtMixin:
             fn = xc.fn
             if fn.ret_net is None:
                 self.diag("UNSUPPORTED_CONSTRUCT", "function '%s' returns no value on this path" % node.name, e)
-                return self.unknown(hint)
+                return self.unknown_ret(fd, hint)
             sig = blk.read(fn.ret_net.sig)
             rt = ret_t if (ret_t is not None and ret_t.width == sig.width) else getattr(fn, "ret_t_eff", ret_t)
             if rt is not None and rt.kind == "array" and rt.width is None:
@@ -1170,6 +1187,9 @@ class StmtMixin:
                 rt = T.constrain(rt, n - 1, 0, "downto")
             if rt is None:
                 rt = T.T_STD_LOGIC
+            if ret_t is not None and ret_t.kind == "array" and rt.kind != "array":
+                # the body returned a scalar for an array result (a failed sub-expression): keep the declared kind
+                return self.unknown_ret(fd, hint)
             v = Val(rt, sig, None, getattr(fn, "ret_z", 0))
             if rt.kind == "int" and sig.const_value() is not None and not sig.const_value().xmask:
                 c = sig.const_value()
@@ -1184,7 +1204,7 @@ class StmtMixin:
             return v
         except StopLimit:
             self.diag("LIMIT_REACHED", "constant-function interpreter step limit reached in '%s'" % node.name, e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         finally:
             self.call_depth -= 1
             self.file = saved_file

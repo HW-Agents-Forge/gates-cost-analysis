@@ -265,8 +265,33 @@ class FixedMixin:
         sat_val = b.mux(s.slice(w - 1, 1), SigSpec.const(mask(tw - 1), tw), SigSpec.const(1 << (tw - 1), tw), tw, origin=o)
         return b.mux(ovf, kept, sat_val, tw, origin=o)
 
-    def fx_styles(self, vals, default_sat=True, default_rnd=True):
+    def fmodel_of(self, sc):
+        """Defaults of the ``fixed_generic_pkg`` / ``float_generic_pkg`` instances visible from ``sc``."""
+        out = {}
+        s = sc
+        while s is not None:
+            for env in s.uses:
+                m = env.scope.fmodel if env.scope is not None else None
+                if m:
+                    for k, v in m.items():
+                        out.setdefault(k, v)
+            if s.fmodel:
+                for k, v in s.fmodel.items():
+                    out.setdefault(k, v)
+            s = s.parent
+        return out
+
+    def fx_model_styles(self, sc):
+        """(saturate?, round?) defaults of the visible ``fixed_pkg`` (the package's own: saturate, round)."""
+        m = self.fmodel_of(sc)
+        return (str(m.get("fixed_overflow_style", "fixed_saturate")).lower() != "fixed_wrap",
+                str(m.get("fixed_round_style", "fixed_round")).lower() != "fixed_truncate")
+
+    def fx_styles(self, vals, default_sat=True, default_rnd=True, sc=None):
         sat, rnd = default_sat, default_rnd
+        if sc is not None:
+            msat, mrnd = self.fx_model_styles(sc)
+            sat, rnd = (msat if default_sat else sat), (mrnd if default_rnd else rnd)
         for v in vals:
             if v is None or v.c is None:
                 continue
@@ -310,7 +335,7 @@ class FixedMixin:
         else:                                                             # resize(arg, left, right, [styles])
             thi, tlo = self.const_int(vals[1]), self.const_int(vals[2])
             styles = vals[3:]
-        sat, rnd = self.fx_styles(styles)
+        sat, rnd = self.fx_styles(styles, sc=sc)
         return self.fx_val(self.fx_requant(s, sg, hi, lo, thi, tlo, sat, rnd, o), sg, thi, tlo)
 
     _TOFIXED_FORMALS = (("arg",), ("left_index", "size_res"), ("right_index", "overflow_style"),
@@ -338,7 +363,7 @@ class FixedMixin:
         else:
             thi, tlo = self.const_int(vals[1]), self.const_int(vals[2])
             styles = vals[3:]
-        sat, rnd = self.fx_styles(styles)
+        sat, rnd = self.fx_styles(styles, sc=sc)
         tw = thi - tlo + 1
         t = x.t
         if t.kind == "real" or isinstance(x.c, float) or (x.c is not None and x.sig is None and t.kind == "int"):

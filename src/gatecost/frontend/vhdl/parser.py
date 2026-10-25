@@ -531,11 +531,17 @@ class Parser:
         u = N.Package(name, list(ctx), [], [], line=t.line, col=t.col)
         self.cur_unit = u
         self.expect_kw("is")
-        if self.kw("new"):  # package instantiation as a design unit
+        if self.kw("new"):  # package instantiation as a design unit: ``package p is new q generic map (...)``
             self.adv()
-            self.unsupported("package instantiation unit")
-            self.sync(())
-            u.incomplete = True
+            target = self.parse_selected_path()
+            gm = []
+            if self.kw("generic"):
+                self.adv()
+                self.expect_kw("map")
+                gm = self.parse_map_list()
+            self.semi()
+            u.decls.append(N.PackageInst(name, target, gm, line=t.line, col=t.col))
+            u.end_line = self.toks[self.i - 1].line
             return u
         self.open.append("package")
         try:

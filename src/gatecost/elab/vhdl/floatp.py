@@ -273,7 +273,8 @@ class FloatMixin:
             return e, f
         if len(vals) >= 3 and vals[1] is not None and vals[2] is not None:
             return self.const_int(vals[1]), self.const_int(vals[2])
-        return 8, 23
+        m = self.fmodel_of(sc)
+        return m.get("float_exponent_width", 8), m.get("float_fraction_width", 23)
 
     _TOFLOAT_FORMALS = (("arg",), ("exponent_width", "size_res"), ("fraction_width",), ("round_style",),
                         ("denormalize",))

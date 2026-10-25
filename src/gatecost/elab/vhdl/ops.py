@@ -184,16 +184,22 @@ class OpsMixin:
             h0 = (self.unconstrained_like(hint) if r0.t.kind == "enum" and hint is not None and hint.kind == "array"
                   else self.unconstrained_like(r0.t))
         acc = self.eval(n, sc, h0)
-        for node in reversed(chain):
+        for ci in range(len(chain) - 1, -1, -1):
+            node = chain[ci]
             op = node.op
+            nh = hint
+            if op == "**" and ci > 0 and chain[ci - 1].op in ("+", "-", "*", "/", "mod", "rem"):
+                nh = T.T_INTEGER    # ``obj ** "path" - 1``: a user ``"**"`` overloaded on its result is numeric here
             ht = acc.t if (acc.t.kind in ("array", "enum") and op not in ("&", "**") and op not in _SHIFT) else None
             if op == "&" and acc.t.kind == "array":
                 ht = self.unconstrained_like(acc.t) if isinstance(node.right, N.Aggregate) else None
             r = pre.get(id(node))
             if r is None:
+                if isinstance(node.right, N.Binary) and node.right.op == "**" and op in ("+", "-", "*", "/", "mod", "rem"):
+                    ht = T.T_INTEGER        # ``4 * obj ** "path"``: pick the numeric overload of a user ``"**"``
                 r = self.eval(node.right, sc, ht)
             try:
-                acc = self.binary_op(op, acc, r, node, sc, hint)
+                acc = self.binary_op(op, acc, r, node, sc, nh)
             except NotConst:
                 raise
             except Exception as ex:

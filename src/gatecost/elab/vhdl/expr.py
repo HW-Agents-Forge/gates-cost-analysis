@@ -49,6 +49,11 @@ class ExprMixin:
             if hint.width > (1 << 20):
                 return Val(T.T_STD_LOGIC, SigSpec.x(1))      # an all-X value this wide cannot be built (memory)
             return Val(hint, SigSpec.x(hint.width))
+        if hint is not None and hint.kind == "array" and hint.width is None and hint.elem is not None and hint.elem.width:
+            # an unconstrained array expected: a one-element all-X array (a scalar would cascade into
+            # "conversion of a scalar to an array type" and "no '&' for sl and ..." diagnostics)
+            ct = T.constrain(hint, 1, 1, "to") if hint.cls == "str" else T.constrain(hint, 0, 0, "downto")
+            return Val(ct, SigSpec.x(ct.width))
         return Val(T.T_STD_LOGIC, SigSpec.x(1))
 
     def sig_of(self, v, width=None, signed=None):
@@ -248,6 +253,10 @@ class ExprMixin:
             return bool_const(name == "true")
         if name in ("note", "warning", "error", "failure"):
             return int_val(0)
+        if name in ("fixed_overflow_style", "fixed_round_style"):
+            sat, rnd = self.fx_model_styles(sc)
+            return Val(T.T_FIXED_OVF, None, int(sat)) if name == "fixed_overflow_style" else \
+                Val(T.T_FIXED_RND, None, 0 if rnd else 1)
         if name in _FIXED_NAMES:                  # ieee.fixed_float_types
             return _FIXED_NAMES[name]()
         if ieee.lookup(name):

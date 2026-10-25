@@ -271,7 +271,7 @@ def _finish(out: ParsedVhdl, architectures, side):
                     continue
                 if lib == "work":
                     if (u.library, pkg) in out.packages or out.find_package(pkg) is not None \
-                            or (u.library, pkg) in out.contexts:
+                            or (u.library, pkg) in out.contexts or pkg in ieee.WORK_MODEL_PACKAGES:
                         continue
                 elif (lib, pkg) in out.packages or (lib, pkg) in out.contexts:
                     continue

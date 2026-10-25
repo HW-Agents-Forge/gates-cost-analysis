@@ -302,6 +302,65 @@ end architecture;
         self.assertIn("DFF", ops)
 
 
+class GenericPackageInstances(unittest.TestCase):
+    """``package p is new ieee.fixed_generic_pkg / float_generic_pkg generic map (...)`` keeps the built-in model and
+    only changes its defaults (ghdl issue3194)."""
+
+    INST = """
+library ieee;
+package fixed16_pkg is new ieee.fixed_generic_pkg
+  generic map (fixed_round_style => ieee.fixed_float_types.fixed_truncate,
+               fixed_overflow_style => ieee.fixed_float_types.fixed_wrap,
+               fixed_guard_bits => 1, no_warning => false);
+library ieee;
+package float16_pkg is new ieee.float_generic_pkg
+  generic map (float_exponent_width => 5, float_fraction_width => 10,
+               float_round_style => ieee.fixed_float_types.round_zero, float_denormalize => true,
+               float_check_error => false, float_guard_bits => 2, no_warning => false,
+               fixed_pkg => work.fixed16_pkg);
+"""
+
+    def test_instance_parses_as_a_package_without_a_diagnostic(self):
+        r = parse_text(self.INST)
+        self.assertEqual([d.code for d in r.diagnostics], [])
+        pk = r.packages[("work", "float16_pkg")]
+        self.assertEqual([type(d).__name__ for d in pk.decls], ["PackageInst"])
+        self.assertEqual(pk.decls[0].target[-1], "float_generic_pkg")
+
+    def test_float_defaults_follow_the_instance(self):
+        src = self.INST + HDR + """use work.float16_pkg.all;
+entity t is port (i : in signed(7 downto 0); y : out std_logic_vector(15 downto 0)); end entity;
+architecture a of t is begin
+  y <= to_slv(to_float(i));
+end architecture;
+"""
+        m, r, _d = module(src)
+        self.assertEqual(lint(r), [])
+        self.assertEqual({p.name: p.width for p in m.ports}["y"], 16)
+
+    def test_fixed_defaults_follow_the_instance(self):
+        def nodes(pkg):
+            src = self.INST + HDR + pkg + """
+entity t is port (a : in sfixed(7 downto -8); y : out sfixed(3 downto -4)); end entity;
+architecture x of t is begin y <= resize(a, 3, -4); end architecture;
+"""
+            m, r, _d = module(src)
+            self.assertEqual(lint(r), [])
+            return len(m.nodes)
+        self.assertEqual(nodes("use work.fixed16_pkg.all;\n"), 0)            # wrap + truncate: wiring only
+        self.assertGreater(nodes("use ieee.fixed_pkg.all;\n"), 0)            # package default: saturate + round
+
+    def test_use_of_work_fixed_pkg_without_sources(self):
+        src = HDR + """use work.fixed_pkg.all;
+entity t is port (a : in std_logic_vector(6 downto 0); y : out ufixed(3 downto -2)); end entity;
+architecture x of t is begin y <= to_ufixed(a, 5, 1); end architecture;
+"""
+        r = parse_text(src)
+        self.assertEqual([d for d in r.diagnostics if d.code == "MISSING_UNIT"], [])
+        m, rr, _d = module(src)
+        self.assertEqual(lint(rr), [])
+
+
 class FloatPackage(unittest.TestCase):
     def test_types_and_widths(self):
         for name, w in (("float16", 16), ("float32", 32), ("float64", 64), ("float128", 128)):
@@ -545,6 +604,30 @@ end architecture;
         self.assertEqual(lint(r), [])
         out = Sim(m).outputs(Sim(m).comb({"a": 0}))
         self.assertEqual((out["n_o"], out["s_o"], out["t_o"], out["b_o"]), (6, 6, 2, 1))
+
+
+    def test_overload_in_arithmetic_context_and_failed_calls_keep_their_kind(self):
+        src = self.PKG + """
+library ieee;
+use ieee.std_logic_1164.all;
+use work.hp.all;
+entity tw is
+  generic (settings : string := "abc");
+  port (a : in std_logic;
+        y : out std_logic_vector(settings ** ".w" - 1 downto 0);
+        z : out std_logic_vector(4 * settings ** ".gear" - 1 downto 0));
+end entity;
+architecture rtl of tw is
+  constant c : string := "." & string'(hdo(settings) ** ".gen");
+begin
+  y <= (others => a);
+  z <= (others => a);
+end architecture;
+"""
+        m, r, _d = module(src, top="tw")
+        self.assertEqual(lint(r), [])
+        widths = {p.name: p.width for p in m.ports}
+        self.assertEqual((widths["y"], widths["z"]), (5, 32))                    # "abc" ** ".w" = 5; 4 * ("abc" ** ".gear" = 8) - 1 downto 0
 
 
 # ---------------------------------------------------------------------------------------------- 3. syntax
