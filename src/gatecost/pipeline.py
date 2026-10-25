@@ -22,6 +22,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from . import cache as cache_mod
+from .config import ProjectConfig
+from .params import canon as canon_params
+from .params import differing as params_differing
+from .params import params_json
 from .cost.tree import DesignCostTree
 from .discovery import RTL_EXT, VERILOG_EXT
 from .errors import GatecostError
@@ -90,10 +94,11 @@ class Inputs:
     texts: dict = field(default_factory=dict)       # rel name -> text (RTL files and headers)
     file_items: list = field(default_factory=list)  # (rel, bytes) of the compiled sources
     include_items: list = field(default_factory=list)
+    params: dict = field(default_factory=dict)      # typed top-level parameter / generic overrides
 
 
-def read_inputs(files, incdirs, defines, root: Path) -> Inputs:
-    inp = Inputs(Path(root), list(files), list(incdirs), dict(defines))
+def read_inputs(files, incdirs, defines, root: Path, params=None) -> Inputs:
+    inp = Inputs(Path(root), list(files), list(incdirs), dict(defines), params=dict(params or {}))
     seen = set()
     for f in inp.files:
         try:
@@ -174,7 +179,7 @@ def side_key(inp: Inputs, profile, top, limits, prefer=None, kind="tree") -> str
     return cache_mod.analysis_key(
         inp.file_items, inp.defines, inp.include_items, profile_digest(profile),
         tool_version=version() + "+" + code_fingerprint(),
-        extra={"kind": kind, "top": top, "limits": limits or {}, "incdirs": [rel_name(Path(d), inp.root) for d in inp.incdirs],
+        extra={"kind": kind, "top": top, "limits": limits or {}, "params": canon_params(inp.params), "incdirs": [rel_name(Path(d), inp.root) for d in inp.incdirs],
                "prefer": sorted(prefer) if prefer is not None else None, "order": [n for n, _ in inp.file_items]})
 
 
@@ -211,12 +216,14 @@ def _touches(tree: DesignCostTree, prefer) -> int:
 
 
 def analyze_project(files, root, top, defines, incdirs, limits, profile, elaborate=None, *, side="after",
-                    texts=None, prefer=None, facts_out=None):
+                    texts=None, prefer=None, facts_out=None, params=None):
     """Elaborate and build the cost tree.  Returns (tree, elab result, extra diagnostics, notes)."""
     from .cost import build_cost_tree
 
     elaborate = elaborate or get_elaborator()
     kw = dict(root=root, top=top, defines=defines, incdirs=incdirs, limits=limits, side=side)
+    if params:
+        kw["params"] = params
     res = elaborate(files, **kw)
     design = res.design
     tops = list(getattr(res, "tops", ()) or ())
@@ -228,7 +235,8 @@ def analyze_project(files, root, top, defines, incdirs, limits, profile, elabora
             raise GatecostError("NO_SOURCES", "no module or entity definition found in the sources")
 
     def mk(r, name):
-        t = build_cost_tree(r.design, profile, config={"defines": defines, "top": top, "root": str(root)},
+        t = build_cost_tree(r.design, profile, config={"defines": defines, "top": top, "root": str(root),
+                                                 "params": canon_params(params)},
                             extra_diagnostics=[_as_diag(d, root) for d in r.diagnostics])
         return _annotate(t, texts, defines, root, r, facts_out=facts_out)
 
@@ -310,7 +318,7 @@ def analyze_side(inp: Inputs, profile, top, limits, cache, *, elaborate=None, si
             return hit
     facts: dict = {}
     tree, res, _, notes = analyze_project(inp.files, inp.root, top, inp.defines, inp.incdirs, limits, profile,
-                                          elaborate, side=side, texts=inp.texts, prefer=prefer, facts_out=facts)
+                                          elaborate, side=side, texts=inp.texts, prefer=prefer, facts_out=facts, params=inp.params)
     sr = make_side(tree, res, notes, inp.root, build_index(inp, res, facts) if not notes else None)
     if keyp:
         cache.put(keyp if notes else key1, sr)
@@ -549,6 +557,8 @@ def analyze_cone(inp: Inputs, profile, top, limits, cache, ref: SideResult, name
         plan = _cone_plan(inp, ref, names, changed, top, limits) if use_plan else None
         kw = dict(root=inp.root, top=top, defines=inp.defines, incdirs=inp.incdirs, limits=limits, side=side,
                   only_modules=names)
+        if inp.params:
+            kw["params"] = inp.params
         try:
             if plan is not None:
                 try:
@@ -575,7 +585,8 @@ def analyze_cone(inp: Inputs, profile, top, limits, cache, ref: SideResult, name
         return None
     cone_stats.clear()
     cone_stats.update(parsed=plan.parsed if plan else len(inp.files), total=len(inp.files))
-    partial = build_cost_tree(design, profile, config={"defines": inp.defines, "top": top, "root": str(inp.root)},
+    partial = build_cost_tree(design, profile, config={"defines": inp.defines, "top": top, "root": str(inp.root),
+                                                 "params": canon_params(inp.params)},
                               extra_diagnostics=[_as_diag(d, inp.root) for d in res.diagnostics], stubbed=stubs)
     if plan is not None:
         partial = _annotate(partial, plan.texts, inp.defines, inp.root, res, ifdef_extra=plan.ifdef_extra,
@@ -625,24 +636,41 @@ class DiffRun:
     operations: tuple | None = None
 
 
-def _rebase(paths, after_root: Path, side_root: Path):
+def _rebase(paths, after_root: Path, side_root: Path, per_side: bool = False):
+    """Paths of the after tree mapped to ``side_root``.  A relative path inside the after tree (as seen from
+    the working directory) is rebased; with ``per_side`` (``--before``/``--after``) any other relative path
+    that exists under the side's own root is read from that root, so both sides use their own copy."""
     out = []
     for p in paths or ():
         ap = Path(p)
-        ap = ap if ap.is_absolute() else Path.cwd() / ap
+        if ap.is_absolute():
+            full = ap
+        else:
+            full = Path.cwd() / ap
+            if per_side and not _within(full, after_root) and (side_root / ap).exists():
+                out.append(str(side_root / ap))
+                continue
         try:
-            rel = Path(os.path.abspath(ap)).relative_to(Path(os.path.abspath(after_root)))
+            rel = Path(os.path.abspath(full)).relative_to(Path(os.path.abspath(after_root)))
             out.append(str(side_root / rel))
         except ValueError:
             out.append(str(p))
     return out
 
 
-def _side_settings(settings, after_root: Path, side_root: Path):
+def _within(path: Path, root: Path) -> bool:
+    try:
+        Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(root)))
+        return True
+    except ValueError:
+        return False
+
+
+def _side_settings(settings, after_root: Path, side_root: Path, per_side: bool = False):
     s = copy.copy(settings)
     s.root = side_root
-    s.incdirs = _rebase(settings.incdirs, after_root, side_root)
-    s.filelists = _rebase(settings.filelists, after_root, side_root)
+    s.incdirs = _rebase(settings.incdirs, after_root, side_root, per_side)
+    s.filelists = _rebase(settings.filelists, after_root, side_root, per_side)
     return s
 
 
@@ -667,6 +695,74 @@ def _overlay(before_root: Path, after_root: Path, settings, outside: set) -> tup
     return tmp, lambda: shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _read_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def side_configs(args, settings, cfg, bl):
+    """``(settings, cfg)`` of the after and the before side, and diagnostics.
+
+    One project file normally serves both sides.  When the file differs between the sides it is read from each
+    side's own tree: the file as of the base reference / snapshot (git, snapshot), or the ``gatecost.toml`` of
+    each directory (``--before``/``--after`` without ``--config``)."""
+    from .baseline import CONFIG_NAME, _config_rel
+    from .config import load_project_file, settings_for
+
+    diags: list[Diagnostic] = []
+    after = before = (settings, cfg)
+
+    def load(path: Path):
+        try:
+            return load_project_file(path)
+        except GatecostError as e:
+            diags.append(Diagnostic("CONFIG_MISMATCH", f"cannot read the project file of the baseline ({e.message}); "
+                                    "the current one is used for both sides", "warning", True, "before"))
+            return None
+
+    if bl.kind == "dirs":
+        if not getattr(args, "config", None):
+            def own(root: Path):
+                f = Path(root) / CONFIG_NAME
+                if not f.is_file():
+                    return None
+                c = load(f)
+                return None if c is None else (settings_for(args, Path(root), f, c), c)
+
+            after = own(Path(bl.after_root)) or after
+            before = own(Path(bl.before_root)) or before
+        return after, before, diags
+    rel = _config_rel(settings)
+    if rel is None:
+        return after, before, diags
+    f_before = Path(bl.before_root) / rel
+    f_after = Path(settings.config_path) if settings.config_path else Path(settings.root) / rel
+    raw_b, raw_a = _read_bytes(f_before), _read_bytes(f_after)
+    if raw_b == raw_a:
+        return after, before, diags
+    cfg_b = load(f_before) if raw_b is not None else ProjectConfig()
+    if cfg_b is not None:
+        before = (settings_for(args, Path(settings.root), f_after, cfg_b), cfg_b)
+    return after, before, diags
+
+
+def config_differences(sa, sb) -> list[str]:
+    """Keys of the project configuration (resolved settings) that differ between the sides."""
+    out: list[str] = []
+    if sa.top is not None and sb.top is not None and sa.top != sb.top:
+        out.append("top")      # a top pinned on one side only is reported by TOP_CHANGED when it really moves
+    for k in sorted(set(sa.defines) | set(sb.defines)):
+        if sa.defines.get(k) != sb.defines.get(k):
+            out.append(f"defines.{k}")
+    out += [f"params.{k}" for k in params_differing(sa.params, sb.params)]
+    for key in ("sources", "incdirs", "filelists", "exclude"):
+        if list(getattr(sa, key)) != list(getattr(sb, key)):
+            out.append(key)
+    return out
+
+
 def run_diff(args, settings, cfg, profile, collect_sources, elaborate=None) -> DiffRun:
     from .baseline import resolve_baseline
     from .cache import resolve_cache
@@ -676,37 +772,59 @@ def run_diff(args, settings, cfg, profile, collect_sources, elaborate=None) -> D
     t0 = time.perf_counter()
     cache = resolve_cache(settings)
     diags: list[Diagnostic] = list(settings.diagnostics) + list(profile.diagnostics)
-    limits = dict(cfg.data.get("limits", {})) if getattr(cfg, "data", None) else {}
     bl = resolve_baseline(settings, args)
     cleanups = [bl.cleanup]
     try:
         diags += list(bl.diagnostics)
-        defines = dict(settings.defines)
-        if bl.kind == "snapshot" and bl.defines is not None and not (getattr(args, "define", None) or cfg.get("project", "defines")):
-            defines = dict(bl.defines)
+        (set_a, cfg_a), (set_b, cfg_b), cdiags = side_configs(args, settings, cfg, bl)
+        diags += cdiags
+        per_side = bl.kind == "dirs"
+
+        def side_values(st_, cf_):
+            """Defines and parameters of one side, and its limits (a snapshot supplies those recorded)."""
+            d = dict(st_.defines)
+            if bl.kind == "snapshot" and bl.defines is not None and not (getattr(args, "define", None) or cf_.get("project", "defines")):
+                d = dict(bl.defines)
+            p = dict(st_.params)
+            if bl.kind == "snapshot" and bl.params is not None and not (getattr(args, "param", None) or cf_.get("project", "params")):
+                p = dict(bl.params)
+            lim = dict(cf_.data.get("limits", {})) if getattr(cf_, "data", None) else {}
+            return d, p, lim
+
+        defines, params, limits = side_values(set_a, cfg_a)
+        defines_b, params_b, limits_b = side_values(set_b, cfg_b)
+        set_a = copy.copy(set_a)
+        set_a.params = params
+        set_b = copy.copy(set_b)
+        set_b.params = params_b
+        set_b.defines = defines_b
+        cfg_diff = config_differences(replace_defines(set_a, defines), set_b)
+        if limits != limits_b:
+            cfg_diff.append("limits")
         if (bl.kind == "snapshot" and bl.profile and bl.profile != settings.profile
                 and getattr(args, "profile", None) is None and cfg.get("cost", "profile") is None
                 and not os.environ.get("GATECOST_PROFILE")):
             from .cost import load_profile
 
             profile = load_profile(bl.profile, cfg.get("cost", "override", None) or None, Path.cwd())
-        st = copy.copy(settings)
+        st = copy.copy(set_a)
         st.defines = defines
         after_root = Path(bl.after_root).resolve()
         before_root = Path(bl.before_root).resolve()
         none_args = SimpleNamespace(paths=[])
-        files_a, inc_a, defs_a, fd_a = collect_sources(none_args, _side_settings(st, after_root, after_root), cfg)
+        files_a, inc_a, defs_a, fd_a = collect_sources(none_args, _side_settings(st, after_root, after_root, per_side), cfg_a)
         diags += list(fd_a)
 
         # PATH restriction: outside changes are neutralised in the before view
         outside = set(bl.all_changed_files) - set(bl.changed_files)
         if outside and bl.changed_files is not None:
-            before_root, cl = _overlay(before_root, after_root, st, outside)
+            before_root, cl = _overlay(before_root, after_root, set_b, outside)
             cleanups.append(cl)
-        changed = bool(bl.changed_files)
+        changed = bool(bl.changed_files) or bool(cfg_diff)
 
-        inp_a = read_inputs(files_a, inc_a, defs_a, after_root)
-        top = settings.top
+        inp_a = read_inputs(files_a, inc_a, defs_a, after_root, params)
+        top = set_a.top
+        top_b = set_b.top
         prefer = set(bl.all_changed_files)
         before_ok = True
         reason = ""
@@ -716,24 +834,25 @@ def run_diff(args, settings, cfg, profile, collect_sources, elaborate=None) -> D
             sra = srb = analyze_side(inp_a, profile, top, limits, cache, elaborate=elaborate, side="after", prefer=prefer)
         else:
             try:
-                files_b, inc_b, defs_b, fd_b = collect_sources(none_args, _side_settings(st, after_root, before_root), cfg)
-                inp_b = read_inputs(files_b, inc_b, defs_b, before_root)
-                srb = analyze_side(inp_b, profile, top, limits, cache, elaborate=elaborate, side="before", prefer=prefer)
+                files_b, inc_b, defs_b, fd_b = collect_sources(
+                    none_args, _side_settings(set_b, after_root, before_root, per_side), cfg_b)
+                inp_b = read_inputs(files_b, inc_b, defs_b, before_root, params_b)
+                srb = analyze_side(inp_b, profile, top_b, limits_b, cache, elaborate=elaborate, side="before", prefer=prefer)
             except GatecostError as e:
                 if e.code in ("NO_SOURCES", "TOP_NOT_FOUND"):
                     before_ok = False
                     reason = ("baseline has no RTL sources" if e.code == "NO_SOURCES"
-                              else f"baseline has no module named {top} (top changed?)")
+                              else f"baseline has no module named {top_b} (top changed?)")
                 else:
                     raise
             if before_ok:
                 top_a = top
-                if top is None and len(srb.tops) > 1:
+                if top is None and top_b is None and len(srb.tops) > 1:
                     top_a = _top_name(srb.tree)       # several roots: stay on the same one when it still exists
-                names = cone_names(bl.changed_files, inp_b.texts, inp_a.texts) if cache is not None else None
+                names = cone_names(bl.changed_files, inp_b.texts, inp_a.texts) if cache is not None and not cfg_diff and top == top_b else None
                 if names and not os.environ.get("GATECOST_NO_CONE"):
                     sra = analyze_cone(inp_a, profile, top, limits, cache, srb, names,
-                                       side_key(inp_b, profile, top, limits, prefer), elaborate=elaborate,
+                                       side_key(inp_b, profile, top_b, limits_b, prefer), elaborate=elaborate,
                                        changed=bl.changed_files)
                 if sra is None:
                     try:
@@ -751,8 +870,12 @@ def run_diff(args, settings, cfg, profile, collect_sources, elaborate=None) -> D
             res = not_comparable(reason, _top_name(sra.tree))
             return DiffRun(res, diags, _cfg_out(sra.tree, defines, inp_a), profile.name, cache.state, "ok")
         # source texts for the line alignment (unchanged files are identical on both sides)
+        from .diff.engine import _config_diffs
+
+        covered = {k.split(".")[0] for k in cfg_diff}
+        mismatch = cfg_diff + [k for k in _config_diffs(srb.tree, sra.tree) if k not in covered]
         res = diff_trees(srb.tree, sra.tree, before_sources=inp_b.texts, after_sources=inp_a.texts,
-                         threshold_ge=settings.threshold_ge)
+                         threshold_ge=settings.threshold_ge, config_mismatch=mismatch)
         res = _merge_assumed(res, srb, sra)
         ops = None
         if getattr(args, "detail", None) == "ops":
@@ -769,6 +892,12 @@ def run_diff(args, settings, cfg, profile, collect_sources, elaborate=None) -> D
                 pass
 
 
+def replace_defines(settings, defines):
+    s = copy.copy(settings)
+    s.defines = defines
+    return s
+
+
 def _merge_assumed(res, srb, sra):
     a = list(dict.fromkeys(list(sra.assumptions) + [x for x in srb.assumptions if x not in sra.assumptions]))
     return replace(res, assumed=tuple(a))
@@ -780,7 +909,8 @@ def _top_name(tree: DesignCostTree) -> str | None:
 
 
 def _cfg_out(tree, defines, inp) -> dict:
-    return {"top": _top_name(tree), "defines": dict(defines), "sources": len(inp.files)}
+    return {"top": _top_name(tree), "defines": dict(defines), "params": params_json(inp.params),
+            "sources": len(inp.files)}
 
 
 def _changed_ops(res, tree) -> tuple:

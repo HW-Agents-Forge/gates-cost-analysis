@@ -141,11 +141,13 @@ Each diagnostic has a stable code, a severity (`info`, `warning`, `error`), a lo
 | `UNSUPPORTED_CONSTRUCT` | warning | yes |
 | `MISSING_MODULE` | warning | yes |
 | `UNRESOLVED_PARAM` | warning | yes |
+| `UNKNOWN_PARAMETER` (a `--param` name the top does not declare) | warning | yes |
 | `UNDEFINED_MACRO` | warning | yes |
 | `LIMIT_REACHED` (unroll, generate, depth) | warning | yes |
 | `INFERRED_LATCH` | warning | no (costed) |
 | `DUPLICATE_MODULE` | warning | possibly |
 | `IGNORED_REGION` (initial, assertions, ...) | info | no |
+| `ARRAY_PORT_FLATTENED` (unpacked array port taken as one vector; whole-array connections wire element by element) | info | no |
 | `INCLUDE_NOT_FOUND` | warning | possibly |
 
 ## 7. Default Limits

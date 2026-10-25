@@ -14,6 +14,8 @@ DIAG_DEFAULTS = {
     "UNSUPPORTED_CONSTRUCT": ("warning", True),
     "LIMIT_REACHED": ("warning", True),
     "TRISTATE": ("info", False),
+    "ARRAY_PORT_FLATTENED": ("info", False),
+    "UNKNOWN_PARAMETER": ("warning", True),
     "INFERRED_LATCH": ("warning", False),
     "TOP_AMBIGUOUS": ("info", False),
     "INTERNAL": ("warning", True),

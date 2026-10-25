@@ -217,8 +217,8 @@ def _header_ports(ctx, ev, mod, overrides):
         if p.dims:
             ud = ev.eval_dims(p.dims)
             if ud:
-                ev.diag("UNSUPPORTED_CONSTRUCT", f"unpacked array port '{p.name}' is flattened into one vector",
-                        p, True)
+                ev.diag("ARRAY_PORT_FLATTENED", f"unpacked array port '{p.name}' is flattened into one vector "
+                        "(element-wise wiring, no cost impact)", p, False, "info")
                 pt = pack(ud, pt, pt.signed)
         dr = _DIR.get(p.direction, "in")
         if dr == "inout":

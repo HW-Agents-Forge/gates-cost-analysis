@@ -41,6 +41,7 @@ class Baseline:
     label: str
     kind: str = "git"  # git | snapshot | dirs
     defines: dict[str, str] | None = None  # recorded by a snapshot, else None
+    params: dict | None = None  # typed parameter overrides recorded by a snapshot, else None
     profile: str | None = None
     diagnostics: list[Diagnostic] = field(default_factory=list)
     all_changed_files: list[str] = field(default_factory=list)  # before the PATH restriction
@@ -550,8 +551,20 @@ def _snapshot_baseline(settings, root: Path, which: str, restrict: list[str]) ->
     sel_a = select_sources(after, settings, restrict=None)
     added, removed, modified = _compare_trees(before, after, info.files, sel_a)
     bl = Baseline(info.files_dir, root, [], added, removed, modified, f"snapshot {info.id}", "snapshot",
-                  defines=dict(info.defines), profile=info.profile)
+                  defines=dict(info.defines), profile=info.profile, params=_snapshot_params(info))
     return _finish(bl, restrict)
+
+
+def _snapshot_params(info) -> dict | None:
+    from .params import parse_value
+
+    out = {}
+    for k, v in (getattr(info, "params", None) or {}).items():
+        try:
+            out[k] = parse_value(v)
+        except ValueError:
+            continue
+    return out or None
 
 
 def _dirs_baseline(settings, before_dir: str, after_dir: str, restrict_raw) -> Baseline:

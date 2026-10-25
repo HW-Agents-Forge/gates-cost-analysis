@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import params as params_mod
 from .errors import GatecostError
 from .result import Diagnostic
 
@@ -20,6 +21,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, ...]]] = {
         "incdirs": (list,),
         "exclude": (list,),
         "defines": (dict,),
+        "params": (dict,),
         "languages": (list,),
         "libraries": (dict,),
         "architectures": (dict,),
@@ -76,6 +78,11 @@ def load_project_file(path: Path | None) -> ProjectConfig:
             elif isinstance(value, bool) and bool not in types or not isinstance(value, types):
                 names = "/".join(t.__name__ for t in types)
                 raise GatecostError("BAD_CONFIG", f"{section}.{key} must be of type {names}")
+    for name, val in (cfg.get("project", "params") or {}).items():
+        try:
+            params_mod.from_toml(name, val)
+        except ValueError as exc:
+            raise GatecostError("BAD_CONFIG", f"project.params: {exc}") from None
     for key in ("sources", "filelists", "incdirs", "exclude", "languages"):
         val = cfg.get("project", key)
         if val is not None and not all(isinstance(x, str) for x in val):
@@ -113,6 +120,7 @@ class Settings:
     threshold_ge: float = 5
     top: str | None = None
     defines: dict[str, str] = field(default_factory=dict)
+    params: dict = field(default_factory=dict)        # typed top-level parameter / generic overrides
     incdirs: list[str] = field(default_factory=list)
     filelists: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
@@ -159,6 +167,21 @@ def _parse_define(items: list[str]) -> dict[str, str]:
     return out
 
 
+def _parse_params(items: list[str]) -> dict:
+    out: dict = {}
+    for item in items:
+        try:
+            name, value = params_mod.parse_assignment(item)
+        except ValueError as exc:
+            raise GatecostError("BAD_ARGUMENT", f"--param {exc}") from None
+        out[name] = value
+    return out
+
+
+def toml_params(cfg: "ProjectConfig") -> dict:
+    return {k: params_mod.from_toml(k, v) for k, v in (cfg.get("project", "params", {}) or {}).items()}
+
+
 def resolve_settings(args, cwd: Path, skill_dir: Path, env: dict[str, str] | None = None) -> tuple[Settings, ProjectConfig]:
     """Precedence: command line > gatecost.toml > environment > defaults."""
     env = os.environ if env is None else env
@@ -173,6 +196,13 @@ def resolve_settings(args, cwd: Path, skill_dir: Path, env: dict[str, str] | Non
         cfg_path = root / "gatecost.toml"
         cfg_path = cfg_path if cfg_path.is_file() else None
     cfg = load_project_file(cfg_path)
+    return settings_for(args, root, cfg_path, cfg, env), cfg
+
+
+def settings_for(args, root: Path, cfg_path: Path | None, cfg: ProjectConfig, env: dict[str, str] | None = None) -> Settings:
+    """Settings of ``root`` for the project file ``cfg`` (read from ``cfg_path``, which anchors relative paths)."""
+    env = os.environ if env is None else env
+    g = lambda name: getattr(args, name, None)  # noqa: E731 - options differ per command
     base = cfg_path.parent if cfg_path else root
 
     s = Settings(root=root, config_path=cfg_path, diagnostics=list(cfg.diagnostics))
@@ -191,6 +221,7 @@ def resolve_settings(args, cwd: Path, skill_dir: Path, env: dict[str, str] | Non
     s.threshold_ge = pick(g("threshold"), cfg.get("report", "threshold_ge"), None, 5)
     s.top = pick(g("top"), cfg.get("project", "top"), None, None)
     s.defines = {**{k: str(v) for k, v in cfg.get("project", "defines", {}).items()}, **_parse_define(g("define") or [])}
+    s.params = {**toml_params(cfg), **_parse_params(g("param") or [])}
     s.incdirs = list(g("incdir") or []) + [str(base / p) for p in cfg.get("project", "incdirs", [])]
     s.filelists = list(g("filelist") or []) + [str(base / p) for p in cfg.get("project", "filelists", [])]
     s.sources = list(cfg.get("project", "sources", []))
@@ -202,4 +233,4 @@ def resolve_settings(args, cwd: Path, skill_dir: Path, env: dict[str, str] | Non
     s.verbose = bool(g("verbose"))
     s.quiet = bool(g("quiet"))
     s.no_meta = bool(g("no_meta"))
-    return s, cfg
+    return s
