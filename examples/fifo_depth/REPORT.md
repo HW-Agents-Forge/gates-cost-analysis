@@ -8,10 +8,10 @@ Memory-dominated designs: the confidence is `low` and the verdict may be `UNCERT
 
 ```console
 $ gatecost cost baseline --top fifo --verbose
-COST 1543 GE (843..1881) confidence=low
+COST 1537 GE (841..1849) confidence=low
 TOP fifo
-1543 fifo 100%
-CATEGORIES seq=93 addcmp=110 mul=0 select=0 logic=4 shift=0 div=0 mem=1336
+1537 fifo 100%
+CATEGORIES seq=93 addcmp=106 mul=0 select=0 logic=4 shift=0 div=0 mem=1333
 WHY low: 87% of delta in mem class (poor model quality)
 ```
 
@@ -19,11 +19,11 @@ WHY low: 87% of delta in mem class (poor model quality)
 
 ```console
 $ gatecost diff --before baseline --after deeper --top fifo --verbose
-DELTA +4113 GE (-3459..+10299) +266.5% verdict=UNCERTAIN confidence=low
-TOP fifo before=1543 after=5656
-+4113 fifo.sv:2 parameter D 16->64 (7 ops) x1 cause=parameter:D
-MODULE fifo{D=64,W=8} x1->x1 intrinsic=+4113 multiplicity=0
-CATEGORIES addcmp=+35 mem=+4041 seq=+37
+DELTA +4117 GE (-838..+7680) +267.9% verdict=UNCERTAIN confidence=low
+TOP fifo before=1537 after=5654
++4117 fifo.sv:2 parameter D 16->64 (7 ops) x1 cause=parameter:D
+MODULE fifo{D=64,W=8} x1->x1 intrinsic=+4117 multiplicity=0
+CATEGORIES addcmp=+36 mem=+4044 seq=+37
 STRUCT module fifo parameters {D=16,W=8} -> {D=64,W=8}
 WHY low: 98% of delta in mem class (poor model quality)
 ```

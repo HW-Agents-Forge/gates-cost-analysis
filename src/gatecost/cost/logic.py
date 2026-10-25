@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .acc import Acc, OpCost, Sc, cap, finalize, zero
 from .profile import Profile
-from .units import ceil_div, clog2, pm
+from .units import ceil_div, clog2, pm, rdiv
 
 
 def _all(a: Acc, arch: str, sigma: bool = False) -> Sc:
@@ -59,17 +59,18 @@ def bitwise_op(kind: str, w: int, p: Profile) -> OpCost:
         full = Acc().add("INV", w, p.P["INV"])
         return finalize(Sc(Acc(), full.scaled(500), full, {"min": "absorbed", "typ": "absorbed", "max": "inv"}), "logic", "good", p)
     g = _GATE[kind]
-    return finalize(_all(Acc().add(g, w, p.P[g]), "gate"), "logic", "good", p, logic=True)
+    # XOR/XNOR cannot merge into AND-OR complex gates (AOI/OAI), so the glue-logic scale does not apply to them
+    return finalize(_all(Acc().add(g, w, p.P[g]), "gate"), "logic", "good", p, logic=kind not in ("XOR", "XNOR"))
 
 
 def reduce_op(kind: str, n: int, p: Profile) -> OpCost:
-    """RED_AND / RED_OR (also used for compares against zero) and RED_XOR."""
+    """RED_AND / RED_OR (also used for compares against zero) and RED_XOR (no glue-logic scale: see bitwise_op)."""
     if n == 1:
         return zero("logic")
     pre = "red_xor" if kind == "XOR" else "red_and"
     name = "XOR_IN" if kind == "XOR" else "AND_IN"
     lo, ty, hi = (Acc().add(name, n - 1, p.C[f"{pre}_{s}"]) for s in ("min", "typ", "max"))
-    return finalize(Sc(lo, ty, hi, {"min": "tree", "typ": "tree", "max": "tree"}), "logic", "good", p, logic=True)
+    return finalize(Sc(lo, ty, hi, {"min": "tree", "typ": "tree", "max": "tree"}), "logic", "good", p, logic=kind != "XOR")
 
 
 # ---------------------------------------------------------------------------------------
@@ -101,20 +102,25 @@ def mux_op(k: int, w: int, p: Profile, const_inputs: int = 0, same_inputs: bool 
 
 
 def _pmux_accs(k: int, w: int, p: Profile) -> tuple[Acc, Acc, Acc]:
+    """k one-hot arms plus the default arm, per bit: each of the ``k + 1`` arms costs half an AOI22 (``AO_IN``: an
+    AOI22 serves two arms, an AOI222 three at about the same rate), and the ``h = ceil((k + 1) / 2)`` AOI outputs
+    are merged by a NAND/NOR tree at the per-merged-input cost of the comparator chains (``eq_chain_min`` /
+    ``eq_chain_typ``)."""
     P = p.P
-    h = ceil_div(k, 2)
-    lo = Acc().add("AO22", h * w, P["AO22"]).add("OR_IN", (h - 1) * w, p.C["pmux_or_min"])
-    ty = Acc().add("AO22", h * w, P["AO22"]).add("OR2", (h - 1) * w, P["OR2"])
+    h = ceil_div(k + 1, 2)
+    arm = rdiv(P["AOI22"], 2)
+    lo = Acc().add("AO_IN", (k + 1) * w, arm).add("OR_IN", (h - 1) * w, p.C["eq_chain_min"])
+    ty = Acc().add("AO_IN", (k + 1) * w, arm).add("OR_IN", (h - 1) * w, p.C["eq_chain_typ"])
     hi = Acc().add("MUX2", k * w, P["MUX2"])
     return lo, ty, hi
 
 
 def pmux_op(k: int, w: int, p: Profile) -> OpCost:
-    """k data inputs with a one-hot select (AO22 tree)."""
+    """k one-hot data inputs and a default (AOI22 pairs and a NAND tree)."""
     if k <= 1:
         return finalize(_all(Acc().add("AND2", w, p.P["AND2"]), "and"), "select", "medium", p)
     lo, ty, hi = _pmux_accs(k, w, p)
-    return finalize(Sc(lo, ty, hi, {"min": "ao22", "typ": "ao22", "max": "mux_chain"}), "select", "medium", p)
+    return finalize(Sc(lo, ty, hi, {"min": "aoi22", "typ": "aoi22", "max": "mux_chain"}), "select", "medium", p)
 
 
 def priority_op(k: int, w: int, p: Profile) -> OpCost:
@@ -136,7 +142,16 @@ def decode_acc(s: int, p: Profile) -> Sc:
     lo = Acc().add("NOR2", outs, P["NOR2"]).add("PREDECODE", pre, C["predecode"])
     ty = Acc().add("AND2", outs, P["AND2"]).add("PREDECODE", pre, C["predecode"])
     hi = Acc().add("AND2", outs * (s - 1), P["AND2"])
-    return Sc(lo, ty, hi, {"min": "predecode_nor", "typ": "predecode_and", "max": "and_tree"})
+    arch = {"min": "predecode_nor", "typ": "predecode_and", "max": "and_tree"}
+    if s <= 4:
+        # direct form: one s-input NOR per output on true/complemented address bits (s inverters), no predecoder
+        g = ("NOR2", "NOR3", "NOR4")[s - 2]
+        direct = Acc().add(g, outs, P[g]).add("INV", s, P["INV"])
+        if direct.total < lo.total:
+            lo, arch["min"] = direct, "direct_nor"
+        if direct.total < ty.total:
+            ty, arch["typ"] = direct.copy(), "direct_nor"
+    return Sc(lo, ty, hi, arch)
 
 
 def decode_op(s: int, p: Profile) -> OpCost:
@@ -168,29 +183,61 @@ def encode_op(k: int, p: Profile, priority: bool = False) -> OpCost:
 SHIFTS = ("SHL", "SHR", "SAR", "ROL", "ROR")
 
 
-def shift_op(kind: str, n: int, s: int, p: Profile, const_amount: bool = False, lhs_one: bool = False) -> OpCost:
-    """Barrel shifter of n data bits and an s-bit amount.
+def _wide_shr_levels(n: int, wa: int, tz: int, L: int) -> tuple[int, int]:
+    """(MUX2, AND2) of a right shift of a ``wa``-bit word to ``n`` output bits by multiples of ``2^tz``.
 
-    A constant amount is wiring (0); ``1 << x`` (``lhs_one`` on SHL) is a decoder.
+    Levels ``j = tz .. L-1`` (shift by ``2^j``), the smallest shift next to the output: the output level needs ``n``
+    bits and every level towards the input ``2^j`` more (at most ``wa``).  A bit whose shifted-in source lies above
+    the word is an AND2 (zero fill), every other bit a MUX2.  With ``wa == n`` and ``tz == 0`` this is the usual
+    ``sum_j (n - 2^j) MUX2 + 2^j AND2``; ``d[s*W +: W]`` (``wa = k*W``, ``tz = log2 W``) is ``(k-1)*W`` MUX2."""
+    mux = andg = 0
+    need = min(n, wa)
+    for j in range(tz, L):
+        sh = 1 << j
+        a = max(0, need - max(0, wa - sh))
+        mux += need - a
+        andg += a
+        need = min(wa, need + sh)
+    return mux, andg
+
+
+def shift_op(kind: str, n: int, s: int, p: Profile, const_amount: bool = False, lhs_one: bool = False,
+             wa: int | None = None, tz: int = 0) -> OpCost:
+    """Barrel shifter of n output bits and an s-bit amount.
+
+    A constant amount is wiring (0); ``1 << x`` (``lhs_one`` on SHL) is a decoder.  ``wa`` is the data width when
+    a right shift selects ``n`` bits out of a wider word (default ``n``); ``tz`` known-zero low amount bits remove
+    the corresponding levels (the shift is by multiples of ``2^tz``).
     """
     if const_amount:
         return zero("shift", "medium")
     if lhs_one and kind == "SHL":
         oc = decode_op(s, p)
         return OpCost(oc.min, oc.typ, oc.max, oc.arch, oc.breakdown, "shift", "medium", oc.flags)
-    L = clog2(n)
+    wa = n if wa is None or wa < n or kind not in ("SHR", "SAR") else wa
+    L = clog2(wa)
     Ls = min(s, L)
+    tz = max(0, min(tz, Ls))
     P = p.P
     ty = Acc()
     if kind in ("SHL", "SHR"):
-        for j in range(Ls):
-            ty.add("MUX2", n - (1 << j), P["MUX2"]).add("AND2", 1 << j, P["AND2"])
+        if kind == "SHR":
+            mux, andg = _wide_shr_levels(n, wa, tz, Ls)
+        else:
+            mux = sum(n - (1 << j) for j in range(tz, Ls))
+            andg = sum(1 << j for j in range(tz, Ls))
+        ty.add("MUX2", mux, P["MUX2"]).add("AND2", andg, P["AND2"])
         if s > L:
             ty.add("OR2", s - L - 1, P["OR2"]).add("AND2", n, P["AND2"])
     else:
-        ty.add("MUX2", n * Ls, P["MUX2"])
+        if kind == "SAR" and wa > n:  # sign fill: every selected bit is a MUX2
+            mux, andg = _wide_shr_levels(n, wa, tz, Ls)
+            ty.add("MUX2", mux + andg, P["MUX2"])
+        else:
+            ty.add("MUX2", n * (Ls - tz), P["MUX2"])
         if kind == "SAR" and s > L:  # an excess amount bit forces the sign into every output bit
             ty.add("OR2", s - L - 1, P["OR2"]).add("MUX2", n, P["MUX2"])
+    Ls = Ls - tz
     lo = ty.scaled(p.F["shift_min"])
     hi = ty.scaled(p.sigma_other).add("BUF", Ls * ceil_div(n, 8), P["BUF"])
     return finalize(Sc(lo, ty, hi, {"min": "barrel", "typ": "barrel", "max": "barrel_buffered"}, sigma=True), "shift", "medium", p)

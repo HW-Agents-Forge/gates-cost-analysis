@@ -1,0 +1,151 @@
+# Yosys ground truth (GE of NAND2_X1), frozen by scripts/calibration_bench.py --freeze; never edited by hand.
+# yosys: Yosys 0.70+post (git sha1 0c11ea098be065e585a90a06e7b7da49936cf231, Release, AppleClang clang++ 21.0.0.21000334)
+# liberty: NangateOpenCellLibrary_typical.lib (NangateOpenCellLibrary typical, 45 nm), NAND2_X1 = 0.798 um2
+# command: read_verilog -sv (plain .v files that fail are retried without -sv); hierarchy -check -top T; synth -flatten -top T; dfflibmap -liberty LIB; abc -liberty LIB; opt_clean -purge; stat -liberty LIB
+# date: 2026-10-25
+# memories/ROM have no macro in this liberty: mapped to flip-flops + logic. VHDL designs are not measured.
+name,design,top,category,params,area_um2,ge,nand2_area_um2
+add_const_w16,tests/reference/designs/add_const_w16,t,add,w=16 const=0x1234,36.442,45.6667,0.798
+add_cout_w16,tests/reference/designs/add_cout_w16,t,add,w=16 carry_out,93.632,117.3333,0.798
+add_w16,tests/reference/designs/add_w16,t,add,w=16,87.514,109.6667,0.798
+add_w32,tests/reference/designs/add_w32,t,add,w=32,180.880,226.6667,0.798
+add_w4,tests/reference/designs/add_w4,t,add,w=4,17.822,22.3333,0.798
+add_w64,tests/reference/designs/add_w64,t,add,w=64,373.996,468.6667,0.798
+add_w8,tests/reference/designs/add_w8,t,add,w=8,42.294,53.0000,0.798
+and_w32,tests/reference/designs/and_w32,t,bitwise,w=32,34.048,42.6667,0.798
+and_w64,tests/reference/designs/and_w64,t,bitwise,w=64,68.096,85.3333,0.798
+and_w8,tests/reference/designs/and_w8,t,bitwise,w=8,8.512,10.6667,0.798
+corpus_dma_desc,tests/corpus/verilog/dma_desc.sv,dma_desc,corpus,file dma_desc.sv,488.110,611.6667,0.798
+corpus_fifo_gen,tests/corpus/verilog/fifo_gen.sv,fifo_gen,corpus,DEPTH=32 WIDTH=16 FWFT=1,4335.534,5433.0000,0.798
+counter_w16,tests/reference/designs/counter_w16,t,counter,w=16 enable async_reset,129.808,162.6667,0.798
+counter_w32,tests/reference/designs/counter_w32,t,counter,w=32 enable async_reset,277.172,347.3333,0.798
+counter_w8,tests/reference/designs/counter_w8,t,counter,w=8 enable async_reset,62.510,78.3333,0.798
+decode_s3,tests/reference/designs/decode_s3,t,decode,sel=3,10.640,13.3333,0.798
+decode_s5,tests/reference/designs/decode_s5,t,decode,sel=5,50.274,63.0000,0.798
+dff_arst_w32,tests/reference/designs/dff_arst_w32,t,dff,w=32 async_reset,170.240,213.3333,0.798
+dff_arst_w8,tests/reference/designs/dff_arst_w8,t,dff,w=8 async_reset,42.560,53.3333,0.798
+dff_en_arst_w32,tests/reference/designs/dff_en_arst_w32,t,dff,w=32 enable async_reset,229.824,288.0000,0.798
+dff_en_arst_w8,tests/reference/designs/dff_en_arst_w8,t,dff,w=8 enable async_reset,57.456,72.0000,0.798
+dff_en_srst_w32,tests/reference/designs/dff_en_srst_w32,t,dff,w=32 enable sync_reset,229.824,288.0000,0.798
+dff_en_srst_w8,tests/reference/designs/dff_en_srst_w8,t,dff,w=8 enable sync_reset,57.456,72.0000,0.798
+dff_en_w32,tests/reference/designs/dff_en_w32,t,dff,w=32 enable,204.288,256.0000,0.798
+dff_en_w8,tests/reference/designs/dff_en_w8,t,dff,w=8 enable,51.072,64.0000,0.798
+dff_srst_w32,tests/reference/designs/dff_srst_w32,t,dff,w=32 sync_reset,187.264,234.6667,0.798
+dff_srst_w8,tests/reference/designs/dff_srst_w8,t,dff,w=8 sync_reset,46.816,58.6667,0.798
+dff_w32,tests/reference/designs/dff_w32,t,dff,w=32 plain,144.704,181.3333,0.798
+dff_w8,tests/reference/designs/dff_w8,t,dff,w=8 plain,36.176,45.3333,0.798
+div_u16,tests/reference/designs/div_u16,t,div,16/16 unsigned,921.956,1155.3333,0.798
+div_u8,tests/reference/designs/div_u8,t,div,8/8 unsigned,213.332,267.3333,0.798
+eq_const_w32,tests/reference/designs/eq_const_w32,t,cmp,w=32 eq const,14.364,18.0000,0.798
+eq_w16,tests/reference/designs/eq_w16,t,cmp,w=16 eq,33.516,42.0000,0.798
+eq_w32,tests/reference/designs/eq_w32,t,cmp,w=32 eq,67.830,85.0000,0.798
+eq_w4,tests/reference/designs/eq_w4,t,cmp,w=4 eq,7.714,9.6667,0.798
+eq_w64,tests/reference/designs/eq_w64,t,cmp,w=64 eq,138.054,173.0000,0.798
+eq_w8,tests/reference/designs/eq_w8,t,cmp,w=8 eq,17.024,21.3333,0.798
+ex_alu_baseline,examples/alu_multiplier/baseline,alu,design,W=16,483.588,606.0000,0.798
+ex_alu_with_mul,examples/alu_multiplier/with_mul,alu,design,W=16 +mul,1203.650,1508.3333,0.798
+ex_counter_baseline,examples/counter_width/baseline,counter,design,W=8,61.446,77.0000,0.798
+ex_counter_wider,examples/counter_width/wider,counter,design,W=32,271.054,339.6667,0.798
+ex_fifo_baseline,examples/fifo_depth/baseline,fifo,design,W=8 D=16,1179.444,1478.0000,0.798
+ex_fifo_deeper,examples/fifo_depth/deeper,fifo,design,deeper,4378.360,5486.6667,0.798
+ex_fir_baseline,examples/fir_pipeline/baseline,fir,design,4 taps,1215.088,1522.6667,0.798
+ex_fir_pipelined,examples/fir_pipeline/pipelined,fir,design,4 taps registered products,1418.844,1778.0000,0.798
+ex_mac_baseline,examples/mac/baseline/sv,mac,design,W=8 ACC_W=24,676.438,847.6667,0.798
+ex_mac_pipelined,examples/mac/pipelined/sv,mac,design,pipelined,737.618,924.3333,0.798
+ex_uart_tx,examples/uart_tx/baseline,uart_tx,design,DIV=434,212.002,265.6667,0.798
+inc_w16,tests/reference/designs/inc_w16,t,add,w=16 const=1,40.698,51.0000,0.798
+latch_w8,tests/reference/designs/latch_w8,t,dff,w=8 latch,21.280,26.6667,0.798
+le_u32,tests/reference/designs/le_u32,t,cmp,w=32 le unsigned,117.572,147.3333,0.798
+le_u8,tests/reference/designs/le_u8,t,cmp,w=8 le unsigned,26.334,33.0000,0.798
+lt_u16,tests/reference/designs/lt_u16,t,cmp,w=16 lt unsigned,43.624,54.6667,0.798
+lt_u32,tests/reference/designs/lt_u32,t,cmp,w=32 lt unsigned,97.888,122.6667,0.798
+lt_u64,tests/reference/designs/lt_u64,t,cmp,w=64 lt unsigned,219.982,275.6667,0.798
+lt_u8,tests/reference/designs/lt_u8,t,cmp,w=8 lt unsigned,18.354,23.0000,0.798
+mac_comb_w16,tests/reference/designs/mac_comb_w16,t,mac,16x16+32,1782.732,2234.0000,0.798
+mac_comb_w8,tests/reference/designs/mac_comb_w8,t,mac,8x8+16,454.328,569.3333,0.798
+mac_reg_w8,tests/reference/designs/mac_reg_w8,t,mac,8x8 acc=24 reg,670.054,839.6667,0.798
+mem_async_16x16,tests/reference/designs/mem_async_16x16,t,mem,16x16 async_read 1w1r,2098.740,2630.0000,0.798
+mem_async_16x8,tests/reference/designs/mem_async_16x8,t,mem,16x8 async_read 1w1r,1062.404,1331.3333,0.798
+mem_async_32x8,tests/reference/designs/mem_async_32x8,t,mem,32x8 async_read 1w1r,2115.764,2651.3333,0.798
+mem_async_64x8,tests/reference/designs/mem_async_64x8,t,mem,64x8 async_read 1w1r,4225.410,5295.0000,0.798
+mem_sync_16x8,tests/reference/designs/mem_sync_16x8,t,mem,16x8 sync_read 1w1r,1085.014,1359.6667,0.798
+mod_u16,tests/reference/designs/mod_u16,t,div,16/16 unsigned,1002.554,1256.3333,0.798
+mod_u8,tests/reference/designs/mod_u8,t,div,8/8 unsigned,251.104,314.6667,0.798
+mul_const_u16,tests/reference/designs/mul_const_u16,t,mul,16 const=10,130.340,163.3333,0.798
+mul_s16,tests/reference/designs/mul_s16,t,mul,16x16 signed,1956.164,2451.3333,0.798
+mul_s32,tests/reference/designs/mul_s32,t,mul,32x32 signed,7752.570,9715.0000,0.798
+mul_s4,tests/reference/designs/mul_s4,t,mul,4x4 signed,106.932,134.0000,0.798
+mul_s8,tests/reference/designs/mul_s8,t,mul,8x8 signed,446.880,560.0000,0.798
+mul_trunc_u16,tests/reference/designs/mul_trunc_u16,t,mul,16x16 trunc=16,749.854,939.6667,0.798
+mul_u16,tests/reference/designs/mul_u16,t,mul,16x16 unsigned,1633.772,2047.3333,0.798
+mul_u16x8,tests/reference/designs/mul_u16x8,t,mul,16x8 unsigned,740.810,928.3333,0.798
+mul_u32,tests/reference/designs/mul_u32,t,mul,32x32 unsigned,6875.302,8615.6667,0.798
+mul_u4,tests/reference/designs/mul_u4,t,mul,4x4 unsigned,71.554,89.6667,0.798
+mul_u8,tests/reference/designs/mul_u8,t,mul,8x8 unsigned,363.888,456.0000,0.798
+mux16_w32,tests/reference/designs/mux16_w32,t,mux,w=32 16:1 case,482.524,604.6667,0.798
+mux16_w8,tests/reference/designs/mux16_w8,t,mux,w=8 16:1 case,137.788,172.6667,0.798
+mux2_w32,tests/reference/designs/mux2_w32,t,mux,w=32 2:1,59.584,74.6667,0.798
+mux2_w64,tests/reference/designs/mux2_w64,t,mux,w=64 2:1,119.168,149.3333,0.798
+mux2_w8,tests/reference/designs/mux2_w8,t,mux,w=8 2:1,14.896,18.6667,0.798
+mux4_w32,tests/reference/designs/mux4_w32,t,mux,w=32 4:1 case,143.640,180.0000,0.798
+mux4_w8,tests/reference/designs/mux4_w8,t,mux,w=8 4:1 case,40.698,51.0000,0.798
+mux8_slice_w32,tests/reference/designs/mux8_slice_w32,t,mux,w=32 8:1 indexed slice,417.088,522.6667,0.798
+mux8_w32,tests/reference/designs/mux8_w32,t,mux,w=32 8:1 case,222.908,279.3333,0.798
+mux8_w8,tests/reference/designs/mux8_w8,t,mux,w=8 8:1 case,63.574,79.6667,0.798
+ne_w16,tests/reference/designs/ne_w16,t,cmp,w=16 ne,33.516,42.0000,0.798
+ne_w32,tests/reference/designs/ne_w32,t,cmp,w=32 ne,67.830,85.0000,0.798
+ne_w64,tests/reference/designs/ne_w64,t,cmp,w=64 ne,138.054,173.0000,0.798
+ne_w8,tests/reference/designs/ne_w8,t,cmp,w=8 ne,17.024,21.3333,0.798
+not_w32,tests/reference/designs/not_w32,t,bitwise,w=32,17.024,21.3333,0.798
+not_w64,tests/reference/designs/not_w64,t,bitwise,w=64,34.048,42.6667,0.798
+not_w8,tests/reference/designs/not_w8,t,bitwise,w=8,4.256,5.3333,0.798
+or_w32,tests/reference/designs/or_w32,t,bitwise,w=32,34.048,42.6667,0.798
+or_w64,tests/reference/designs/or_w64,t,bitwise,w=64,68.096,85.3333,0.798
+or_w8,tests/reference/designs/or_w8,t,bitwise,w=8,8.512,10.6667,0.798
+pmux_case5_w16,tests/reference/designs/pmux_case5_w16,t,mux,w=16 5-way case,73.948,92.6667,0.798
+popcount_w16,tests/reference/designs/popcount_w16,t,reduce,w=16 popcount,72.618,91.0000,0.798
+red_and_w32,tests/reference/designs/red_and_w32,t,reduce,w=32,14.364,18.0000,0.798
+red_and_w64,tests/reference/designs/red_and_w64,t,reduce,w=64,28.196,35.3333,0.798
+red_and_w8,tests/reference/designs/red_and_w8,t,reduce,w=8,3.458,4.3333,0.798
+red_or_w32,tests/reference/designs/red_or_w32,t,reduce,w=32,14.364,18.0000,0.798
+red_or_w64,tests/reference/designs/red_or_w64,t,reduce,w=64,28.994,36.3333,0.798
+red_or_w8,tests/reference/designs/red_or_w8,t,reduce,w=8,3.458,4.3333,0.798
+red_xor_w32,tests/reference/designs/red_xor_w32,t,reduce,w=32,49.476,62.0000,0.798
+red_xor_w64,tests/reference/designs/red_xor_w64,t,reduce,w=64,100.548,126.0000,0.798
+red_xor_w8,tests/reference/designs/red_xor_w8,t,reduce,w=8,11.172,14.0000,0.798
+rol_w16,tests/reference/designs/rol_w16,t,shift,w=16 rotate left,218.386,273.6667,0.798
+rol_w32,tests/reference/designs/rol_w32,t,shift,w=32 rotate left,546.364,684.6667,0.798
+rol_w64,tests/reference/designs/rol_w64,t,shift,w=64 rotate left,1286.376,1612.0000,0.798
+rol_w8,tests/reference/designs/rol_w8,t,shift,w=8 rotate left,81.130,101.6667,0.798
+rom_16x8,tests/reference/designs/rom_16x8,t,rom,16x8,28.994,36.3333,0.798
+rom_64x8,tests/reference/designs/rom_64x8,t,rom,64x8,123.690,155.0000,0.798
+sar_w16,tests/reference/designs/sar_w16,t,shift,w=16 sar var,111.720,140.0000,0.798
+sar_w32,tests/reference/designs/sar_w32,t,shift,w=32 sar var,282.758,354.3333,0.798
+sar_w64,tests/reference/designs/sar_w64,t,shift,w=64 sar var,665.532,834.0000,0.798
+sar_w8,tests/reference/designs/sar_w8,t,shift,w=8 sar var,39.102,49.0000,0.798
+shl_w16,tests/reference/designs/shl_w16,t,shift,w=16 shl var,105.070,131.6667,0.798
+shl_w32,tests/reference/designs/shl_w32,t,shift,w=32 shl var,266.266,333.6667,0.798
+shl_w64,tests/reference/designs/shl_w64,t,shift,w=64 shl var,647.178,811.0000,0.798
+shl_w8,tests/reference/designs/shl_w8,t,shift,w=8 shl var,39.368,49.3333,0.798
+shr_w16,tests/reference/designs/shr_w16,t,shift,w=16 shr var,103.208,129.3333,0.798
+shr_w32,tests/reference/designs/shr_w32,t,shift,w=32 shr var,267.330,335.0000,0.798
+shr_w64,tests/reference/designs/shr_w64,t,shift,w=64 shr var,646.114,809.6667,0.798
+shr_w8,tests/reference/designs/shr_w8,t,shift,w=8 shr var,38.570,48.3333,0.798
+shreg_d16_w8,tests/reference/designs/shreg_d16_w8,t,shreg,depth=16 w=8,578.816,725.3333,0.798
+shreg_d4_w8,tests/reference/designs/shreg_d4_w8,t,shreg,depth=4 w=8,144.704,181.3333,0.798
+shreg_d8_w8,tests/reference/designs/shreg_d8_w8,t,shreg,depth=8 w=8,289.408,362.6667,0.798
+slt_s16,tests/reference/designs/slt_s16,t,cmp,w=16 lt signed,44.954,56.3333,0.798
+slt_s32,tests/reference/designs/slt_s32,t,cmp,w=32 lt signed,96.824,121.3333,0.798
+slt_s64,tests/reference/designs/slt_s64,t,cmp,w=64 lt signed,206.682,259.0000,0.798
+slt_s8,tests/reference/designs/slt_s8,t,cmp,w=8 lt signed,18.886,23.6667,0.798
+sub_w16,tests/reference/designs/sub_w16,t,sub,w=16,94.962,119.0000,0.798
+sub_w32,tests/reference/designs/sub_w32,t,sub,w=32,198.436,248.6667,0.798
+sub_w4,tests/reference/designs/sub_w4,t,sub,w=4,18.354,23.0000,0.798
+sub_w64,tests/reference/designs/sub_w64,t,sub,w=64,422.408,529.3333,0.798
+sub_w8,tests/reference/designs/sub_w8,t,sub,w=8,43.890,55.0000,0.798
+sum3_w16,tests/reference/designs/sum3_w16,t,sum,k=3 w=16,165.186,207.0000,0.798
+sum4_w16,tests/reference/designs/sum4_w16,t,sum,k=4 w=16,248.178,311.0000,0.798
+sum8_w16,tests/reference/designs/sum8_w16,t,sum,k=8 w=16,574.826,720.3333,0.798
+xor_w32,tests/reference/designs/xor_w32,t,bitwise,w=32,51.072,64.0000,0.798
+xor_w64,tests/reference/designs/xor_w64,t,bitwise,w=64,102.144,128.0000,0.798
+xor_w8,tests/reference/designs/xor_w8,t,bitwise,w=8,12.768,16.0000,0.798

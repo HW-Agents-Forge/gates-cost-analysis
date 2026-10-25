@@ -45,7 +45,7 @@ out = [
     "- `GE` is a 2-input NAND equivalent. The parentheses are the plausible range, not a statistical interval.\n"
     "- Confidence `low` or a verdict `UNCERTAIN` means the range is wider than the estimate or straddles zero: "
     "the sign of the change is not established. Use real synthesis for sign-off.\n"
-    "- The figures are analytic estimates and have not been calibrated against a synthesis tool.\n",
+    "- The figures are analytic estimates. The default profile is calibrated on one point only (Yosys + Nangate 45 nm, no timing constraint; see `docs/COST_MODEL.md` section 5.3), so they say little about a commercial flow or another node.\n",
 ]
 (HERE / "REPORT.md").write_text("\n".join(out), encoding="utf-8")
 print("wrote", HERE / "REPORT.md")

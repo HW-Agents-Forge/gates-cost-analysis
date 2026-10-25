@@ -10,22 +10,22 @@ The design is `acc <= acc + a*b` with asynchronous reset, synchronous clear and 
 
 ```console
 $ gatecost cost baseline/sv --root . --top mac --verbose
-COST 743 GE (677..1297) confidence=medium
+COST 819 GE (736..1067) confidence=medium
 TOP mac
-743 mac 100%
-CATEGORIES seq=248 addcmp=0 mul=496 select=0 logic=0 shift=0 div=0 mem=0
-WHY medium: delta range is +/-42% of the estimate
+819 mac 100%
+CATEGORIES seq=248 addcmp=0 mul=571 select=0 logic=0 shift=0 div=0 mem=0
+WHY medium: delta range is -10%/+30% of the estimate
 ```
 
 ### VHDL
 
 ```console
 $ gatecost cost baseline/vhdl --root . --top mac --verbose
-COST 743 GE (677..1297) confidence=medium
+COST 819 GE (736..1067) confidence=medium
 TOP mac
-743 mac 100%
-CATEGORIES seq=248 addcmp=0 mul=496 select=0 logic=0 shift=0 div=0 mem=0
-WHY medium: delta range is +/-42% of the estimate
+819 mac 100%
+CATEGORIES seq=248 addcmp=0 mul=571 select=0 logic=0 shift=0 div=0 mem=0
+WHY medium: delta range is -10%/+30% of the estimate
 ```
 
 ## 2. Estimating a modification: register the product (pipeline stage)
@@ -36,51 +36,46 @@ WHY medium: delta range is +/-42% of the estimate
 
 ```console
 $ gatecost diff --before baseline/sv --after pipelined/sv --root . --top mac --verbose
-DELTA +134 GE (-285..+447) +18.0% verdict=UNCERTAIN confidence=low
-TOP mac before=743 after=877
-+496 mac.sv:16 added DFF x16 (register stage) + MUL 8x8 x1
--496 mac.sv:21 removed MAC 8x8 +1
-+134 mac.sv:21 added ADD w24
+DELTA +134 GE (+82..+238) +16.3% verdict=INCREASE confidence=low
+TOP mac before=819 after=953
++128 mac.sv:16 added DFF x16 (register stage)
++6 mac.sv:16 fusion MUL no longer fused
 MODULE mac{ACC_W=24,W=8} x1->x1 intrinsic=+134 multiplicity=0
-CATEGORIES addcmp=+134 mul=-128 seq=+128
-WHY low: delta range is +/-273% of the estimate
+CATEGORIES mul=+6 seq=+128
+WHY low: delta range is -38%/+78% of the estimate
 ```
 
 ### VHDL
 
 ```console
 $ gatecost diff --before baseline/vhdl --after pipelined/vhdl --root . --top mac --verbose
-DELTA +134 GE (-285..+447) +18.0% verdict=UNCERTAIN confidence=low
-TOP mac before=743 after=877
--496 mac.vhd:44 removed MAC 8x8 +1
-+368 mac.vhd:31 added MUL 8x8
-+134 mac.vhd:44 added ADD w24
+DELTA +134 GE (+82..+238) +16.3% verdict=INCREASE confidence=low
+TOP mac before=819 after=953
 +128 mac.vhd:27 added DFF x16 (register stage)
++6 mac.vhd:31 fusion MUL no longer fused
 MODULE mac{acc_w=24,w=8} x1->x1 intrinsic=+134 multiplicity=0
-CATEGORIES addcmp=+134 mul=-128 seq=+128
-WHY low: delta range is +/-273% of the estimate
+CATEGORIES mul=+6 seq=+128
+WHY low: delta range is -38%/+78% of the estimate
 ```
 
 ### Pull-request comment format (`--format markdown`, SystemVerilog)
 
-#### gatecost: UNCERTAIN +134 GE (-285..+447), +18.0%, confidence low
+#### gatecost: INCREASE +134 GE (+82..+238), +16.3%, confidence low
 
-Top `mac`: 743 -> 877 GE
+Top `mac`: 819 -> 953 GE
 
 | Δ GE | location | reason | description |
 |---:|---|---|---|
-| +496 | `mac.sv:16` | added | DFF x16 (register stage) + MUL 8x8 |
-| -496 | `mac.sv:21` | removed | MAC 8x8 +1 |
-| +134 | `mac.sv:21` | added | ADD w24 |
+| +128 | `mac.sv:16` | added | DFF x16 (register stage) |
+| +6 | `mac.sv:16` | fusion | MUL no longer fused |
 
-**Confidence low:** delta range is +/-273% of the estimate
+**Confidence low:** delta range is -38%/+78% of the estimate
 
 <details><summary>Details</summary>
 
 | category | Δ GE |
 |---|---:|
-| addcmp | +134 |
-| mul | -128 |
+| mul | +6 |
 | seq | +128 |
 
 </details>
@@ -93,11 +88,11 @@ _Figures are estimates for ranking options and judging orders of magnitude, not 
 
 ```console
 $ gatecost estimate "mul 8x8 + add 24"
-ESTIMATE 526 GE (494..984) confidence=medium
+ESTIMATE 604 GE (579..913) confidence=medium
 OP MUL 8x8 unsigned + ADD 24
-ARCH min=array+ripple typ=array+brent_kung max=wallace_ks+kogge_stone
-BREAKDOWN AND2=64 FA=62 HA=18 PREFIX=16 XOR2=9
-WHY medium: delta range is +/-47% of the estimate
+ARCH min=booth_wallace+ripple typ=array+brent_kung max=wallace_ks+kogge_stone
+BREAKDOWN AND2=64 FA=62 HA=18 PREFIX=16 XOR2=9 CPA_ALPHA=1
+WHY medium: delta range is -4%/+51% of the estimate
 ```
 
 ### Cost of the accumulator register
@@ -108,18 +103,18 @@ ESTIMATE 248 GE (181..313) confidence=medium
 OP REG 24 async_reset sync_reset enable
 ARCH min=dff typ=dff max=dff
 BREAKDOWN AND2=24 DFFR=24 MUX2=24
-WHY medium: delta range is +/-27% of the estimate
+WHY medium: delta range is -27%/+26% of the estimate
 ```
 
 ### From an RTL fragment
 
 ```console
 $ gatecost estimate --rtl "assign p = a*b;" --widths a=8,b=8
-ESTIMATE 368 GE (368..568) confidence=medium
+ESTIMATE 438 GE (422..581) confidence=medium
 OP RTL MUL 8x8
-ARCH min=array typ=array max=wallace_ks
-BREAKDOWN AND2=64 FA=48 HA=8
-WHY medium: delta range is +/-27% of the estimate
+ARCH min=booth_wallace typ=array max=wallace_ks
+BREAKDOWN AND2=64 FA=48 HA=8 CPA_ALPHA=1
+WHY medium: only 0% of delta in good-quality classes
 ASSUMED output p width inferred as 16
 ```
 
@@ -127,4 +122,4 @@ ASSUMED output p width inferred as 16
 
 - `GE` is a 2-input NAND equivalent. The parentheses are the plausible range, not a statistical interval.
 - Confidence `low` or a verdict `UNCERTAIN` means the range is wider than the estimate or straddles zero: the sign of the change is not established. Use real synthesis for sign-off.
-- The figures are analytic estimates and have not been calibrated against a synthesis tool.
+- The figures are analytic estimates. The default profile is calibrated on one point only (Yosys + Nangate 45 nm, no timing constraint; see `docs/COST_MODEL.md` section 5.3), so they say little about a commercial flow or another node.

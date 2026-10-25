@@ -8,24 +8,24 @@ The same flow in VHDL, with a generic as the changed parameter.
 
 ```console
 $ gatecost cost baseline --top alu --verbose
-COST 1048 GE (995..1922) confidence=medium
+COST 1342 GE (1087..1971) confidence=medium
 TOP alu
-1048 alu 100%
-CATEGORIES seq=91 addcmp=146 mul=708 select=85 logic=18 shift=0 div=0 mem=0
-WHY medium: delta range is +/-44% of the estimate
+1342 alu 100%
+CATEGORIES seq=91 addcmp=159 mul=1009 select=65 logic=18 shift=0 div=0 mem=0
+WHY medium: delta range is -19%/+47% of the estimate
 ```
 
 ## Modification: `baseline` -> `wider`
 
 ```console
 $ gatecost diff --before baseline --after wider --top alu --verbose
-DELTA +2179 GE (+789..+5726) +207.9% verdict=INCREASE confidence=low
-TOP alu before=1048 after=3227
-+2179 alu.vhd:3 parameter W 16->32 (5 ops) x1 cause=parameter:W
-MODULE alu{w=32} x1->x1 intrinsic=+2179 multiplicity=0
-CATEGORIES addcmp=+149 logic=+18 mul=+1835 select=+85 seq=+91
+DELTA +3401 GE (+1646..+5557) +253.3% verdict=INCREASE confidence=low
+TOP alu before=1342 after=4743
++3401 alu.vhd:3 parameter W 16->32 (5 ops) x1 cause=parameter:W
+MODULE alu{w=32} x1->x1 intrinsic=+3401 multiplicity=0
+CATEGORIES addcmp=+163 logic=+18 mul=+3064 select=+65 seq=+91
 STRUCT module alu parameters {w=16} -> {w=32}
-WHY low: delta range is +/-113% of the estimate
+WHY low: delta range is -52%/+63% of the estimate
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.

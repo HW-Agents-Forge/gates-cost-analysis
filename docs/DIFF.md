@@ -57,7 +57,8 @@ Matching proceeds from the most to the least specific tier. Each node is matched
    1. Named key equal → matched.
    2. Shape key equal (and unmatched) → matched, reported as `renamed` with zero delta if the cost is equal.
    3. **Line alignment.** A line alignment between the before and after sources is computed with `difflib.SequenceMatcher` on token-normalized lines (whitespace and comments stripped). Remaining operations of the same kind are paired when their origins map to each other through the alignment, closest first. A pair with different widths or parameters is reported as `modified`.
-   4. Leftover before-operations are *removed*; leftover after-operations are *added*.
+   4. **Fusion undone.** A leftover before-`SUM` that carries a product (`facts.struct.mul = [n, m]`, a fused MAC) is paired with a leftover after-`MUL` of the same file and the same operand widths, closest line first. The accumulating `ADD` of the sum's width that is left over on the after side is folded into the `MUL` (costs add, `σ = √(σ_mul² + σ_add²)`), so that only the difference between the fused sum and its two pieces is a contributor. A `MUL` without such an `ADD` is still paired alone. The reason is `fusion`, shown as `MUL no longer fused`.
+   5. Leftover before-operations are *removed*; leftover after-operations are *added*.
 
 Each matched pair yields `delta = cost_after − cost_before`, per scenario. Added operations have `before = 0`; removed ones have `after = 0`.
 
@@ -119,7 +120,9 @@ The same set of matched contributors is aggregated into the following views, eac
 
 ## 7. Uncertainty
 
-All deltas are computed **per scenario** (`min`, `typ`, `max`) as in `COST_MODEL.md` §5.1, never as differences between scenario extremes. The residual term is the quadrature sum of `σ_i` over the contributors of the scope being reported (total, module, or line), so a line's range is computed from its own operations only. Contributor ranges therefore do not sum to the total's range, which is narrower; the total range is authoritative.
+All deltas are computed **per scenario** (`min`, `typ`, `max`) as in `COST_MODEL.md` §5.1, never as differences between scenario extremes. The residual term is the quadrature sum of `σ_i` over the contributors of the scope being reported (total, module, or line), so a line's range is computed from its own operations only. The range itself combines the scenario spread and `2σ` in quadrature: `(lo+hi)/2 ∓ √(((hi−lo)/2)² + (2σ)²)` with `lo = min_s Δ_s`, `hi = max_s Δ_s` (`COST_MODEL.md` §5.1); it always contains `[lo, hi]`, hence `typ`.
+
+The residual of a **matched** pair (same operation before and after, resized, memories included) is correlated: `σ = rms · |n_a·typ_a − n_b·typ_b|`, with the more pessimistic `rms = σ/typ` of the two sides (fallback to `√(σ_b² + σ_a²)` if neither side has `typ > 0`). When the canonical hash is identical and only the instance count changes, `σ = σ_i · |n_a − n_b|`. Added and removed operations keep an independent `σ`. Contributor ranges therefore do not sum to the total's range, which is narrower; the total range is authoritative.
 
 ## 8. Presentation Rules
 

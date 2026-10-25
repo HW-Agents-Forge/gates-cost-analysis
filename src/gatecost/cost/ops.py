@@ -113,10 +113,13 @@ def _sum(op: str, a: Mapping[str, Any], p: Profile) -> OpCost:
 
 _reg(("SUM",), _sum)
 _reg(("MUL",), lambda op, a, p: _mul(a, p))
-_reg(("MAC",), lambda op, a, p: arith.mac_op(_int(a, "n"), _int(a, "m"), _int(a, "c", default=_int(a, "n") + _int(a, "m")), p, bool(a.get("signed"))))
+_reg(("MAC",), lambda op, a, p: arith.mac_op(_int(a, "n"), _int(a, "m"), _int(a, "c", default=_int(a, "n") + _int(a, "m")), p,
+                                            bool(a.get("signed")), _int(a, "extra", default=0, lo=0)))
 _reg(("DIV", "MOD"), lambda op, a, p: _div(op, a, p))
 _reg(("POW",), lambda op, a, p: _pow(a, p))
-_reg(logic.SHIFTS, lambda op, a, p: logic.shift_op(op, _int(a, "n"), _int(a, "s", default=1, lo=0), p, bool(a.get("const_amount")), bool(a.get("lhs_one"))))
+_reg(logic.SHIFTS, lambda op, a, p: logic.shift_op(op, _int(a, "n"), _int(a, "s", default=1, lo=0), p, bool(a.get("const_amount")),
+                                                   bool(a.get("lhs_one")), _int(a, "wa", default=0, lo=0) or None,
+                                                   _int(a, "tz", default=0, lo=0)))
 _reg(BITWISE_OPS, lambda op, a, p: logic.bitwise_op(op, _int(a, "n", "w", "width"), p))
 _reg(CMP_OPS, lambda op, a, p: _cmp(op, a, p))
 _reg(tuple(REDUCE_OPS), lambda op, a, p: logic.reduce_op(REDUCE_OPS[op], _int(a, "n", "w", "width"), p))

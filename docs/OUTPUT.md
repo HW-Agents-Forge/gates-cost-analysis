@@ -39,7 +39,7 @@ ASSUMED <message>                                                               
 - `TOP`: the analyzed top module and absolute totals.
 - **Contributor lines** follow `DIFF.md` §8: grouped by cause, sorted by absolute delta, at most `--max-lines` entries (default 10). The description is a fixed template: `MUL 16x16`, `ADD w8->w12`, `DFF x36 (register stage)`, `MUX 4:1 w32`, `config W 16->32 (14 ops)`.
 - `OTHERS`: the contributors folded under the report threshold or beyond `--max-lines`; omitted when there are none.
-- `WHY`: present when confidence is `medium` or `low`; it names the dominant reasons in a single line, for example `WHY low: 1 unsupported construct in the changed cone; 62% of delta in div class (poor model quality)`.
+- `WHY`: present when confidence is `medium` or `low`; it names the dominant reasons in a single line (a range reason reads `+/-r%` when the range is symmetric around `typ`, `-x%/+y%` otherwise), for example `WHY low: 1 unsupported construct in the changed cone; 62% of delta in div class (poor model quality)`.
 - `WARN`: only diagnostics flagged `affects_cost` (`FRONTEND.md` §6) and diagnostics that changed between the two sides. At most 5 lines; an extra line `WARN ... +N more (use --format json)` indicates truncation.
 - `ASSUMED`: assumptions applied by the front-end that affect the changed cone (for example `ASSUMED parameter DEPTH unresolved, default 32 used`).
 
@@ -54,7 +54,7 @@ TOP top_core before=28410 after=28752
 +96 alu.sv:102 width MUX 4:1 w16->w32
 +36 regfile.sv:41 added DFF x36 (register stage)
 OTHERS 2 net=0
-WHY medium: delta range is +/-19% of the estimate
+WHY medium: delta range is -18%/+20% of the estimate
 ```
 
 A parameter change affecting many operations:
@@ -63,7 +63,7 @@ A parameter change affecting many operations:
 DELTA +1260 GE (+990..+1580) +4.4% verdict=INCREASE confidence=medium
 TOP top_core before=28410 after=29670
 +1260 config.sv:12 parameter W 16->32 (14 ops) x1
-WHY medium: delta range is +/-23% of the estimate
+WHY medium: delta range is -21%/+25% of the estimate
 ```
 
 Increase with a caveat:
@@ -174,7 +174,7 @@ Every JSON output is one object:
 {
   "verdict": "INCREASE",
   "confidence": {"level": "medium", "range_ratio": 0.19,
-                 "reasons": ["delta range is +/-19% of the estimate"]},
+                 "reasons": ["delta range is -18%/+20% of the estimate"]},
   "top": "top_core",
   "before": {"ge": {"min": 27900, "typ": 28410, "max": 29100}},
   "after":  {"ge": {"min": 28181, "typ": 28752, "max": 29510}},
@@ -238,10 +238,11 @@ Every JSON output is one object:
 {
   "input": {"kind": "op", "text": "mul 32x32"},
   "normalized": "MUL 32x32 unsigned",
-  "ge": {"min": 3900, "typ": 4900, "max": 7200},
-  "architecture": {"min": "array", "typ": "booth_wallace", "max": "wallace_ks"},
-  "breakdown": {"FA": 760, "AND2": 0, "HA": 32, "MUX2": 0},
-  "confidence": {"level": "medium", "reasons": []}
+  "ge": {"min": 5543.37, "typ": 7901.752, "max": 10535.577},
+  "architecture": {"min": "booth_wallace", "typ": "array", "max": "wallace_ks"},
+  "breakdown": {"AND2": 1024, "FA": 960, "HA": 32, "CPA_ALPHA": 1},
+  "confidence": {"level": "medium", "range_ratio": 0.316,
+                 "reasons": ["delta range is -30%/+33% of the estimate"]}
 }
 ```
 

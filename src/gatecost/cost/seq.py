@@ -282,7 +282,9 @@ def rom_op(depth: int, width: int, p: Profile, contents: list[int] | tuple[int, 
                 sop += rdiv(D * ilog2_fix(D) * lit_unit, 6000)
     ty = 0
     if cols:
-        dec = decode_acc(s, p).typ.total if s >= 2 else P["INV"]
+        # Only the predecoder is shared: the first-level gates of each OR plane take the predecoded address lines
+        # directly (NAND3/NAND4 inputs), so the 2^s word lines of a full decoder are never built.
+        dec = p.C["predecode"] * ((1 << (s // 2)) + (1 << (s - s // 2))) if s >= 2 else P["INV"]
         textbook = dec + plane
         ty = min(textbook, sop)
     lo = pm(ty, p.F["rom_min"])

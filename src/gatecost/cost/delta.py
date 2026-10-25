@@ -48,18 +48,46 @@ def residual_sigma(changed: Iterable[tuple[int, str]], p: Profile) -> int:
     return isqrt(s2)
 
 
+def _ceil_isqrt(x: int) -> int:
+    r = isqrt(x)
+    return r if r * r == x else r + 1
+
+
 def delta_range(d: Ge3, sigma: int) -> Ge3:
-    """Range of a scenario-wise delta: ``min_s Delta_s - 2 sigma`` .. ``max_s Delta_s + 2 sigma``.
+    """Range of a scenario-wise delta: systematic half-spread and ``2 sigma`` in quadrature.
+
+    With ``lo = min_s Delta_s``, ``hi = max_s Delta_s``, centre ``c = (lo + hi) / 2`` and half-spread
+    ``h = (hi - lo) / 2``, the range is ``c -/+ sqrt(h^2 + (2 sigma)^2)`` (COST_MODEL.md 5.1): the scenario
+    spread is a correlated systematic error, the residual an independent one, so they add in quadrature
+    rather than linearly.  The half-width is never below ``h``, so the range always contains
+    ``[lo, hi]`` (and therefore ``typ``); with ``sigma = 0`` it is exactly ``[lo, hi]`` and with
+    ``lo = hi`` exactly ``lo -/+ 2 sigma``.  Integer arithmetic: the full width is rounded up and the
+    bounds outwards, so the range is never narrower than the real-valued formula.
 
     ``typ`` stays ``Delta_typ``, so the result always satisfies ``min <= typ <= max``.
     """
     lo, hi = min(d.min, d.typ, d.max), max(d.min, d.typ, d.max)
-    return Ge3(lo - 2 * sigma, d.typ, hi + 2 * sigma)
+    s = hi - lo
+    width = _ceil_isqrt(s * s + 16 * sigma * sigma)  # 2 * sqrt(h^2 + (2 sigma)^2) = sqrt(s^2 + (4 sigma)^2)
+    mid2 = lo + hi
+    return Ge3((mid2 - width) // 2, d.typ, -((-(mid2 + width)) // 2))
 
 
 def range_ratio(d: Ge3) -> float:
     """``r = (max - min) / (2 * max(|typ|, 20 GE))`` (a reporting ratio, not used in costing)."""
     return (d.max - d.min) / (2 * max(abs(d.typ), A_FLOOR))
+
+
+def range_spread(d: Ge3) -> str:
+    """Spread of ``d`` around ``typ`` as text: ``+/-r%`` when symmetric, ``-x%/+y%`` otherwise.
+
+    ``x = (typ - min) / b`` and ``y = (max - typ) / b`` with ``b = max(|typ|, 20 GE)``, the base of
+    ``range_ratio`` (so ``r = (x + y) / 2``).  Only the wording depends on this, never the level."""
+    base = max(abs(d.typ), A_FLOOR)
+    down, up = round((d.typ - d.min) * 100 / base), round((d.max - d.typ) * 100 / base)
+    if down == up:
+        return f"+/-{round(range_ratio(d) * 100)}%"
+    return f"-{down}%/+{up}%"
 
 
 def confidence(
@@ -108,7 +136,7 @@ def confidence(
         level = "low"
     if level != "high" and not reasons:
         if r > 0.2:
-            reasons.append(f"delta range is +/-{round(r * 100)}% of the estimate")
+            reasons.append(f"delta range is {range_spread(d)} of the estimate")
         else:
             reasons.append(f"only {round(good * 100)}% of delta in good-quality classes")
     return Confidence(level, tuple(reasons), round(r, 3))

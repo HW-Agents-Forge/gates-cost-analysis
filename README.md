@@ -14,12 +14,12 @@
 Estimate the gate cost of RTL (Verilog, SystemVerilog, VHDL) and of any edit to it, in gate equivalents (GE, one 2-input NAND). No synthesis tool, no dependencies, Python 3.11+. Built to be used by an AI coding agent as a skill, and usable from the command line or CI.
 
 ```console
-$ python3 scripts/gatecost diff
-DELTA +159 GE (-221..+473) +21.4% verdict=UNCERTAIN confidence=low
-TOP mac before=743 after=902
-+496 mac.sv:16 added DFF x16 (register stage) + MUL 8x8
--496 mac.sv:21 removed MAC 8x8
-+159 mac.sv:21 added ADD w24
+$ python3 scripts/gatecost diff --before baseline/sv --after pipelined/sv --root . --top mac
+DELTA +134 GE (+82..+238) +16.3% verdict=INCREASE confidence=low
+TOP mac before=819 after=953
++128 mac.sv:16 added DFF x16 (register stage)
++6 mac.sv:16 fusion MUL no longer fused
+WHY low: delta range is -38%/+78% of the estimate
 ```
 
 Every figure comes with a range and a confidence level. Reformatting, renames and file moves give exactly `0`.
@@ -45,7 +45,9 @@ Use `.github/skills/` for Copilot or `.opencode/skills/` for OpenCode. To skip p
 
 ## Limits
 
-These are analytic estimates for ranking options, not synthesis results. Dividers, memories and ROMs are the least accurate, and the cost profile has not been calibrated against a real flow yet. Use synthesis for sign-off.
+These are analytic estimates for ranking options, not synthesis results. Dividers, memories and ROMs are the least accurate. Use synthesis for sign-off.
+
+Calibration status: the default profile (`generic-asic`) is calibrated on one point, Yosys 0.70 with the Nangate 45 nm library (X1 cells), without a timing constraint. On 131 generated micro-benchmarks the typ estimate has a MAPE of 8.2 % and no bias; over all 144 frozen cases the MAPE is 9.1 % and the `[min, max]` range contains the Yosys area in 84 % of the cases (90 % with a rounding margin of 0.5 %). On 13 complete designs (examples and corpus) the MAPE is 18.4 % with a bias of +17.8 %: the tool over-estimates because the IR does not recognise some patterns (counter enable not merged, rotation, sign-extension flops). Not covered: other technology nodes and commercial flows, VHDL (not measured), the confidence thresholds, and the constants `sigma` and `alpha`. Details and how to rerun: [`docs/COST_MODEL.md`](docs/COST_MODEL.md) section 5.3, [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Docs
 

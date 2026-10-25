@@ -8,25 +8,25 @@ A pipeline stage costs flip-flops; the sum of the registered products is cheaper
 
 ```console
 $ gatecost cost baseline --top fir --verbose
-COST 1545 GE (1368..3965) confidence=low
+COST 1680 GE (1525..2755) confidence=medium
 TOP fir
-1545 fir 100%
-CATEGORIES seq=544 addcmp=0 mul=1001 select=0 logic=0 shift=0 div=0 mem=0
-WHY low: delta range is +/-84% of the estimate
+1680 fir 100%
+CATEGORIES seq=544 addcmp=0 mul=1136 select=0 logic=0 shift=0 div=0 mem=0
+WHY medium: delta range is -9%/+64% of the estimate
 ```
 
 ## Modification: `baseline` -> `pipelined`
 
 ```console
 $ gatecost diff --before baseline --after pipelined --top fir --verbose
-DELTA +713 GE (+68..+1112) +46.1% verdict=INCREASE confidence=low
-TOP fir before=1545 after=2258
+DELTA +712 GE (+590..+871) +42.4% verdict=INCREASE confidence=medium
+TOP fir before=1680 after=2392
 +726 fir.v:5 added DFF x32 (register stage) x1
--123 fir.v:8 constant SUM constant operand 5->None
-+110 fir.v:7 added MUL w16 const
-MODULE fir x1->x1 intrinsic=+713 multiplicity=0
-CATEGORIES addcmp=-123 mul=+110 seq=+726
-WHY low: delta range is +/-73% of the estimate
+-130 fir.v:8 constant SUM constant operand 5->None
++116 fir.v:7 added MUL w16 const
+MODULE fir x1->x1 intrinsic=+712 multiplicity=0
+CATEGORIES addcmp=-130 mul=+116 seq=+726
+WHY medium: only 88% of delta in good-quality classes
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.

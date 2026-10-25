@@ -23,7 +23,8 @@ Operations
         MAC             n, m [c=addend width] [signed]         a*b + c fused
         DIV, MOD        n, m [signed] | n, const=K [signed]
         POW             n, exp=E [out=O]  |  base=2, s=exponent bits
-        SHL SHR SAR ROL ROR   n, s [const_amount] [lhs_one]    (lhs_one: ``1 << x``)
+        SHL SHR SAR ROL ROR   n, s [const_amount] [lhs_one] [wa=data width] [tz=known-zero amount LSBs]
+                        (lhs_one: ``1 << x``; wa > n: SHR/SAR selecting n bits of a wider word, ``d[s*W +: W]``)
         AND OR XOR NAND NOR XNOR NOT     n (or w)
         EQ NE LT LE GT GE    n [signed] [const=K | const_unknown=True]
         RED_AND RED_OR RED_XOR   n

@@ -31,18 +31,22 @@ def _typ_label(p: Profile, names: tuple[str, str, str], alpha: int) -> str:
 
 
 def add_sc(n: int, p: Profile, sub: bool = False) -> Sc:
-    """ADD (or SUB) of two n-bit operands; min/mid/max architectures from the profile."""
+    """ADD (or SUB) of two n-bit operands; min/mid/max architectures from the profile.
+
+    SUB is ``a + ~b + 1``: typ and max add one operand inverter per bit (``sub_extra_per_bit``, an INV, in typ
+    whatever the architecture; ``INV`` in max); min assumes the inversion is absorbed (XNOR instead of XOR)."""
     if n == 1:
         a = add_acc("ripple", 1, p)
         return Sc(a, a.copy(), a.copy(), {"min": "xor2", "typ": "xor2", "max": "xor2"})
     lo = add_acc(p.add_arch[0], n, p)
     mid = add_acc(p.add_arch[1], n, p)
     hi = add_acc(p.add_arch[2], n, p).scaled(p.sigma_arith)
+    ty = lerp(lo, mid, p.alpha_add)
     if sub:
-        mid.add("SUB_EXTRA", n, p.C["sub_extra_per_bit"])
+        ty.add("SUB_EXTRA", n, p.C["sub_extra_per_bit"])
         hi.add("INV", n, p.P["INV"])
     return Sc(
-        lo, lerp(lo, mid, p.alpha_add), hi,
+        lo, ty, hi,
         {"min": p.add_arch[0], "typ": _typ_label(p, p.add_arch, p.alpha_add), "max": p.add_arch[2]},
         sigma=True,
     )
@@ -59,6 +63,17 @@ def ripple_op(n: int, p: Profile) -> OpCost:
     return finalize(sc, "addcmp", "good", p)
 
 
+def const_add_acc(bits: int, p: Profile) -> Acc:
+    """Minimal ``bits``-bit adder of a constant whose lowest bit is 1 (bits above its trailing zeros).
+
+    The lowest bit is ``~a`` with carry ``a`` (one INV), the top bit needs its sum only (XOR2), and every bit in
+    between is a half-adder-like cell (XOR/XNOR + AND/OR, one HA).  ``bits == 1`` is one INV."""
+    a = Acc().add("INV", 1, p.P["INV"])
+    if bits >= 2:
+        a.add("HA", bits - 2, p.P["HA"]).add("XOR2", 1, p.P["XOR2"])
+    return a
+
+
 def add_const_op(n: int, k: int | None, p: Profile, sub: bool = False) -> OpCost:
     """ADD/SUB with a constant; ``k`` None means a non-zero constant of unknown value."""
     var = add_op(n, p, sub)
@@ -72,7 +87,7 @@ def add_const_op(n: int, k: int | None, p: Profile, sub: bool = False) -> OpCost
         a = Acc().add("INV", 1, p.P["INV"])
         sc = Sc(a, a.copy(), a.copy(), {"min": "inv", "typ": "inv", "max": "inv"})
         return cap(finalize(sc, "addcmp", "good", p), var)
-    lo = Acc().add("HA", n - tz, p.P["HA"])
+    lo = const_add_acc(n - tz, p)
     mid = lo.scaled(p.F["add_const_mid"])
     hi = lo.scaled(p.F["add_const_max"])
     arch = {"min": "const_ha", "typ": "const_ha", "max": "const_ha"}
@@ -106,17 +121,50 @@ def neg_op(n: int, p: Profile) -> OpCost:
     return finalize(Sc(a, a.copy(), a.scaled(p.sigma_arith), arch, sigma=True), "addcmp", "good", p)
 
 
+def _unfused_chain(ts: list[int], out: int, p: Profile) -> Acc:
+    """typ cost of the unfused chain ``((t0 + t1) + t2) + ...`` (widest operand first).
+
+    Each adder produces the running sum, whose width is that of its largest possible value (capped at ``out``),
+    and adds an operand of ``t_i`` bits: a narrow operand makes it an incrementer (``add_narrow_op``)."""
+    order = sorted(ts, reverse=True)
+    acc, vmax = Acc(), (1 << order[0]) - 1
+    for t in order[1:]:
+        vmax += (1 << t) - 1
+        n = min(out, vmax.bit_length())
+        oc = add_narrow_op(n, min(t, n), p) if n > 1 else add_op(1, p)
+        acc = acc.plus(Acc(oc.typ, dict(oc.breakdown)))
+    return acc
+
+
+def _sum_max(csa: Acc, one: Sc, unfused_typ: Acc, p: Profile) -> tuple[Acc, str]:
+    """max scenario of a fused sum (COST_MODEL.md 3.1, 4.4): the larger of two consistent stories.
+
+    * fused at the fastest timing: the CSA tree sized by ``sigma_arith`` plus the max (Kogge-Stone x sigma)
+      carry-propagate adder;
+    * not fused at moderate timing: the chain of ``k - 1`` adders at the typ architecture.
+
+    Combining "no fusion" with "fastest architecture" (the former max, ``(k-1)·ADD_max``) stacks two
+    pessimistic assumptions and reached x3.5-x4 the typ cost; each story alone stays within the x1-3 band of
+    a single adder.  Both terms are non-decreasing in ``k`` and in the widths.  Returns the max accumulator
+    and its architecture label (``csa+<max adder>`` or ``unfused``)."""
+    fast = csa.scaled(p.sigma_arith).plus(one.max)
+    if fast.total >= unfused_typ.total:
+        return fast, "csa+" + one.arch["max"]
+    return unfused_typ, "unfused"
+
+
 def sum_op(k: int, w: int, p: Profile) -> OpCost:
-    """k-operand fused addition: CSA tree plus one carry-propagate adder (max: unfused chain)."""
+    """k-operand fused addition: CSA tree plus one carry-propagate adder (max: see ``_sum_max``)."""
     if k <= 1:
         return zero("addcmp")
     wc = w + clog2(k)
     csa = Acc().add("FA", (k - 2) * w, p.P["FA"])
     one = add_sc(wc, p)
-    unfused = add_sc(wc, p).max.times(k - 1)
+    unfused = _unfused_chain([w] * k, wc, p)
+    hi, hi_arch = _sum_max(csa, one, unfused, p)
     sc = Sc(
-        csa.plus(one.min), csa.plus(one.typ), unfused,
-        {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": "unfused"},
+        csa.plus(one.min), csa.plus(one.typ), hi,
+        {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": hi_arch},
         sigma=True,
     )
     return finalize(sc, "addcmp", "good", p)
@@ -127,30 +175,31 @@ def sum_terms_op(terms: tuple[int, ...] | list[int], out: int, p: Profile) -> Op
 
     The CSA tree removes one bit per FA until two rows of at most ``out`` bits remain:
     ``max(0, sum(terms) - 2*max(terms))`` FA (``(k-2)*w`` for k equal terms), followed by one
-    ``out``-bit carry-propagate adder. max is the unfused chain of narrow-operand adders."""
+    ``out``-bit carry-propagate adder. max: see ``_sum_max`` (the unfused chain adds narrow operands)."""
     ts = [t for t in terms if t > 0]
     k = len(ts)
     if k <= 1 or out <= 0:
         return zero("addcmp")
     csa = Acc().add("FA", max(0, sum(ts) - 2 * max(ts)), p.P["FA"])
     one = add_sc(out, p)
-    unfused = one.max.times(k - 1)
-    narrow, full = add_narrow_op(out, min(ts), p).typ, add_op(out, p).typ
-    if full and narrow < full:  # the chain adds narrow operands: scale by the incrementer saving
-        unfused = unfused.scaled(rdiv(narrow * 1000, full))
+    unfused = _unfused_chain(ts, out, p)
     lo, ty = csa.plus(one.min), csa.plus(one.typ)
     # Bit-heap bound: every FA removes one bit of the heap and every HA none, so compressing sum(ts) bits to the
     # ``out`` result bits needs at most ``sum(ts) - out`` FA plus one HA per result bit.  "2 rows + CPA" over-counts
     # when the terms are much narrower than the result (a popcount of 8 one-bit inputs is 4 FA + a few HA, not 6 FA
     # plus a 4-bit adder).
     bound = Acc().add("FA", max(0, sum(ts) - out), p.P["FA"]).add("HA", out, p.P["HA"])
+    hi, hi_arch = _sum_max(csa, one, unfused, p)
     if bound.total < lo.total:
         lo = bound
     if bound.total < ty.total:
+        # keep the max/typ ratio of the "2 rows + CPA" structure: the bound shrinks typ, so it shrinks max alike
+        # (otherwise a full-width fast CPA over a few narrow terms would reach x6 the bit-heap typ)
+        hi = Acc(rdiv(hi.total * bound.total, ty.total), dict(hi.counts)) if ty.total else hi
         ty = bound
     sc = Sc(
-        lo, ty, unfused,
-        {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": "unfused"},
+        lo, ty, hi,
+        {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": hi_arch},
         sigma=True,
     )
     return finalize(sc, "addcmp", "good", p)
@@ -187,27 +236,53 @@ def mul_sc(n: int, m: int, p: Profile, signed: bool = False, square: bool = Fals
     else:
         array = Acc().add("AND2", n * m, P["AND2"]).add("FA", max(0, n * m - n - m), P["FA"]).add("HA", n, P["HA"])
         array = _frac(array, cnt, den)
-        rows = ((m + 2) // 2) * (n + 2)
-        booth = Acc().add("BOOTH_SEL", rows, p.C["booth_select"]).add("BOOTH_ENC", ceil_div(m, 2), p.C["booth_encode"])
-        booth = _frac(booth.add("FA", max(0, rows - 2 * (n + m)), P["FA"]), cnt, den)
         wal = _frac(Acc().add("AND2", n * m, P["AND2"]).add("FA", max(0, n * m - 2 * (n + m)), P["FA"]), cnt, den)
         la, lm, lk = p.add_arch
-        cw = t
-        if cw > 1:
-            cpa_lo, cpa_mid, cpa_hi = add_acc(la, cw, p), add_acc(lm, cw, p), add_acc(lk, cw, p)
-        else:
-            cpa_lo = cpa_mid = cpa_hi = Acc()
+
+        def cpas(cw: int) -> tuple[Acc, Acc, Acc]:
+            if cw > 1:
+                return add_acc(la, cw, p), add_acc(lm, cw, p), add_acc(lk, cw, p)
+            return Acc(), Acc(), Acc()
+
+        def booth_pair(mm: int) -> tuple[Acc, Acc]:
+            """(Booth tree + ripple CPA, Booth tree + alpha CPA) for an ``mm``-bit multiplier operand."""
+            rows = ((mm + 2) // 2) * (n + 2)
+            b = Acc().add("BOOTH_SEL", rows, p.C["booth_select"]).add("BOOTH_ENC", ceil_div(mm, 2), p.C["booth_encode"])
+            b = _frac(b.add("FA", max(0, rows - 2 * (n + mm)), P["FA"]), cnt, den)
+            lo_c, mid_c, _ = cpas(n + mm if full else t)
+            return b.plus(lo_c), b.plus(lerp(lo_c, mid_c, p.alpha_mul))
+
+        cpa_lo, cpa_mid, cpa_hi = cpas(t)
         booth_ok = m >= p.booth_min_width
         names = p.mul_arch
+        # An m-bit operand is also a valid (m+1)-bit Booth operand (same number of rows when m is even): the cheaper
+        # of the two keeps the Booth candidate non-decreasing in m (its FA estimate drops by 2 when m grows alone).
+        b_lo, b_ty = booth_pair(m)
+        b_lo2, b_ty2 = booth_pair(m + 1)
+        b_lo = b_lo2 if b_lo2.total < b_lo.total else b_lo
+        b_ty = b_ty2 if b_ty2.total < b_ty.total else b_ty
         best_lo, name_lo = array, names[0]
-        b_lo = booth.plus(cpa_lo)
         if booth_ok and b_lo.total < best_lo.total:
-            best_lo, name_lo = b_lo, names[1]
-        best_ty, name_ty = array, names[0]
-        b_ty = booth.plus(lerp(cpa_lo, cpa_mid, p.alpha_mul))
-        if booth_ok and b_ty.total < best_ty.total:
-            best_ty, name_ty = b_ty, names[1]
+            best_lo, name_lo = b_lo, "booth_wallace"
+        if names[1].startswith("booth"):
+            # Booth recoding in typ (a synthesizer option, e.g. Yosys ``synth -booth``): cheaper of array and Booth
+            best_ty, name_ty = array, names[0]
+            if booth_ok and b_ty.total < best_ty.total:
+                best_ty, name_ty = b_ty, names[1]
+        else:
+            # plain (non-Booth) partial products, the default of generic synthesis: the carry-save array, whose final
+            # ripple carry-propagate adder moves towards the mid adder architecture by alpha (never below ripple)
+            speed = rdiv(max(0, cpa_mid.total - cpa_lo.total) * p.alpha_mul, 1000)
+            best_ty, name_ty = array.copy().add_milli("CPA_ALPHA", speed), names[1]
         hi = wal.scaled(p.sigma_arith).plus(cpa_hi.scaled(p.sigma_arith))
+        if signed and p.F["signed_ext"]:
+            # non-Booth signed product with the operands sign-extended to the product width (no Baugh-Wooley
+            # recoding): the partial-product array grows by ``signed_ext`` (typ unless Booth, and max); min keeps
+            # the Baugh-Wooley correction only
+            ext = Acc().add_milli("SIGN_EXT", pm(array.total, p.F["signed_ext"]))
+            if name_ty != names[1] or not names[1].startswith("booth"):
+                best_ty = best_ty.plus(ext)
+            hi = hi.plus(ext.scaled(p.sigma_arith))
         sc = Sc(best_lo.plus(extra), best_ty.plus(extra), hi.plus(extra), {"min": name_lo, "typ": name_ty, "max": names[2]}, sigma=True)
     if square and n == m:
         f = p.F["square"]
@@ -281,17 +356,29 @@ def mul_const_op(n: int, k: int | None, p: Profile, out: int | None = None) -> O
     return oc
 
 
-def mac_op(n: int, m: int, cw: int, p: Profile, signed: bool = False) -> OpCost:
-    """a*b + c fused into the multiplier reduction tree; max (unfused) is MUL + ADD."""
+def mac_op(n: int, m: int, cw: int, p: Profile, signed: bool = False, extra: int = 0) -> OpCost:
+    """a*b + c (+ ``extra`` further ``cw``-bit addends) fused into the multiplier reduction tree.
+
+    min/typ add one FA row per addend; for ``c`` the columns above the product (``cw > n + m``) only propagate a
+    carry, one HA each (as ``add_narrow_op``), so fusing never costs more than the narrow-operand adder it replaces.
+    max is the larger of the fused cluster at the fastest timing (``MUL_max`` + ``sigma_arith`` x the FA rows) and
+    the unfused chain at moderate timing (``MUL_typ`` + one typ adder per addend), as for ``SUM`` (see ``_sum_max``)."""
+    extra = max(0, extra)
     mul = mul_op(n, m, p, signed)
-    fa = Acc().add("FA", cw, p.P["FA"])
-    fused = pm(fa.total, p.overhead_typ)
-    unfused_add = add_op(max(n + m, cw), p)
+    fa = Acc().add("FA", min(cw, n + m), p.P["FA"]).add("HA", max(0, cw - (n + m)), p.P["HA"])
+    more = p.P["FA"] * cw * extra  # extra addends: one more FA row each (no typ overhead, as before)
+    fused = pm(fa.total, p.overhead_typ) + more
+    unfused_add = add_op(max(n + m, cw), p).typ + add_op(cw, p).typ * extra
+    fast = mul.max + pm(fa.total + more, p.sigma_arith)
+    slow = mul.typ + unfused_add
+    hi, hi_arch = (fast, mul.arch["max"] + "+csa") if fast >= slow else (slow, "unfused")
     bd = dict(mul.breakdown)
-    bd["FA"] = bd.get("FA", 0) + cw
+    bd["FA"] = bd.get("FA", 0) + min(cw, n + m) + cw * extra
+    if cw > n + m:
+        bd["HA"] = bd.get("HA", 0) + cw - (n + m)
     return OpCost(
-        mul.min + fa.total, mul.typ + fused, max(mul.max + unfused_add.max, mul.typ + fused),
-        {"min": mul.arch["min"] + "+csa", "typ": mul.arch["typ"] + "+csa", "max": "unfused"},
+        mul.min + fa.total + more, mul.typ + fused, max(hi, mul.typ + fused),
+        {"min": mul.arch["min"] + "+csa", "typ": mul.arch["typ"] + "+csa", "max": hi_arch},
         bd, "mul", "medium",
     )
 
@@ -333,10 +420,13 @@ def div_rows(n: int, m: int) -> int:
 def _div_core(n: int, m: int, p: Profile) -> OpCost:
     t = div_rows(n, m)
     chain = Acc().add("OR_IN", m, p.C["red_and_typ"])           # shared "upper divisor bits non-zero" prefix chain
-    lo = Acc().add("FA", t + n, p.P["FA"]).add("XOR2", t + n, p.P["XOR2"]).plus(chain)
-    ty = Acc().add("FA", t + n, p.P["FA"]).add("MUX2", t, p.P["MUX2"]).plus(chain).scaled(p.F["div_typ"])
+    # restoring cell: one subtractor bit (FA) whose restore select is merged into the sum, r ^ (q & d), one AND2
+    # (not a full MUX2); one borrow-out (MAJ3) per row sets the quotient bit.  min: select absorbed in the cell.
+    lo = Acc().add("FA", t, p.P["FA"]).plus(chain)
+    ty = Acc().add("FA", t, p.P["FA"]).add("AND2", t, p.P["AND2"]).add("MAJ3", n, p.P["MAJ3"]).plus(chain)
+    ty = ty.scaled(p.F["div_typ"])
     hi = ty.scaled(p.F["div_max"])
-    arch = {"min": "nonrestoring", "typ": "restoring", "max": "restoring_fast"}
+    arch = {"min": "restoring_merged", "typ": "restoring", "max": "restoring_fast"}
     return finalize(Sc(lo, ty, hi, arch, sigma=True), "div", "poor", p)
 
 

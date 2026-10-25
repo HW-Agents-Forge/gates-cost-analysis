@@ -113,11 +113,11 @@ A cost model maps each IR operation to an area in **gate equivalents** (1 GE = a
 
 - **Primitive-based.** Every formula is expressed in library primitives (NAND2, XOR2, MUX2, FA, DFF, ...), whose GE values come from the active profile. Overriding a primitive propagates to every operation using it.
 - **Consistent scenarios.** Each operation is evaluated under three scenarios: `min` (smallest plausible architecture), `typ` (the profile's architecture policy at moderate timing), and `max` (fastest architecture with a sizing factor). Scenarios are internally consistent, not independent bounds.
-- **Deltas per scenario.** A delta is computed as `after_s − before_s` within each scenario, never as `max(after) − min(before)`. Operations that are unchanged cancel exactly. Independent residual error (a fixed per-quality-class constant) is added in quadrature over changed operations only.
+- **Deltas per scenario.** A delta is computed as `after_s − before_s` within each scenario, never as `max(after) − min(before)`. Operations that are unchanged cancel exactly. Independent residual error (a fixed per-quality-class constant) is added in quadrature over changed operations only, and combined in quadrature with the scenario spread to form the range (`COST_MODEL.md` §5.1). The residual of an operation matched before and after is correlated and only covers the part that changes.
 - **Avoid over-estimation.** Costing is preceded by linear-time reductions that reproduce the obvious gains of synthesis: bit-level constant propagation, demanded-bit trimming, dead and duplicate logic removal, datapath fusion, resource sharing across mutually exclusive branches, enable recognition, and constant-port propagation. A general logic optimizer is out of scope.
 - **Quality classes.** Each operation class is marked `good`, `medium`, or `poor` (for example, dividers, ROMs, and memories are `poor`). The class feeds the confidence level (§9.1).
 - **Deterministic arithmetic.** Costs are integer milli-GE and are rounded only at output.
-- **Data-driven profiles.** A profile (TOML) declares primitive GE values, architecture and timing policy, memory-macro parameters, and black-box costs; it may extend another profile. The tool needs no calibration, reference data, or setup to run: built-in profiles work out of the box.
+- **Data-driven profiles.** A profile (TOML) declares primitive GE values, architecture and timing policy, memory-macro parameters, and black-box costs; it may extend another profile. The tool needs no calibration, reference data, or setup to run: built-in profiles work out of the box. The built-in `generic-asic` profile is calibrated on one reference point (Yosys + Nangate 45 nm, no timing constraint; `COST_MODEL.md` §5.3), not on a commercial flow.
 
 ### 5.5 Cost tree
 
@@ -206,7 +206,7 @@ TOP top_core before=28410 after=28752
 +96 alu.sv:102 width MUX 4:1 w16->w32
 +36 regfile.sv:41 added DFF x36 (register stage)
 OTHERS 2 net=0
-WHY medium: delta range is +/-19% of the estimate
+WHY medium: delta range is -18%/+20% of the estimate
 ```
 
 The grammar, the formats of the other commands, the verbosity options, and the interpretation guide for agents are specified in `docs/OUTPUT.md`.
@@ -304,7 +304,7 @@ The repository **is** the agent skill. A project adopts it with `git submodule a
 - **Golden tests**: a corpus of small RTL fixtures with expected IR and cost trees.
 - **Property tests**: reformatting and renaming do not change the cost; moving code between files does not change the cost; adding an unused module does not change the top cost.
 - **Differ tests**: pairs of before/after fixtures with expected contributors and deltas, including refactors that must yield a zero delta.
-- **Reference validation** (maintainers only, not a user requirement): a documented script to compare estimates with real synthesis area reports, used to tune the built-in profile defaults and the confidence rules in §9.1.
+- **Reference validation** (maintainers only, not a user requirement, not part of CI): `scripts/calibration_bench.py` compares estimates with the areas of a real synthesis (Yosys + Nangate 45 nm, `scripts/yosys_area.py`) on generated micro-benchmarks, repository examples and corpus designs, and `tests/reference/yosys_nangate45.csv` freezes those areas so that `tests/test_calibration_reference.py` and `--frozen` runs need no Yosys. It was used to tune the built-in profile defaults; the confidence rules in §9.1 are not tuned yet. Results and limits: `COST_MODEL.md` §5.3. `scripts/validate_reference.py` compares with arbitrary area reports.
 - **Agent acceptance tests**: scripted end-to-end scenarios (edit, query, parse output) verifying that the `agent` and `json` outputs remain parseable and complete.
 - The test suite itself uses only the standard library (`unittest`).
 
