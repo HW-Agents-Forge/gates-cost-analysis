@@ -33,7 +33,7 @@ python3 scripts/gatecost estimate "mul 32x32"       # a hypothetical construct
 python3 scripts/gatecost help
 ```
 
-A full worked example, with a generated report, is in [`examples/mac`](examples/mac/REPORT.md).
+A full worked example, with a generated report, is in [`examples/mac`](examples/mac/REPORT.md). More, each with a generated `REPORT.md` (`python3 examples/make_reports.py` regenerates them): [`counter_width`](examples/counter_width/REPORT.md), [`alu_multiplier`](examples/alu_multiplier/REPORT.md), [`fifo_depth`](examples/fifo_depth/REPORT.md), [`fir_pipeline`](examples/fir_pipeline/REPORT.md), [`uart_tx`](examples/uart_tx/REPORT.md), [`sv_features`](examples/sv_features/REPORT.md), [`udp_mux`](examples/udp_mux/REPORT.md), [`vhdl_fsm_alu`](examples/vhdl_fsm_alu/REPORT.md).
 
 ## Install as an agent skill
 
