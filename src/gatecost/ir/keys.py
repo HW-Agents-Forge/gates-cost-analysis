@@ -82,6 +82,26 @@ class KeyBuilder:
         self.segs: dict[int, list[tuple]] = {}
         self.root_hash: dict[int, bytes] = {}
         self.in_bytes: dict[int, dict[str, bytes]] = {}
+        # node id -> {output net id -> position}: O(1) replacement of ``nd.outputs.index(net)``
+        self.out_pos: dict[int, dict[int, int]] = {}
+
+    def output_index(self, nd: Node, net: Net) -> int:
+        """Position of ``net`` in ``nd.outputs`` (first occurrence, like ``list.index``).
+
+        Built once per node, so a node with k outputs costs O(k) in total instead of O(k^2).
+        Raises ``ValueError`` when ``net`` is not an output of ``nd``, as ``list.index`` did.
+        """
+        pos = self.out_pos.get(nd.id)
+        if pos is None:
+            pos = {}
+            for i, o in enumerate(nd.outputs):
+                pos.setdefault(o.id, i)
+            self.out_pos[nd.id] = pos
+        at = pos.get(net.id)
+        if at is None or nd.outputs[at] is not net:
+            # not an output, or a foreign net sharing an id (malformed IR): exact list.index semantics
+            return nd.outputs.index(net)
+        return at
 
     # atoms: ('c', value, w, xmask) | ('r', hash, lo, w)
     def net_segments(self, net: Net) -> list[tuple]:
@@ -100,7 +120,7 @@ class KeyBuilder:
                 h = H(b"outport" + _s(net.name or "") + _i(net.width))
             elif isinstance(net.driver, Node):
                 nd = net.driver
-                idx = nd.outputs.index(net)
+                idx = self.output_index(nd, net)
                 h = H(b"node" + (nd.shape or b"") + _i(idx) + _i(net.width))
             else:
                 h = H(b"undriven" + _s(net.name or "") + _i(net.width))
@@ -180,7 +200,7 @@ def compute_keys(m: ModuleIR, order=None) -> None:
                 lab = _state_label(m, nd, o, cons)
                 labels[o.id] = lab
                 if nd.op in ("INST", "BLACKBOX"):
-                    pn = _port_name(nd, o)
+                    pn = _port_name(kb, nd, o)
                     kb.root_hash[o.id] = H(b"instout" + _s(nd.attrs.get("module_key") or nd.attrs.get("name", ""))
                                            + _s(lab) + _s(pn) + _i(o.width))
                 elif nd.op == "MEM":
@@ -204,9 +224,9 @@ def compute_keys(m: ModuleIR, order=None) -> None:
     _module_hash(m, kb)
 
 
-def _port_name(nd: Node, o: Net) -> str:
+def _port_name(kb: KeyBuilder, nd: Node, o: Net) -> str:
     ports = nd.attrs.get("out_ports", ())
-    i = nd.outputs.index(o)
+    i = kb.output_index(nd, o)
     return ports[i] if i < len(ports) else str(i)
 
 

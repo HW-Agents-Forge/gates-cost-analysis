@@ -59,6 +59,12 @@ _FOLDABLE_OPS = frozenset({
     "GE", "MUX", "RED_AND", "RED_OR", "RED_XOR", "SHL", "SHR", "SAR", "ROL", "ROR", "DIV", "MOD",
     "POW", "DECODE", "ENCODE", "ROM"})
 
+#: What exact folding of a fully known node may raise on a malformed node: ``eval_const``'s own
+#: "cannot fold" and operand unpacking (``ValueError``), ``Const`` width checks (``ValueError``), a
+#: missing attribute (``KeyError``) or an index (``IndexError``), an attribute of the wrong type
+#: (``TypeError``), integer arithmetic (``ArithmeticError``).  Anything else is a defect and propagates.
+_FOLD_ERRORS: tuple[type[Exception], ...] = (ValueError, LookupError, TypeError, ArithmeticError)
+
 
 def node_known(nd: Node) -> list[tuple[int, int]]:
     """Known (kmask, kval) for each output of ``nd`` given the facts of its input nets."""
@@ -86,7 +92,9 @@ def node_known(nd: Node) -> list[tuple[int, int]]:
             cs = [Const(kn[k][1], ins[k].width) for k in ("A", "B", "S") if k in ins]
             c = eval_const(op, cs, nd.attrs, w)
             return [(c.kmask, c.value)]
-        except Exception:
+        except _FOLD_ERRORS:
+            # malformed node (wrong arity, missing or bad ``exp``/``contents`` attribute, constant
+            # too wide): no exact value, fall through to the conservative per-op transfer rules
             pass
     ak, av = kn.get("A", (0, 0))
     bk, bv = kn.get("B", (0, 0))

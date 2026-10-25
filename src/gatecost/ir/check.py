@@ -158,6 +158,10 @@ def cut_loops(m: ModuleIR) -> int:
             deps[id(it)] = lst
         # find a cycle by DFS from the first item
         state: dict[int, int] = {}
+        # id(item) -> its index in ``path``; written once, when the item is pushed (state 0 -> 1).  An
+        # item reached with state 1 is still on the path, so its recorded index is current: O(1)
+        # instead of rebuilding ``[id(x) for x in path]`` and scanning it.
+        path_pos: dict[int, int] = {}
         found = None
         cyc_path: list = []
         for start in cyc:
@@ -166,6 +170,7 @@ def cut_loops(m: ModuleIR) -> int:
             stack = [(start, 0)]
             path = [start]
             state[id(start)] = 1
+            path_pos[id(start)] = 0
             while stack and found is None:
                 it, i = stack[-1]
                 lst = deps[id(it)]
@@ -182,9 +187,10 @@ def cut_loops(m: ModuleIR) -> int:
                 elif st == 0:
                     state[id(d)] = 1
                     stack.append((d, 0))
+                    path_pos[id(d)] = len(path)
                     path.append(d)
             if found is not None:
-                cyc_path = path[[id(x) for x in path].index(id(found[1])):]
+                cyc_path = path[path_pos[id(found[1])]:]
                 break
         if found is None:
             return cuts
@@ -194,26 +200,53 @@ def cut_loops(m: ModuleIR) -> int:
         # chunk and look again before declaring a loop.
         wide = [x for x in cyc_path if isinstance(x, Conn) and len(x.src.chunks) > 1]
         if wide:
-            for x in wide:
-                _split_conn(m, x)
+            _split_conns(m, wide)
             continue
         _cut_edge(m, it, ch)
         cuts += 1
     return cuts
 
 
-def _split_conn(m: ModuleIR, conn: Conn) -> None:
-    """Replace ``conn`` by one connection per source chunk (same destination bits, same origin)."""
+def _conn_parts(conn: Conn) -> list[Conn]:
+    """One connection per source chunk of ``conn`` (same destination bits, same origin)."""
     parts = []
     pos = 0
     for c in conn.src.chunks:
         parts.append(Conn(conn.net, conn.lo + pos, SigSpec((c,)), conn.origin))
         pos += c.width
-    i = next(k for k, x in enumerate(m.conns) if x is conn)
-    m.conns[i:i + 1] = parts
-    lst = m.conns_by_net[conn.net.id]
-    j = next(k for k, x in enumerate(lst) if x is conn)
-    lst[j:j + 1] = parts
+    return parts
+
+
+def _split_conn(m: ModuleIR, conn: Conn) -> None:
+    """Replace ``conn`` by one connection per source chunk (same destination bits, same origin)."""
+    _split_conns(m, [conn])
+
+
+def _split_conns(m: ModuleIR, conns: list[Conn]) -> None:
+    """Split every connection of ``conns`` in place, in one pass over ``m.conns``.
+
+    Same result and order as splicing them one at a time (each is replaced by its parts at its own
+    position), but O(len(m.conns)) instead of O(len(conns) * len(m.conns)).
+    """
+    repl: dict[int, list[Conn]] = {}
+    for conn in conns:
+        if id(conn) not in repl:
+            repl[id(conn)] = _conn_parts(conn)
+    m.conns[:] = _spliced(m.conns, repl)                       # in place: aliases stay valid
+    for net_id in dict.fromkeys(c.net.id for c in conns):     # first-seen order, each net once
+        lst = m.conns_by_net[net_id]
+        lst[:] = _spliced(lst, repl)
+
+
+def _spliced(lst: list[Conn], repl: dict[int, list[Conn]]) -> list[Conn]:
+    out: list[Conn] = []
+    for x in lst:
+        r = repl.get(id(x))
+        if r is None:
+            out.append(x)
+        else:
+            out.extend(r)
+    return out
 
 
 def _cut_edge(m: ModuleIR, item, chunk: Slice) -> None:
