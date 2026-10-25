@@ -121,6 +121,8 @@ def classify(ob: CostOp, oa: CostOp) -> tuple[str, str | None, list[str]]:
     """Reason for a modified pair by comparing facts in the fixed order of DIFF.md section 5."""
     if oa.op == "BLACKBOX" or ob.op == "BLACKBOX":
         return "blackbox", None, []
+    if _mac_mul(ob, oa):
+        return "fusion", None, []        # tier 4 pair: the sum was unfused from its multiplier
     fb, fa = ob.facts, oa.facts
     names = _changed_names(fb.get("params"), fa.get("params"), True)
     if names:
@@ -210,6 +212,40 @@ def _take(free: list[CostOp], hit: CostOp) -> None:
         if o is hit:
             del free[i]
             return
+
+
+def _corr_sq(ob: CostOp, oa: CostOp, nb: int, na: int) -> int:
+    """Squared residual (milli-GE^2) of a matched op: ``(rms * |na*typ_a - nb*typ_b|)^2``.
+
+    The formula error of one operation at two sizes is strongly correlated, so only the part that changes carries a
+    residual, with the more pessimistic of the two ``rms = sigma / typ`` (the quality-class constants of COST_MODEL 5.1).
+    Integer arithmetic, rounded up; falls back to independent errors when neither side has a positive typ cost.
+    """
+    tb, ta = ob.cost.typ, oa.cost.typ
+    cands = [(s, t) for s, t in ((ob.sigma, tb), (oa.sigma, ta)) if t > 0]
+    if not cands:
+        return (ob.sigma * nb) ** 2 + (oa.sigma * na) ** 2
+    sig, typ = max(cands, key=lambda c: (c[0] * 1_000_000 // c[1], c[0], c[1]))
+    d = na * ta - nb * tb
+    return -(-(sig * d) ** 2 // (typ * typ))
+
+
+def _mac_mul(ob: CostOp, oa: CostOp) -> bool:
+    """A fused multiply-accumulate (SUM carrying a product) and the MUL that is left of it when the sum is undone."""
+    if ob.op != "SUM" or oa.op != "MUL":
+        return False
+    st = ob.facts.get("struct")
+    mul = st.get("mul") if isinstance(st, Mapping) else None
+    if not isinstance(mul, (list, tuple)) or len(mul) != 2 or not isinstance(mul[0], int):
+        return False
+    return sorted(mul) == sorted(oa.effective_widths[:2]) and len(oa.effective_widths) >= 2
+
+
+def _fold(mul: CostOp, add: CostOp) -> CostOp:
+    """The MUL with the accumulating ADD folded in (tier 4): costs add up, residuals combine as independent errors."""
+    bd = {k: mul.breakdown.get(k, 0) + add.breakdown.get(k, 0) for k in sorted(set(mul.breakdown) | set(add.breakdown))}
+    return replace(mul, cost=_add(mul.cost, add.cost), sigma=isqrt(mul.sigma ** 2 + add.sigma ** 2), breakdown=bd,
+                   description=f"{_base_desc(mul)} + {_base_desc(add)}")
 
 
 def _same_op(ob: CostOp, oa: CostOp) -> bool:
@@ -319,6 +355,29 @@ def match_ops(obs, oas, aligner: Aligner):
             used_a.add(oa.id)
             pairs.append((ob, oa, 3))
         rem_b = [o for o in rem_b if o.id not in used_b]
+        rem_a = [o for o in rem_a if o.id not in used_a]
+    # Tier 4: a fused MAC / SUM-with-product that is undone leaves a plain MUL of the same operand widths and, for
+    # the accumulation, an ADD of the sum's width: pair the SUM with the MUL (closest line first) and fold that ADD
+    # into the paired "after" side, so that only the part that really changes (the difference between the fused
+    # sum and its two pieces) carries a residual.  A MUL without such an ADD is still paired alone.
+    if rem_b and rem_a:
+        cands4 = [(abs(oa.line - ob.line), ob.line, ob.id, oa.line, oa.id, ob, oa)
+                  for ob in rem_b for oa in rem_a if ob.file == oa.file and _mac_mul(ob, oa)]
+        cands4.sort(key=lambda c: c[:5])
+        used_b4: set[int] = set()
+        for _, _, _, _, _, ob, oa in cands4:
+            if ob.id in used_b4 or oa.id in used_a:
+                continue
+            used_b4.add(ob.id)
+            used_a.add(oa.id)
+            adds = sorted((x for x in rem_a if x.id not in used_a and x.op == "ADD" and x.file == ob.file
+                           and x.effective_widths[:1] == ob.effective_widths[:1]),
+                          key=lambda x: (abs(x.line - oa.line), x.line, x.id))
+            if adds:
+                used_a.add(adds[0].id)
+                oa = _fold(oa, adds[0])
+            pairs.append((ob, oa, 4))
+        rem_b = [o for o in rem_b if o.id not in used_b4]
         rem_a = [o for o in rem_a if o.id not in used_a]
     return pairs, rem_b, rem_a
 
@@ -465,7 +524,7 @@ class _Differ:
         if p.mb.canonical_hash and p.mb.canonical_hash == p.ma.canonical_hash:
             for ob in p.mb.ops:
                 if dn and _nz(ob.cost):
-                    s2 = (ob.sigma * p.nb) ** 2 + (ob.sigma * p.na) ** 2
+                    s2 = (ob.sigma * dn) ** 2        # same op at two multiplicities: fully correlated
                     self.sq_total += s2
                     acc_mult(ob, s2)
         else:
@@ -475,7 +534,7 @@ class _Differ:
                 has_mult = bool(dn) and _nz(ob.cost)
                 if not _nz(dint) and not has_mult:
                     continue
-                s2 = (ob.sigma * p.nb) ** 2 + (oa.sigma * p.na) ** 2
+                s2 = _corr_sq(ob, oa, p.nb, p.na)
                 self.sq_total += s2
                 if _nz(dint):
                     self.modified(p, ob, oa, dint, s2)

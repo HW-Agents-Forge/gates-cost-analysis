@@ -1,4 +1,5 @@
 """Multiplicity, causes, reasons, sharing, line view, verdicts, confidence (DIFF.md section 12)."""
+import re
 import time
 import unittest
 
@@ -284,7 +285,9 @@ class Confidence(unittest.TestCase):
     def test_range_reason(self):
         r = diff_trees(flat([op("AND", 10, tgt="z")]), flat([op("AND", 10, tgt="z"), op("ADD", 100, tgt="n", line=9)]))
         self.assertIn(r.confidence.level, ("medium", "low"))
-        self.assertTrue(any("delta range is +/-" in x for x in r.confidence.reasons))
+        # symmetric ranges read "+/-r%", asymmetric ones "-x%/+y%" (cost/delta.py range_spread)
+        self.assertTrue(any(re.fullmatch(r"delta range is (\+/-\d+%|-\d+%/\+\d+%) of the estimate", x)
+                            for x in r.confidence.reasons), r.confidence.reasons)
 
     def test_poor_class(self):
         b = flat([op("AND", 10, tgt="z")])

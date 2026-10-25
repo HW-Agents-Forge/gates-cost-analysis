@@ -1,4 +1,5 @@
 """Randomized and exhaustive properties of the cost model (COST_MODEL.md section 7)."""
+import math
 import random
 import unittest
 
@@ -254,9 +255,33 @@ class Deltas(unittest.TestCase):
             r = delta_range(d, sig)
             self.assertLessEqual(r.min, r.typ)
             self.assertLessEqual(r.typ, r.max)
-            self.assertEqual(r.min, min(d.min, d.typ, d.max) - 2 * sig)
-            self.assertEqual(r.max, max(d.min, d.typ, d.max) + 2 * sig)
+            # COST_MODEL.md 5.1: centre of the scenarios -/+ sqrt(half-spread^2 + (2 sigma)^2)
+            lo, hi = min(d.min, d.typ, d.max), max(d.min, d.typ, d.max)
+            half = math.sqrt(((hi - lo) / 2) ** 2 + (2 * sig) ** 2)
+            self.assertLessEqual(abs(r.min - ((lo + hi) / 2 - half)), 1)  # integer rounding, outwards
+            self.assertLessEqual(abs(r.max - ((lo + hi) / 2 + half)), 1)
+            self.assertLessEqual(r.min, lo)  # always contains every scenario
+            self.assertGreaterEqual(r.max, hi)
+            self.assertGreaterEqual(r.min, lo - 2 * sig)  # never wider than the former linear sum
+            self.assertLessEqual(r.max, hi + 2 * sig)
+            self.assertEqual(delta_range(d, 0), Ge3(lo, d.typ, hi))
             self.assertEqual(delta_range(d, 0).typ, d.typ)
+
+    def test_range_is_a_quadrature_sum(self):
+        # regression (confidence review): the scenario spread and the 2-sigma residual used to add linearly
+        self.assertEqual(delta_range(Ge3(100_000, 100_000, 100_000), 5_000), Ge3(90_000, 100_000, 110_000))
+        self.assertEqual(delta_range(Ge3(0, 30_000, 60_000), 0), Ge3(0, 30_000, 60_000))
+        # half-spread 30, 2 sigma 40 -> half-width 50 around the centre 30 (linear: 70)
+        self.assertEqual(delta_range(Ge3(0, 30_000, 60_000), 20_000), Ge3(-20_000, 30_000, 80_000))
+        # asymmetric scenarios: the range is centred on the scenarios, not on typ, and still contains them
+        r = delta_range(Ge3(232_080, 313_430, 468_924), 49_715)
+        self.assertLessEqual(r.min, 232_080)
+        self.assertGreaterEqual(r.max, 468_924)
+        self.assertLess(range_ratio(r), 0.5)  # counter_width example: r 0.69 -> 0.49 (medium)
+        self.assertEqual(confidence(r, [("seq", "good", 223_920), ("addcmp", "good", 89_510)]).level, "medium")
+        # odd sums round outwards
+        self.assertEqual(delta_range(Ge3(0, 0, 1), 0), Ge3(0, 0, 1))
+        self.assertEqual(delta_range(Ge3(-3, 0, 0), 1), Ge3(-4, 0, 1))  # width ceil(sqrt(9 + 16)) = 5
 
     def test_residual_uses_quality_classes(self):
         self.assertEqual(residual_sigma([(100_000, "good")], P), 15_000)
@@ -282,6 +307,18 @@ class Deltas(unittest.TestCase):
         self.assertEqual(confidence(tight, medq).level, "medium")  # < 90% good: not high
         self.assertAlmostEqual(range_ratio(Ge3(0, 10_000, 40_000)), 40_000 / 40_000)  # floor of 20 GE
         self.assertAlmostEqual(confidence(wide, good).range_ratio, 0.4)
+        self.assertIn("delta range is +/-40% of the estimate", confidence(wide, good).reasons)
+
+    def test_asymmetric_range_reason(self):
+        # regression: an asymmetric range is reported as -x%/+y%, the level still follows r
+        skew = Ge3(70_000, 100_000, 160_000)  # r = 0.45: -30% / +60%
+        c = confidence(skew, [("addcmp", "good", 100_000)])
+        self.assertEqual(c.level, "medium")
+        self.assertEqual(c.reasons, ("delta range is -30%/+60% of the estimate",))
+        self.assertAlmostEqual(c.range_ratio, 0.45)
+        dec = confidence(Ge3(-160_000, -100_000, -70_000), [("addcmp", "good", 100_000)])
+        self.assertEqual(dec.reasons, ("delta range is -60%/+30% of the estimate",))
+        self.assertEqual(confidence(Ge3(0, 100_000, 400_000), [("addcmp", "good", 100_000)]).level, "low")
 
     def test_sharing_a_case_of_four_multipliers(self):
         m = cost_op("MUL", {"n": 16, "m": 16}, P)
