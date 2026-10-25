@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Regenerate REPORT.md from the actual output of gatecost (run from anywhere)."""
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOL = HERE.parents[1] / "scripts" / "gatecost"
+CACHE = tempfile.mkdtemp(prefix="gatecost-examples-")   # never write a cache next to the sources
 
 
 def run(*args: str) -> str:
-    p = subprocess.run([sys.executable, str(TOOL), *args], cwd=HERE, capture_output=True, text=True)
+    p = subprocess.run([sys.executable, str(TOOL), *args], cwd=HERE, capture_output=True, text=True,
+                       env=dict(os.environ, GATECOST_CACHE_DIR=CACHE))
     return p.stdout.rstrip("\n")
 
 
