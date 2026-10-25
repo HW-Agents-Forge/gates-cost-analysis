@@ -225,6 +225,8 @@ class ModuleIR:
         self.canonical_hash: bytes | None = None
         self.conns_by_net: dict[int, list[Conn]] = {}
         self.conn_keys: dict[int, bytes] = {}
+        # state elements / operations that reach no output and were removed (cost 0); see ``UNOBSERVABLE_LOGIC``
+        self.unobservable = {"regs": 0, "ops": 0}
 
     # -- lookups ---------------------------------------------------------
     def port(self, name: str) -> Net:

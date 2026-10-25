@@ -60,7 +60,7 @@ Defines come from the command line, the project file, and the sources. An undefi
   - in an expression or statement: skip to the next `;`, `end`, `endcase`, `endmodule`, or the next statement keyword;
   - in a module item: skip to the next `;` or to the matching `end*` keyword;
   - in a module: skip to `endmodule`; the module is marked *incomplete*, and whatever was parsed before the error is retained.
-- **Skipped regions.** The following are recognized by their opening keyword, skipped by balanced matching of their closing keyword, and reported at `info` level only: `initial`, `final`, `specify`, `class`, `program`, `covergroup`, `property`, `sequence`, `clocking`, `checker`, assertions (`assert`, `assume`, `cover`, `restrict`), non-synthesizable `task`/`function` bodies (containing delays, events, or `$display`), `$display`/`$error`-family system tasks, and `bind`.
+- **Skipped regions.** The following are recognized by their opening keyword, skipped by balanced matching of their closing keyword, and reported at `info` level only: `initial` (except an initial block that writes elements of an array or calls `$readmemh`/`$readmemb` on it: it is kept and gives the array's ROM contents, see COST_MODEL.md 3.8), `final`, `specify`, `class`, `program`, `covergroup`, `property`, `sequence`, `clocking`, `checker`, assertions (`assert`, `assume`, `cover`, `restrict`), non-synthesizable `task`/`function` bodies (containing delays, events, or `$display`), `$display`/`$error`-family system tasks, and `bind`.
 - **Pure-Python AST:** `__slots__` classes, one class per node kind, each with a location. No generic dictionary-based nodes.
 
 ### 2.5 Elaborator
@@ -104,7 +104,7 @@ Demand-driven: starts at the top module (or at the modules of the changed files,
 | `defparam` | Approximated | Simple hierarchical paths only. |
 | Gate-level primitives (`and`, `nand`, `not`, `buf`, ...) | Exact | One primitive per gate instance. |
 | UDPs | Skipped | Reported as black boxes. |
-| `initial`, `final`, delays, `fork`, classes, DPI, assertions | Skipped | Ignored without effect on the estimate. |
+| `initial`, `final`, delays, `fork`, classes, DPI, assertions | Skipped | Ignored without effect on the estimate, except `initial` blocks that initialise an array (ROM contents). |
 | Hierarchical references into other modules | Skipped | Diagnostic. |
 
 ## 4. Unresolved Information
@@ -146,8 +146,9 @@ Each diagnostic has a stable code, a severity (`info`, `warning`, `error`), a lo
 | `LIMIT_REACHED` (unroll, generate, depth) | warning | yes |
 | `INFERRED_LATCH` | warning | no (costed) |
 | `DUPLICATE_MODULE` | warning | possibly |
-| `IGNORED_REGION` (initial, assertions, ...) | info | no |
+| `IGNORED_REGION` (initial blocks that do not initialise an array, assertions, ...) | info | no |
 | `ARRAY_PORT_FLATTENED` (unpacked array port taken as one vector; whole-array connections wire element by element) | info | no |
+| `UNOBSERVABLE_LOGIC` | info | no (the removed logic costs 0) |
 | `INCLUDE_NOT_FOUND` | warning | possibly |
 
 ## 7. Default Limits

@@ -156,7 +156,7 @@ The differ computes a verdict consumed by all reporters:
 | Parameter default changed, overridden at every instance | Zero delta. |
 | Instance-array size changed | `multiplicity` contributor valued at the previous per-instance cost. |
 | `ifdef`/define change flips a code path | Contributors are tagged with the macro as the cause (`cause = define:NAME`). |
-| Change only in a skipped region (`initial`, assertion) | `NO_CHANGE`, with an `info` note. |
+| Change only in a skipped region (`initial` that does not initialise an array, assertion) | `NO_CHANGE`, with an `info` note. |
 | Operation moves between modules (refactor) | Reported as one removal and one addition; the net is shown in `structural` as a `moved` hint when shape keys are equal. |
 
 ## 11. Complexity and Performance

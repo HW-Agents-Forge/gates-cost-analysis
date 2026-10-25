@@ -65,7 +65,7 @@ predecode = 1.33
 booth_select = 3.5
 booth_encode = 6.0
 sync_reset_min = 0.67
-rom_col = 2.0
+rom_plane = 0.55         # GE per merged input of a ROM OR plane (NAND4 first level + OR tree)
 rom_lit = 0.75
 
 # Dimensionless factors.

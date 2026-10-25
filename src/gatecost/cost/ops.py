@@ -120,7 +120,7 @@ _reg(logic.SHIFTS, lambda op, a, p: logic.shift_op(op, _int(a, "n"), _int(a, "s"
 _reg(BITWISE_OPS, lambda op, a, p: logic.bitwise_op(op, _int(a, "n", "w", "width"), p))
 _reg(CMP_OPS, lambda op, a, p: _cmp(op, a, p))
 _reg(tuple(REDUCE_OPS), lambda op, a, p: logic.reduce_op(REDUCE_OPS[op], _int(a, "n", "w", "width"), p))
-_reg(("MUX",), lambda op, a, p: logic.mux_op(_int(a, "k"), _int(a, "w", "n"), p, _int(a, "const_inputs", default=0, lo=0), bool(a.get("same_inputs"))))
+_reg(("MUX",), lambda op, a, p: logic.mux_op(_int(a, "k"), _int(a, "w", "n"), p, _int(a, "const_inputs", default=0, lo=0), bool(a.get("same_inputs")), bool(a.get("complement"))))
 _reg(("PMUX",), lambda op, a, p: logic.pmux_op(_int(a, "k"), _int(a, "w", "n"), p))
 _reg(("PRIORITY",), lambda op, a, p: logic.priority_op(_int(a, "k"), _int(a, "w", "n"), p))
 _reg(("DECODE",), lambda op, a, p: logic.decode_op(_int(a, "s", lo=0), p))
@@ -129,7 +129,7 @@ _reg(("DFF", "REG"), lambda op, a, p: seq.reg_op(
     _int(a, "n", "w", "width"), p, bool(a.get("async_reset")), bool(a.get("async_set_reset")),
     bool(a.get("sync_reset")), bool(a.get("enable")), a.get("scan")))
 _reg(("LATCH", "DLAT"), lambda op, a, p: seq.latch_op(_int(a, "n", "w", "width"), p))
-_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read"))))
+_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read")), _int(a, "const_reads", default=0, lo=0)))
 _reg(("ROM",), lambda op, a, p: seq.rom_op(_int(a, "depth"), _int(a, "width", "w"), p, a.get("contents")))
 _reg(("BLACKBOX",), lambda op, a, p: _blackbox(a, p))
 

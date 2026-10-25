@@ -5,7 +5,7 @@ from .core import Conn, ModuleIR, Node
 from .knownbits import sig_known
 from .sigspec import Const, SigSpec, Slice, mask
 
-_ROOT_OPS = ("INST", "BLACKBOX", "MEM")
+_ROOT_OPS = ("INST", "BLACKBOX")        # always live; a MEM is live only when some read port is observed
 
 
 def _clip(sig: SigSpec, m: int) -> int:
@@ -147,6 +147,11 @@ def compute_demand(m: ModuleIR) -> None:
             continue
         if op in _ROOT_OPS:
             continue
+        if op == "MEM":
+            if any(o.demand for o in nd.outputs):
+                for s, mk in _full_inputs(nd):
+                    add(s, mk)
+            continue
         dy = nd.outputs[0].demand
         if not dy:
             continue
@@ -225,6 +230,10 @@ def dead_logic(m: ModuleIR, order) -> int:
         else:
             nd.alive = False
             removed += 1
+            if nd.op in ("DFF", "LATCH", "MEM"):
+                m.unobservable["regs"] += 1
+            elif nd.op != "NOT":
+                m.unobservable["ops"] += 1
             for o in nd.outputs:
                 o.driver = None
     m.nodes = live_nodes
