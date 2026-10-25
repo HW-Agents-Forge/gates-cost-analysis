@@ -8,24 +8,24 @@ A parameter change: the cause is reported as the parameter, not as individual op
 
 ```console
 $ gatecost cost baseline --top counter --verbose
-COST 104 GE (82..156) confidence=medium
+COST 100 GE (78..147) confidence=medium
 TOP counter
-104 counter 100%
-CATEGORIES seq=75 addcmp=30 mul=0 select=0 logic=0 shift=0 div=0 mem=0
-WHY medium: delta range is +/-35% of the estimate
+100 counter 100%
+CATEGORIES seq=75 addcmp=25 mul=0 select=0 logic=0 shift=0 div=0 mem=0
+WHY medium: delta range is -22%/+47% of the estimate
 ```
 
 ## Modification: `baseline` -> `wider`
 
 ```console
 $ gatecost diff --before baseline --after wider --top counter --verbose
-DELTA +313 GE (+133..+568) +300.0% verdict=INCREASE confidence=low
-TOP counter before=104 after=418
+DELTA +313 GE (+212..+489) +313.4% verdict=INCREASE confidence=medium
+TOP counter before=100 after=413
 +313 counter.v:2 parameter W 8->32 (2 ops) x1 cause=parameter:W
 MODULE counter{W=32} x1->x1 intrinsic=+313 multiplicity=0
 CATEGORIES addcmp=+90 seq=+224
 STRUCT module counter parameters {W=8} -> {W=32}
-WHY low: delta range is +/-70% of the estimate
+WHY medium: delta range is -32%/+56% of the estimate
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.
