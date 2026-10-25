@@ -253,7 +253,10 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
                 oc = oc + cost_op("DFF", {"n": wd * R}, p)
             return oc, f"ROM {d}x{wd}", (d, wd), facts, tags
         oc = cost_op("MEM", {"depth": d, "width": wd, "rports": max(a.get("rports", 1), 1),
-                             "wports": max(a.get("wports", 1), 1), "sync_read": sync}, p)
+                             "wports": max(a.get("wports", 1), 1), "sync_read": sync,
+                             "const_reads": sum(1 for i in nd["inputs"]
+                                                if i["name"].endswith("_addr") and i["name"].startswith("r")
+                                                and i.get("is_const"))}, p)
         return oc, f"MEM {d}x{wd}", (d, wd), facts, tags
     if op == "SUM":
         return _cost_sum(nd, p)

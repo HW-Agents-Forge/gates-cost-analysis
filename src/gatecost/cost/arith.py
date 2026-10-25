@@ -138,8 +138,18 @@ def sum_terms_op(terms: tuple[int, ...] | list[int], out: int, p: Profile) -> Op
     narrow, full = add_narrow_op(out, min(ts), p).typ, add_op(out, p).typ
     if full and narrow < full:  # the chain adds narrow operands: scale by the incrementer saving
         unfused = unfused.scaled(rdiv(narrow * 1000, full))
+    lo, ty = csa.plus(one.min), csa.plus(one.typ)
+    # Bit-heap bound: every FA removes one bit of the heap and every HA none, so compressing sum(ts) bits to the
+    # ``out`` result bits needs at most ``sum(ts) - out`` FA plus one HA per result bit.  "2 rows + CPA" over-counts
+    # when the terms are much narrower than the result (a popcount of 8 one-bit inputs is 4 FA + a few HA, not 6 FA
+    # plus a 4-bit adder).
+    bound = Acc().add("FA", max(0, sum(ts) - out), p.P["FA"]).add("HA", out, p.P["HA"])
+    if bound.total < lo.total:
+        lo = bound
+    if bound.total < ty.total:
+        ty = bound
     sc = Sc(
-        csa.plus(one.min), csa.plus(one.typ), unfused,
+        lo, ty, unfused,
         {"min": "csa+" + one.arch["min"], "typ": "csa+" + one.arch["typ"], "max": "unfused"},
         sigma=True,
     )

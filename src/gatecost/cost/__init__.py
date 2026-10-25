@@ -27,13 +27,13 @@ Operations
         AND OR XOR NAND NOR XNOR NOT     n (or w)
         EQ NE LT LE GT GE    n [signed] [const=K | const_unknown=True]
         RED_AND RED_OR RED_XOR   n
-        MUX             k, w [const_inputs=0|1|2] [same_inputs]   (const_inputs: k == 2 only)
+        MUX             k, w [const_inputs=0|1|2] [same_inputs] [complement]   (k == 2 only: constant arms, x/~x arms)
         PMUX PRIORITY   k, w
         DECODE          s               s -> 2**s
         ENCODE          k [priority]
         DFF (REG)       n [async_reset] [async_set_reset] [sync_reset] [enable] [scan]
         LATCH           n
-        MEM             depth, width [rports=1] [wports=1] [sync_read]
+        MEM             depth, width [rports=1] [wports=1] [sync_read] [const_reads=0]
         ROM             depth, width [contents=list of ints]
         BLACKBOX        name            looked up in the profile's ``[blackbox]``
 

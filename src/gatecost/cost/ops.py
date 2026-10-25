@@ -129,7 +129,7 @@ _reg(("DFF", "REG"), lambda op, a, p: seq.reg_op(
     _int(a, "n", "w", "width"), p, bool(a.get("async_reset")), bool(a.get("async_set_reset")),
     bool(a.get("sync_reset")), bool(a.get("enable")), a.get("scan")))
 _reg(("LATCH", "DLAT"), lambda op, a, p: seq.latch_op(_int(a, "n", "w", "width"), p))
-_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read"))))
+_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read")), _int(a, "const_reads", default=0, lo=0)))
 _reg(("ROM",), lambda op, a, p: seq.rom_op(_int(a, "depth"), _int(a, "width", "w"), p, a.get("contents")))
 _reg(("BLACKBOX",), lambda op, a, p: _blackbox(a, p))
 

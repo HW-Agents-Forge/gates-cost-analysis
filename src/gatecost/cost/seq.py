@@ -114,7 +114,8 @@ def _macro_op(D: int, W: int, p: Profile) -> OpCost:
     return finalize(sc, "mem", "poor", p)
 
 
-def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1, sync_read: bool = False) -> OpCost:
+def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1, sync_read: bool = False,
+           const_reads: int = 0) -> OpCost:
     """D x W memory: flop-based, or ``min(flops, macro)`` per scenario when synchronous.
 
     A synchronous-read memory may be implemented by a memory compiler.  The smallest macro
@@ -123,7 +124,7 @@ def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1,
     cheaper of the flop array and the macro, scenario by scenario.  Both are non-decreasing
     in D, hence so is their minimum: there is no cliff at the macro threshold.
     """
-    flops = _flop_mem_op(depth, width, p, rports, wports, sync_read)
+    flops = _flop_mem_op(depth, width, p, rports, wports, sync_read, const_reads)
     if not (p.macro_enable and sync_read):
         return flops
     D, W = depth, width
@@ -139,8 +140,10 @@ def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1,
     )
 
 
-def _flop_mem_op(depth: int, width: int, p: Profile, rports: int, wports: int, sync_read: bool) -> OpCost:
+def _flop_mem_op(depth: int, width: int, p: Profile, rports: int, wports: int, sync_read: bool,
+                 const_reads: int = 0) -> OpCost:
     D, W, R, Pw = depth, width, rports, wports
+    Rv = max(R - const_reads, 0)          # read ports with a constant address are plain word taps: no mux tree
     P = p.P
     s = clog2(D)
     dec = decode_acc(s, p) if s >= 2 else None
@@ -153,9 +156,9 @@ def _flop_mem_op(depth: int, width: int, p: Profile, rports: int, wports: int, s
         return getattr(dec, which).times(scale)
 
     ty = Acc().add("DFF", D * W, P["DFF"]).add("MUX2", D * W, P["MUX2"])
-    ty = ty.add("MUX2", R * (D - 1) * W, P["MUX2"]).plus(decode("typ", Pw)).add("MUX2", (Pw - 1) * D * W, P["MUX2"])
+    ty = ty.add("MUX2", Rv * (D - 1) * W, P["MUX2"]).plus(decode("typ", Pw)).add("MUX2", (Pw - 1) * D * W, P["MUX2"])
     lo = Acc().add("DLAT", D * W, P["DLAT"]).add("ICG", D, P["ICG"])
-    lo = lo.add("MUX4_EQ", R * (D - 1) * W, p.C["mux_min"]).plus(decode("min", Pw))
+    lo = lo.add("MUX4_EQ", Rv * (D - 1) * W, p.C["mux_min"]).plus(decode("min", Pw))
     if sync_read:  # the registered read data: one W-bit flop bank per read port
         ty = ty.add("DFF", R * W, P["DFF"])
         lo = lo.add("DFF", R * W, P["DFF"])
