@@ -224,9 +224,9 @@ class OpsMixin:
                 cand.append(s)
         if not cand:
             return None
-        for s in cand:
-            if self.user_params_match(s.val, [l, r]):
-                return self.call_user([s], [N.Assoc(None, _Lit(l)), N.Assoc(None, _Lit(r))], node, sc, hint)
+        ok = [s for s in cand if self.user_params_match(s.val, [l, r])]
+        if ok:
+            return self.call_user(ok, [N.Assoc(None, _Lit(l)), N.Assoc(None, _Lit(r))], node, sc, hint)
         return None
 
     def binary_op(self, op, l, r, node, sc, hint):

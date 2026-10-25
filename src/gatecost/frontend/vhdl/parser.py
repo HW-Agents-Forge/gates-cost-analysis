@@ -647,6 +647,35 @@ class Parser:
             self.semi()
         return out
 
+    def skip_generic_subprogram(self):
+        """``generic (function f (a : t) return r [is name | <>])`` / ``procedure`` / ``package p is new q generic map
+        (<>)``: one diagnostic, the whole interface element is skipped (no cascade into the following elements)."""
+        t0 = self.tok
+        what = t0.val
+        name = "?"
+        depth = 0
+        while self.tok.kind != "eof":
+            x = self.tok
+            if x.kind == "op":
+                if x.val == "(":
+                    depth += 1
+                elif x.val == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif x.val == ";" and depth == 0:
+                    break
+            elif x.kind == "kw" and x.val in ("function", "procedure", "package") and name == "?":
+                what = x.val
+                nx = self.peek(1)
+                if nx.kind in ("id", "xid", "str"):
+                    name = str(nx.val)
+            elif depth == 0 and ((x.kind == "kw" and x.val in ("begin", "end", "architecture")) or self.at_unit_start()):
+                break
+            self.adv()
+        self.unsupported("generic %s '%s'" % (what, name), t0)
+        return N.Generic(name, "subprogram", None, None, line=t0.line, col=t0.col)
+
     def sync_elem(self):
         depth = 0
         while True:
@@ -679,13 +708,20 @@ class Parser:
             name = self.expect_ident()
             return [N.Generic(name, "type", None, None, line=t0.line, col=t0.col)]
         elif kind == "generic" and t0.kind == "kw" and t0.val in ("function", "procedure", "pure", "impure", "package"):
-            self.unsupported("generic %s" % t0.val)
-            self.sync_elem()
-            return [N.Generic("<subprogram>", "subprogram", None, None, line=t0.line, col=t0.col)]
+            return [self.skip_generic_subprogram()]
         names = [(self.tok.line, self.tok.col, self.expect_ident())]
         while self.accept_op(","):
             names.append((self.tok.line, self.tok.col, self.expect_ident()))
         self.expect_op(":")
+        if kind == "generic" and self.kw("type"):             # pre-2008 draft syntax ``T : type``
+            self.adv()
+            return [N.Generic(nm, "type", None, None, line=ln, col=col) for (ln, col, nm) in names]
+        if kind in ("port", "param") and self.is_id("view") and self.peek(1).kind in ("id", "xid", "op"):
+            vi = self.parse_view_ind()
+            default = None
+            if self.accept_op(":="):
+                default = self.parse_expr()
+            return [N.Port(nm, "view", vi, default, line=ln, col=col) for (ln, col, nm) in names]
         mode = None
         if self.tok.kind == "kw" and self.tok.val in MODES:
             mode = self.adv().val
@@ -860,16 +896,7 @@ class Parser:
             if t.val == "(":
                 return self.parse_paren()
             if t.val == "<<":
-                self.unsupported("external name")
-                depth = 0
-                while self.tok.kind != "eof":
-                    if self.op(">>"):
-                        self.adv()
-                        break
-                    if self.op(";"):
-                        break
-                    self.adv()
-                return N.Skipped("external_name", None, line=t.line, col=t.col)
+                return self.parse_name_suffix(self.parse_external_name())
         elif k == "char":
             self.adv()
             return N.Literal("char", t.val, None, line=t.line, col=t.col)
@@ -1046,8 +1073,35 @@ class Parser:
             return items[0].value
         return N.Aggregate(items, line=t.line, col=t.col)
 
+    def parse_external_name(self):
+        """``<< signal .tb.dut.x : std_logic >>`` (VHDL-2008 external name)."""
+        t = self.expect_op("<<")
+        cls = "signal"
+        if self.tok.kind == "kw" and self.tok.val in ("signal", "constant", "variable"):
+            cls = self.adv().val
+        parts = []
+        depth = 0
+        while self.tok.kind != "eof":
+            x = self.tok
+            if x.kind == "op":
+                if x.val == "(":
+                    depth += 1
+                elif x.val == ")":
+                    depth -= 1
+                elif x.val in (";", ">>") or (x.val == ":" and depth <= 0):
+                    break
+            parts.append(str(x.val))
+            self.adv()
+        st = None
+        if self.accept_op(":"):
+            st = self.parse_subtype_ind()
+        self.expect_op(">>")
+        return N.ExternalName(cls, "".join(parts), st, line=t.line, col=t.col)
+
     def parse_name(self):
         t = self.tok
+        if t.kind == "op" and t.val == "<<":
+            return self.parse_name_suffix(self.parse_external_name())
         if t.kind not in ("id", "xid"):
             self.err("expected a name but found " + self.describe(t))
         self.adv()
@@ -1106,7 +1160,65 @@ class Parser:
                 return N.Skipped("psl", None, line=t.line, col=t.col)
             if t.val == "context" and self.peek(1).kind == "id":
                 return self.parse_context([])
+            if t.val == "view" and self.peek(1).kind in ("id", "xid") and self.peek(2).kind == "kw" \
+                    and self.peek(2).val == "of":
+                return self.parse_view_decl()
         self.err("unexpected %s in declarative part" % self.describe(t))
+
+    def parse_view_decl(self):
+        """``view v of rec_t is  a : in;  b : out;  end view [v];`` (VHDL-2019 mode view)."""
+        t = self.adv()
+        name = self.expect_ident()
+        self.expect_kw("of")
+        mark = self.parse_type_mark()
+        self.expect_kw("is")
+        elems = []
+        while not (self.kw("end") or self.tok.kind == "eof" or self.at_unit_start()):
+            names = [(self.tok.line, self.tok.col, self.expect_ident())]
+            while self.accept_op(","):
+                names.append((self.tok.line, self.tok.col, self.expect_ident()))
+            self.expect_op(":")
+            if self.tok.kind == "kw" and self.tok.val in MODES:
+                mode = self.adv().val
+            elif self.is_id("view"):
+                mode = self.parse_view_ind()           # ``rx : view sub_view`` / ``tx : view (sub_view)``
+            else:
+                mode = self.parse_type_mark()          # a sub-view name
+            self.semi()
+            elems.extend(N.ViewElem(n, mode, line=l, col=c) for (l, c, n) in names)
+        self.expect_kw("end")
+        if self.tok.kind in ("id", "xid") and self.tok.val == "view":
+            self.adv()
+        else:
+            self.soft_err("expected 'end view'")
+        if self.tok.kind in ("id", "xid"):
+            self.adv()
+        self.semi()
+        return N.ViewDecl(name, mark, elems, line=t.line, col=t.col)
+
+    def parse_view_ind(self):
+        """After ``:`` in a port: ``view v``, ``view v of T``, ``view (v) of T``, ``view v'converse``."""
+        t = self.adv()                                  # 'view'
+        array = False
+        if self.op("("):
+            self.adv()
+            array = True
+            mark = self.parse_view_mark()
+            self.expect_op(")")
+        else:
+            mark = self.parse_view_mark()
+        st = None
+        if self.accept_kw("of"):
+            st = self.parse_subtype_ind()
+        return N.ViewInd(mark, st, array, line=t.line, col=t.col)
+
+    def parse_view_mark(self):
+        e = self.parse_type_mark()
+        if self.op("'") and self.peek(1).kind in ("id", "kw") and self.peek(1).val == "converse":
+            self.adv()
+            a = self.adv()
+            e = N.Attr(e, a.val, None, line=a.line, col=a.col)
+        return e
 
     def parse_package_inst(self):
         t = self.expect_kw("package")

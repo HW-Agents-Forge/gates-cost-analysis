@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -18,6 +19,83 @@ def language_of(path: str | Path) -> str | None:
     if ext in VHDL_EXT:
         return "vhdl"
     return None
+
+
+_VHDL_UNIT_HEAD = {
+    "library": re.compile(r"library\s+\w+(?:\s*,\s*\w+)*\s*;", re.I),
+    "use": re.compile(r"use\s+[\w.]+(?:\.all)?\s*;", re.I),
+    "entity": re.compile(r"entity\s+\w+\s+is\b", re.I),
+    "architecture": re.compile(r"architecture\s+\w+\s+of\s+\w+\s+is\b", re.I),
+    "package": re.compile(r"package\s+(?:body\s+)?\w+\s+is\b", re.I),
+    "context": re.compile(r"context\s+\w+\s+is\b", re.I),
+    "configuration": re.compile(r"configuration\s+\w+\s+of\s+\w+\s+is\b", re.I),
+}
+_FIRST_WORD = re.compile(r"[A-Za-z_]\w*")
+
+
+def looks_like_vhdl(text: str) -> bool:
+    """True when the first non-comment token of ``text`` starts a VHDL design unit or context clause
+    (``library``/``use``/``entity``/``architecture``/``package ... is``/...), as opposed to ``module``,
+    a compiler directive or an SV ``package x;``.  Comments (``--``, ``//``, ``/* */``) are skipped."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace() or c == "\ufeff":
+            i += 1
+        elif text.startswith("--", i) or text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            break
+    m = _FIRST_WORD.match(text, i)
+    if m is None:
+        return False
+    head = _VHDL_UNIT_HEAD.get(m.group(0).lower())
+    return head is not None and head.match(text, i) is not None
+
+
+def sniff_is_vhdl(path: str | Path) -> bool:
+    """``looks_like_vhdl`` on the beginning of a file (the leading comment block may be long: it is read in
+    growing chunks until a token appears)."""
+    size = 8192
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                fh.seek(0)
+                raw = fh.read(size)
+                text = raw.decode("utf-8", "replace")
+                if looks_like_vhdl(text):
+                    return True
+                if len(raw) < size or size >= 1 << 20 or not _only_comments(text):
+                    return False
+                size *= 8
+    except OSError:
+        return False
+
+
+def _only_comments(text: str) -> bool:
+    """True when ``text`` (a prefix of a file) ends inside the leading comment block, so a larger prefix is needed."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace() or c == "\ufeff":
+            i += 1
+        elif text.startswith("--", i) or text.startswith("//", i):
+            j = text.find("\n", i)
+            if j < 0:
+                return True
+            i = j + 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                return True
+            i = j + 2
+        else:
+            return False
+    return True
 
 
 def _skip_dir(rel: Path, name: str, excludes: list[str], skill_dir: Path, full: Path) -> bool:

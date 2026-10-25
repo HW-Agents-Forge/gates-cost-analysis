@@ -86,6 +86,7 @@ Others = _n("Others", [])
 Open = _n("Open", [])
 Unaffected = _n("Unaffected", [])
 Skipped = _n("Skipped", ["kind", "text"])
+ExternalName = _n("ExternalName", ["cls", "path", "subtype"])
 SubtypeInd = _n("SubtypeInd", ["mark", "resolution", "index_constraints", "range", "box"])
 
 # ---------------------------------------------------------------- declarations
@@ -112,6 +113,9 @@ ComponentDecl = _n("ComponentDecl", ["name", "generics", "ports"])
 Subprogram = _n("Subprogram", ["kind", "name", "pure", "params", "return_type", "decls", "body", "has_body"],
                 unordered=("decls",))
 PackageInst = _n("PackageInst", ["name", "target", "generic_map"])
+ViewDecl = _n("ViewDecl", ["name", "type_mark", "elements"])
+ViewElem = _n("ViewElem", ["name", "mode"])
+ViewInd = _n("ViewInd", ["mark", "subtype", "array"])
 
 # ---------------------------------------------------------------- statements
 Alt = _n("Alt", ["values", "cond"])
@@ -187,6 +191,6 @@ Configuration = _unit("Configuration", ["entity", "architecture"])
 ContextDecl = _unit("ContextDecl", ["items"])
 
 EXPR_NODES = (Ident, Literal, BitStringLit, PhysicalLit, Unary, Binary, Select, Apply, Slice, Attr,
-              Qualified, Aggregate, Range, Others, Open, Unaffected)
+              Qualified, Aggregate, Range, Others, Open, Unaffected, ExternalName)
 ALL_NODE_CLASSES = tuple(v for v in list(globals().values())
                          if isinstance(v, type) and issubclass(v, Node) and v not in (Node, DesignUnit))

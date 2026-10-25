@@ -1104,16 +1104,21 @@ class ExprMixin:
         out = []
         z = 0
         off = 0
+        actual = {}
         for fname, ft in t.fields:
             ex = parts.get(fname, others)
             if ex is None:
-                v = Val(ft, SigSpec.x(ft.width))
+                v = Val(ft, SigSpec.x(ft.width or 1))
             else:
                 v = self.fit(self.eval(ex, sc, ft), ft, e)
             s = self.sig_of(v)
+            if ft.width is None and v.t.width == s.width and v.t.kind == ft.kind:
+                actual[fname] = v.t          # unconstrained field: the record takes the constraint of the value
             out.append(s)
             z |= v.z << off
             off += s.width
+        if actual:
+            t = T.constrain_fields(t, actual)
         return Val(t, SigSpec.concat(out), None, z)
 
     def agg_array(self, e, sc, t):
@@ -1215,6 +1220,19 @@ class ExprMixin:
     def ev_range_as_val(self, e, sc, hint):
         raise Unsupported("range used as a value")
 
+    def ev_external(self, e, sc, hint):
+        """``<< signal .tb.dut.x : T >>``: the target lives in another module instance, which is elaborated
+        separately; the value is unknown (X) of the declared type."""
+        t = None
+        if e.subtype is not None:
+            try:
+                t = self.resolve_subtype(e.subtype, sc)
+            except Exception:
+                t = None
+        self.diag("UNSUPPORTED_CONSTRUCT", "external name '<< %s %s >>' is not resolved across the hierarchy; "
+                  "read as unknown" % (e.cls, e.path), e)
+        return self.unknown(t if t is not None and t.width else hint)
+
     def ev_skipped(self, e, sc, hint):
         raise Unsupported("skipped construct (%s)" % getattr(e, "kind", ""))
 
@@ -1224,5 +1242,5 @@ _EV = {
     N.PhysicalLit: ExprMixin.ev_physical, N.Select: ExprMixin.ev_select, N.Apply: ExprMixin.ev_apply,
     N.Slice: ExprMixin.ev_slice, N.Attr: ExprMixin.ev_attr, N.Qualified: ExprMixin.ev_qualified,
     N.Aggregate: ExprMixin.ev_aggregate, N.Others: ExprMixin.ev_others, N.Open: ExprMixin.ev_open,
-    N.Range: ExprMixin.ev_range_as_val, N.Skipped: ExprMixin.ev_skipped,
+    N.Range: ExprMixin.ev_range_as_val, N.Skipped: ExprMixin.ev_skipped, N.ExternalName: ExprMixin.ev_external,
 }

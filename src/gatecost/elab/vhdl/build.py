@@ -17,7 +17,7 @@ from .decl import DeclMixin
 from .expr import ExprMixin
 from .fixed import FixedMixin
 from .floatp import FloatMixin
-from .inst import InstMixin, flat_ports
+from .inst import InstMixin, ViewMode, flat_ports
 from .ops import OpsMixin
 from .stmt import StmtMixin
 from .values import Scope, Sym, Val
@@ -143,7 +143,8 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
                     assigned.update(base_names(a.actual))
     hints = {k[5:]: v for k, v in params.items() if k.startswith("$len:")}
     for pn, mode, pt, default in E.entity_ports(ent, esc, hints):
-        mode = (mode or "in").lower()
+        view_dirs = mode.dirs if isinstance(mode, ViewMode) else None
+        mode = "view" if view_dirs is not None else (mode or "in").lower()
         if mode in ("inout", "buffer"):
             direction = "out" if (pn in assigned or mode == "buffer") else "in"
         elif mode == "out":
@@ -153,6 +154,9 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
         nets = []
         for fn, ft in flat_ports(pn, pt):
             signed = bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES
+            if view_dirs is not None:
+                dd = view_dirs.get(fn, "in")
+                direction = ("out" if pn in assigned else "in") if dd == "inout" else ("out" if dd == "out" else "in")
             nets.append(b.port(fn, direction, ft.width, signed))
         sig = SigSpec.concat([n.sig for n in nets])
         s = Sym("obj", pn, pt, sig=sig)
@@ -267,7 +271,10 @@ class _Foreign:
         out = []
         for pn, mode, pt, d in E.entity_ports(self.ent, esc):
             for fn, ft in flat_ports(pn, pt):
-                direction = "in" if mode in ("in", "linkage") else ("out" if mode in ("out", "buffer") else "inout")
+                if isinstance(mode, ViewMode):
+                    direction = mode.dirs.get(fn, "in")
+                else:
+                    direction = "in" if mode in ("in", "linkage") else ("out" if mode in ("out", "buffer") else "inout")
                 out.append((fn, direction, ft.width, bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES))
         return out
 

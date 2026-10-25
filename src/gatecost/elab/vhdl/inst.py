@@ -21,6 +21,16 @@ class ForeignModule:
     """
 
 
+class ViewMode(str):
+    """Mode of a port declared with a mode view: ``.dirs`` maps each flattened leaf (``port.field``) to
+    ``"in"``, ``"out"`` or ``"inout"``."""
+
+    def __new__(cls, dirs):
+        o = str.__new__(cls, "view")
+        o.dirs = dirs
+        return o
+
+
 def flat_ports(name, t):
     if t.kind == "record":
         out = []
@@ -164,7 +174,7 @@ class InstMixin:
 
         for p in ent.ports or ():
             try:
-                pt = self.resolve_subtype(p.subtype, esc)
+                pt = self.port_type(p, esc)
             except Exception:
                 continue
             if pt.kind == "record" and pt.width is None:
@@ -203,11 +213,68 @@ class InstMixin:
                 hints[p.name] = w // ew
         return hints
 
+    # ------------------------------------------------------------------ VHDL-2019 mode views
+    def find_view(self, mark, sc):
+        """``(ViewDecl, declaring scope, converse?)`` of a view name (``v`` or ``v'converse``), or None."""
+        conv = False
+        if isinstance(mark, N.Attr) and mark.name == "converse":
+            conv, mark = True, mark.prefix
+        syms = self.name_syms(mark, sc) if isinstance(mark, (N.Ident, N.Select)) else None
+        for s in syms or ():
+            if s.kind == "view":
+                return s.node, s.scope, bool(s.extra) != conv
+        return None
+
+    def port_type(self, p, esc):
+        """Type of an entity port; a view port takes the record (or array of records) type of its view."""
+        vi = p.subtype
+        if not isinstance(vi, N.ViewInd):
+            return self.resolve_subtype(vi, esc)
+        if vi.subtype is not None:
+            return self.resolve_subtype(vi.subtype, esc)
+        vw = self.find_view(vi.mark, esc)
+        if vw is None:
+            raise Unsupported("unknown view '%s'" % (self.flat_name(vi.mark) or "?"))
+        return self.resolve_subtype(N.SubtypeInd(vw[0].type_mark, None, None, None, False), vw[1])
+
+    def view_port_dirs(self, p, pt, esc):
+        """ViewMode of view port ``p`` of record type ``pt`` (leaf directions), or ``"inout"`` when the view
+        cannot be flattened (array of records)."""
+        vi = p.subtype
+        vw = self.find_view(vi.mark, esc)
+        if vw is None or vi.array or pt.kind != "record":
+            self.ctx.assume("view port '%s' is an array of records or has an unknown view; its direction is "
+                            "taken from its use" % p.name)
+            return "inout"
+        dirs = {}
+        self.view_leaf_dirs(vw[0], vw[1], vw[2], pt, p.name, dirs)
+        return ViewMode(dirs)
+
+    def view_leaf_dirs(self, vnode, vscope, flip, rec_t, prefix, out):
+        elems = {e.name: e.mode for e in vnode.elements}
+        for fname, ft in rec_t.fields:
+            path = prefix + "." + fname
+            m = elems.get(fname, "in")
+            if isinstance(m, N.ViewInd) or (m is not None and not isinstance(m, str)):
+                mark = m.mark if isinstance(m, N.ViewInd) else m
+                sub = self.find_view(mark, vscope)
+                if sub is not None and ft.kind == "record" and not (isinstance(m, N.ViewInd) and m.array):
+                    self.view_leaf_dirs(sub[0], sub[1], flip != sub[2], ft, path, out)
+                    continue
+                for fn, _lt in flat_ports(path, ft):
+                    out[fn] = "inout"
+                continue
+            d = {"in": "in", "linkage": "in", "out": "out", "buffer": "out", "inout": "inout"}.get(m, "in")
+            if flip:
+                d = {"in": "out", "out": "in", "inout": "inout"}[d]
+            for fn, _lt in flat_ports(path, ft):
+                out[fn] = d
+
     def entity_ports(self, ent, esc, hints=None):
         out = []
         for p in ent.ports or ():
             try:
-                pt = self.resolve_subtype(p.subtype, esc)
+                pt = self.port_type(p, esc)
             except Exception:
                 pt = T.T_STD_LOGIC
             if pt.kind == "record" and pt.width is None:
@@ -230,7 +297,10 @@ class InstMixin:
             if pt.width is None or pt.width <= 0:
                 self.ctx.assume("port '%s' of '%s' has no constant width; 1 bit assumed" % (p.name, ent.name))
                 pt = T.T_STD_LOGIC
-            out.append((p.name, p.mode or "in", pt, p.default))
+            mode = p.mode or "in"
+            if isinstance(p.subtype, N.ViewInd):
+                mode = self.view_port_dirs(p, pt, esc)
+            out.append((p.name, mode, pt, p.default))
             esc.declare_unique(Sym("obj", p.name, pt, sig=SigSpec.x(pt.width)))     # visible to later port types
         return out
 
@@ -413,7 +483,17 @@ class InstMixin:
         for pn, mode, pt, default in ports:
             flats = flat_ports(pn, pt)
             lst = pieces.get(pn, [])
-            if mode in ("in", "linkage"):
+            view_in = view_out = None
+            if isinstance(mode, ViewMode):
+                view_in = {fn for fn, _ft in flats if mode.dirs.get(fn, "in") == "in"}
+                view_out = {fn for fn, _ft in flats if mode.dirs.get(fn, "in") != "in"}
+                if view_in and not view_out:
+                    mode = "in"
+                elif view_out and not view_in:
+                    mode = "out"
+            if isinstance(mode, ViewMode):
+                self.map_view_port(pn, mode, pt, default, flats, lst, view_in, sc, inputs, outs, conns)
+            elif mode in ("in", "linkage"):
                 full = None
                 covered = []
                 for part, a in lst:
@@ -462,6 +542,43 @@ class InstMixin:
                         self.diag("UNSUPPORTED_CONSTRUCT", "port '%s' actual is not assignable (%s)" % (pn, ex), a)
         return inputs, outs, conns
 
+    def map_view_port(self, pn, mode, pt, default, flats, lst, view_in, sc, inputs, outs, conns):
+        """Port with a mode view: the in-leaves are fed from the actual, the out-leaves drive it."""
+        covered = []
+        for part, a in lst:
+            if isinstance(a.actual, N.Open):
+                continue
+            try:
+                v = self.fit(self.eval(a.actual, sc, part[3]), part[3], a)
+                sg = self.sig_of(v)
+                if sg.width != part[2]:
+                    sg = sg.resize(part[2], False)
+                covered.append((part[1], sg))
+            except Exception as ex:
+                if getattr(self.ctx, "debug", False):
+                    raise
+                self.diag("UNSUPPORTED_CONSTRUCT", "port '%s' actual skipped (%s)" % (pn, ex), a)
+        bits = SigSpec.x(pt.width)
+        for off, sg in sorted(covered, key=lambda x: x[0]):
+            if off + sg.width <= pt.width:
+                bits = SigSpec.concat([bits.slice(0, off), sg, bits.slice(off + sg.width)])
+        off = 0
+        for fn, ft in flats:
+            if fn in view_in:
+                inputs[fn] = bits.slice(off, ft.width)
+            else:
+                outs[fn] = ft.width
+            off += ft.width
+        for part, a in lst:
+            if isinstance(a.actual, N.Open):
+                continue
+            try:
+                conns.append((pn, flats, part, self.lvalue(a.actual, sc), a))
+            except Exception as ex:
+                if getattr(self.ctx, "debug", False):
+                    raise
+                self.diag("UNSUPPORTED_CONSTRUCT", "port '%s' actual is not assignable (%s)" % (pn, ex), a)
+
     def split_flat(self, flats, bits, inputs):
         off = 0
         for fn, ft in flats:
@@ -470,6 +587,9 @@ class InstMixin:
 
     def connect_outputs(self, conns, res, s):
         for pn, flats, part, lv, a in conns:
+            if any(fn not in res for fn, _ in flats):
+                self.connect_view_outputs(flats, part, lv, res, a)
+                continue
             full = SigSpec.concat([res[fn] for fn, _ in flats])
             piece = full.slice(part[1], part[2])
             if lv.parts is None and lv.mem is None and not lv.dyn:
@@ -493,6 +613,23 @@ class InstMixin:
                 if getattr(self.ctx, "debug", False):
                     raise
                 self.diag("UNSUPPORTED_CONSTRUCT", "instance output to this target is not supported (%s)" % ex, a)
+
+    def connect_view_outputs(self, flats, part, lv, res, a):
+        """Instance outputs of a view port: only the out-leaves (those present in ``res``) drive the actual."""
+        if lv.parts is not None or lv.mem is not None or lv.dyn:
+            self.diag("UNSUPPORTED_CONSTRUCT", "instance output to this target is not supported (view port with an "
+                      "indexed target)", a)
+            return
+        tgt = self.lv_static_sig(lv)
+        off = 0
+        for fn, ft in flats:
+            lo, hi = off, off + ft.width
+            off = hi
+            if fn not in res or hi <= part[1] or lo >= part[1] + part[2]:
+                continue
+            s0 = max(lo, part[1])
+            s1 = min(hi, part[1] + part[2])
+            self.b.connect(tgt.slice(s0 - part[1], s1 - s0), res[fn].slice(s0 - lo, s1 - s0), self.org(a))
 
     # ------------------------------------------------------------------ black boxes / foreign
     def inst_blackbox(self, s, sc, name, comp, label):

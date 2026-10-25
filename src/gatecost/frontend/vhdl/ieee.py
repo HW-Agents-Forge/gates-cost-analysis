@@ -256,7 +256,7 @@ KNOWN_PACKAGES = frozenset(
      ("ieee", "std_logic_1164"), ("ieee", "numeric_std"), ("ieee", "numeric_std_unsigned"),
      ("ieee", "math_real"), ("ieee", "math_complex"), ("ieee", "std_logic_arith"),
      ("ieee", "std_logic_unsigned"), ("ieee", "std_logic_signed"), ("ieee", "std_logic_textio"),
-     ("ieee", "std_logic_misc"),
+     ("ieee", "std_logic_misc"), ("ieee", "numeric_bit"),
      ("ieee", "fixed_pkg"), ("ieee", "float_pkg"), ("ieee", "fixed_float_types"),
      ("ieee_proposed", "fixed_pkg"), ("ieee_proposed", "float_pkg"), ("ieee_proposed", "fixed_float_types")])
 #: recognized and ignored (no effect on the estimate)

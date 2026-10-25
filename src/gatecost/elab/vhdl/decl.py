@@ -187,14 +187,21 @@ class DeclMixin:
             self.decl_attr_spec(d, sc)
         elif k is N.PackageInst:
             self.decl_package_inst(d, sc)
+        elif k is N.ViewDecl:
+            sc.declare(Sym("view", d.name, node=d, scope=sc, extra=False))
 
     def decl_alias(self, d, sc):
         tgt = d.target
+        if isinstance(tgt, N.Attr) and tgt.name == "converse":       # alias slave_view is master_view'converse
+            vw = self.find_view(tgt, sc)
+            if vw is not None:
+                sc.declare(Sym("view", d.name, node=vw[0], scope=vw[1], extra=vw[2]))
+                return
         if isinstance(tgt, (N.Ident, N.Select)):
             syms = self.name_syms(tgt, sc)
-            if syms and syms[0].kind in ("type", "func", "pkg", "comp"):
+            if syms and syms[0].kind in ("type", "func", "pkg", "comp", "view"):
                 for s in syms:
-                    c = Sym(s.kind, d.name, s.t, val=s.val, node=s.node, scope=s.scope)
+                    c = Sym(s.kind, d.name, s.t, val=s.val, node=s.node, scope=s.scope, extra=s.extra)
                     sc.declare(c)
                 return
         t = self.resolve_subtype(d.subtype, sc) if d.subtype is not None else None
@@ -372,6 +379,12 @@ class DeclMixin:
     def decl_obj(self, d, sc, xc, mode):
         t = self.resolve_subtype(d.subtype, sc)
         t = self.state_type(t, d.name)
+        if t.kind == "array" and t.left is not None and t.length == 0:
+            # null array (``std_logic_vector(-1 downto 0)``): no bits, assignments to it are no-ops
+            s = Sym("obj", d.name, t, sig=SigSpec(()))
+            s.mode = mode
+            sc.declare(s)
+            return
         if t.width is None or t.width <= 0:
             if t.kind == "array" and t.left is None and d.init is not None:
                 v = self.eval(d.init, sc, t)
