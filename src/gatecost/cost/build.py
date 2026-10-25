@@ -185,8 +185,10 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         parts = []
         if nv:
             parts.append(cost_op("MUX", {"k": 2, "w": nv}, p))
-        if nca + ncb:
-            parts.append(cost_op("MUX", {"k": 2, "w": nca + ncb, "const_inputs": 1}, p))
+        if e.get("n_xor"):
+            parts.append(cost_op("MUX", {"k": 2, "w": e["n_xor"], "complement": True}, p))
+        if nca + ncb + e.get("n_andor", 0):
+            parts.append(cost_op("MUX", {"k": 2, "w": nca + ncb + e.get("n_andor", 0), "const_inputs": 1}, p))
         if ncc:
             parts.append(cost_op("MUX", {"k": 2, "w": ncc, "const_inputs": 2}, p))
         oc = parts[0] if parts else zero("select")
@@ -243,6 +245,13 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         d, wd = a["depth"], a["width"]
         sync = a.get("read_style") == "sync"
         facts.update(rports=a.get("rports", 1), wports=a.get("wports", 1), read_style=a.get("read_style"))
+        if a.get("rom") and not a.get("wports"):
+            # never written, filled by an initial block / $readmem: a ROM per read port (+ the read register)
+            R = max(a.get("rports", 1), 1)
+            oc = cost_op("ROM", {"depth": d, "width": wd, "contents": a.get("init")}, p).scaled(R)
+            if sync:
+                oc = oc + cost_op("DFF", {"n": wd * R}, p)
+            return oc, f"ROM {d}x{wd}", (d, wd), facts, tags
         oc = cost_op("MEM", {"depth": d, "width": wd, "rports": max(a.get("rports", 1), 1),
                              "wports": max(a.get("wports", 1), 1), "sync_read": sync}, p)
         return oc, f"MEM {d}x{wd}", (d, wd), facts, tags
@@ -281,7 +290,7 @@ def _cost_sum(nd: dict, p: Profile):
         facts["struct"] = {"k": k, "mul": "const"}
         return m + s, f"MAC w{n} const +{nT}", (w,), facts, tags
     n, mm = max(wa, wb), min(wa, wb)
-    oc = cost_op("MAC", {"n": n, "m": mm, "c": w}, p)
+    oc = cost_op("MAC", {"n": n, "m": mm, "c": w, "signed": bool(mul.get("signed"))}, p)
     if nT > 1:
         fa = p.P["FA"] * w * (nT - 1)
         add_max = cost_op("ADD", {"n": w}, p).max * (nT - 1)

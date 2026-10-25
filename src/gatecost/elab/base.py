@@ -46,6 +46,7 @@ class BaseEv(ExprMixin, DeclMixin, StmtMixin):
         self.forced_vars = {}
         self.assign_counts = {}
         self.sync_read_done = set()
+        self.init_mode = False
         self._cur = None
         self.path = ""
 

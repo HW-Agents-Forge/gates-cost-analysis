@@ -75,7 +75,8 @@ def reduce_op(kind: str, n: int, p: Profile) -> OpCost:
 # ---------------------------------------------------------------------------------------
 # selection
 
-def mux_op(k: int, w: int, p: Profile, const_inputs: int = 0, same_inputs: bool = False) -> OpCost:
+def mux_op(k: int, w: int, p: Profile, const_inputs: int = 0, same_inputs: bool = False,
+           complement: bool = False) -> OpCost:
     """k:1 multiplexer of width w with a binary select.
 
     For k == 2, ``const_inputs`` (1 or 2 constant data inputs) turns the mux into AND/OR
@@ -84,6 +85,10 @@ def mux_op(k: int, w: int, p: Profile, const_inputs: int = 0, same_inputs: bool 
     if k <= 1 or same_inputs:
         return zero("select")
     P = p.P
+    if k == 2 and complement:       # s ? ~x : x is x ^ s
+        ty = Acc().add("XOR2", w, P["XOR2"])
+        return finalize(Sc(ty.copy(), ty, ty.scaled(p.sigma_other), {"min": "xor", "typ": "xor", "max": "xor"}, sigma=True),
+                        "select", "good", p)
     if k == 2 and const_inputs == 1:
         return finalize(_all(Acc().add("AND2", w, P["AND2"]), "and_or"), "select", "good", p)
     if k == 2 and const_inputs >= 2:

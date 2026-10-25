@@ -27,6 +27,9 @@ def opinfo(sig: SigSpec) -> dict:
         "sign_rep": sr,
         "tz": min((~zeros & (zeros + 1)).bit_length() - 1, W),
         "const": kv if km == full else None,
+        # sign-extended: the top bits repeat a (non-constant) net bit below them, as the elaborator emits for a
+        # signed operand widened to the context width
+        "sext": sr > 0 and _bit_atom(sig, W - 1)[0] is not None,
         "kmask": km,
         "kval": kv,
     }
@@ -84,6 +87,49 @@ def _same_bits(sa: SigSpec, sb: SigSpec, mask_bits: int) -> int:
     return out
 
 
+def _complement_of(atom: tuple) -> tuple | None:
+    """The atom this net bit is the complement of (``~x``, ``x ^ 1``, ``x ~^ 0``), or None."""
+    net, bit = atom
+    nd = net.driver if net is not None else None
+    if not isinstance(nd, Node) or len(nd.outputs) != 1 or nd.outputs[0] is not net:
+        return None
+    ins = dict(nd.inputs)
+    if nd.op == "NOT":
+        x = _bit_atom(ins["A"], bit)
+        return canon_atom(x) if x[0] is not None else None
+    if nd.op in ("XOR", "XNOR"):
+        a, b = _bit_atom(ins["A"], bit), _bit_atom(ins["B"], bit)
+        flip = 1 if nd.op == "XOR" else 0           # constant that inverts the other operand
+        if b[0] is None and b[1] == flip and a[0] is not None:
+            return canon_atom(a)
+        if a[0] is None and a[1] == flip and b[0] is not None:
+            return canon_atom(b)
+    return None
+
+
+def _mux_special_bits(sa: SigSpec, sb: SigSpec, ss: SigSpec, bits: int) -> tuple[int, int]:
+    """Of the variable bits ``bits`` of a 2:1 mux ``s ? sb : sa``: those whose arms are complements of one another
+    (``s ? ~x : x`` = ``x ^ s``) and those where one arm is the select itself (``s ? s : x`` = ``s | x``,
+    ``s ? x : s`` = ``s & x``).  Returns ``(xor_mask, andor_mask)``; every such bit needs one 2-input gate only."""
+    xm = am = 0
+    sel = _bit_atom(ss, 0) if ss.width == 1 else None
+    sel = canon_atom(sel) if sel is not None and sel[0] is not None else None
+    i = 0
+    m = bits
+    while m:
+        if m & 1:
+            x, y = _bit_atom(sa, i), _bit_atom(sb, i)
+            if x[0] is not None and y[0] is not None:
+                cx, cy = canon_atom(x), canon_atom(y)
+                if _complement_of(x) == cy or _complement_of(y) == cx:
+                    xm |= 1 << i
+                elif sel is not None and (cx == sel or cy == sel):
+                    am |= 1 << i
+        m >>= 1
+        i += 1
+    return xm, am
+
+
 def compute_eff(nd: Node) -> dict:
     """Post-folding widths used by the cost model (COST_MODEL.md 4.2); declared widths
     are kept alongside."""
@@ -124,7 +170,8 @@ def compute_eff(nd: Node) -> dict:
         full = wa + wb if wa and wb else 0
         outw = min(max(dw - shift, 0), full)
         e.update(w=min(dw, W), wa=wa, wb=wb, shift=shift, full=full, out=outw,
-                 truncated=outw < full, signed=bool(nd.attrs.get("sa") or nd.attrs.get("sb")))
+                 truncated=outw < full,
+                 signed=bool(nd.attrs.get("sa") or nd.attrs.get("sb") or a["sext"] or b["sext"]))
     elif op in ("DIV", "MOD"):
         e.update(w=min(dw, W), wa=a["eff"], wb=b["eff"])
     elif op == "POW":
@@ -182,10 +229,13 @@ def compute_eff(nd: Node) -> dict:
             ak, bk = a["kmask"], b["kmask"]
             both_var = free & ~ak & ~bk
             both_var &= ~_same_bits(ins["A"], ins["B"], both_var)
+            xor_bits, andor_bits = _mux_special_bits(ins["A"], ins["B"], ins["S"], both_var)
             const_a = free & ak & ~bk
             const_b = free & bk & ~ak
             both_const = free & ak & bk
-            e.update(w=popcount(free), n_var=popcount(both_var), n_const_a=popcount(const_a),
+            both_var &= ~(xor_bits | andor_bits)
+            e.update(w=popcount(free), n_var=popcount(both_var), n_xor=popcount(xor_bits),
+                     n_andor=popcount(andor_bits), n_const_a=popcount(const_a),
                      n_const_b=popcount(const_b), n_const_both=popcount(both_const),
                      tristate=bool(nd.attrs.get("tristate")))
     elif op in ("PMUX", "PRIORITY"):
@@ -357,7 +407,8 @@ def fuse_datapath(m: ModuleIR, enabled: bool = True) -> int:
                     if child is keep_mul:
                         ma = dict(child.inputs)
                         multerm = (_widen(ma["A"], wroot, bool(child.attrs.get("sa"))),
-                                   _widen(ma["B"], wroot, bool(child.attrs.get("sb"))), s)
+                                   _widen(ma["B"], wroot, bool(child.attrs.get("sb"))), s,
+                                   bool(child.attrs.get("sa") or child.attrs.get("sb")))
                     else:
                         build(child, s)
                 else:
@@ -370,6 +421,7 @@ def fuse_datapath(m: ModuleIR, enabled: bool = True) -> int:
         if multerm:
             inputs += [("MA", multerm[0]), ("MB", multerm[1])]
             attrs["mul_sign"] = multerm[2]
+            attrs["mul_signed"] = multerm[3]
         sumnode = Node(m.next_node_id, "SUM", tuple(inputs), (root.outputs[0],), attrs, root.origin)
         m.next_node_id += 1
         sumnode.members = tuple(sorted(members, key=lambda n: n.id))
@@ -417,7 +469,8 @@ def compute_sum_eff(sn: Node) -> dict:
         ia, ib = opinfo(ins["MA"]), opinfo(ins["MB"])
         wa, wb = max(ia["eff"] - ia["tz"], 0), max(ib["eff"] - ib["tz"], 0)
         mul = {"wa": wa, "wb": wb, "shift": ia["tz"] + ib["tz"], "const_a": ia["const"],
-               "const_b": ib["const"]}
+               "const_b": ib["const"],
+               "signed": bool(sn.attrs.get("mul_signed") or ia["sext"] or ib["sext"])}
         term_effs.append(wa + wb + mul["shift"])
     k = len(term_effs)
     grow = (k - 1).bit_length() if k > 1 else 0

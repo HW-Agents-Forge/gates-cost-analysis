@@ -97,24 +97,51 @@ def _interp(p: Profile, d: int, w: int) -> int | None:
     return max(0, round(v))
 
 
+def _macro_op(D: int, W: int, p: Profile) -> OpCost:
+    """Cost of one memory macro of D x W (from the profile table when it is a full grid)."""
+    table = _interp(p, D, W)
+    flags: tuple[str, ...] = ()
+    if table is not None:
+        cost, fmin, fmax = table, p.F["macro_table_min"], p.F["macro_table_max"]
+    else:
+        m = p.macro
+        cost = m["c0"] + pm(m["c_bit"] * D * W, 1000) + m["c_row"] * D + m["c_col"] * W
+        fmin, fmax = p.F["macro_min"], p.F["macro_max"]
+        flags = ("macro_no_table",)
+    typ = Acc().add_milli("MACRO", cost)
+    sc = Sc(Acc(pm(cost, fmin), dict(typ.counts)), typ, Acc(pm(cost, fmax), dict(typ.counts)),
+            {"min": "macro", "typ": "macro", "max": "macro"}, sigma=True, flags=flags)
+    return finalize(sc, "mem", "poor", p)
+
+
 def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1, sync_read: bool = False) -> OpCost:
-    """D x W memory: flop-based, or a macro when synchronous and large enough."""
+    """D x W memory: flop-based, or ``min(flops, macro)`` per scenario when synchronous.
+
+    A synchronous-read memory may be implemented by a memory compiler.  The smallest macro
+    has ``macro_min_bits`` bits (and 16 words), so a smaller memory is costed as that
+    smallest macro (``D' = max(D, 16, ceil(macro_min_bits / W))``) and the result is the
+    cheaper of the flop array and the macro, scenario by scenario.  Both are non-decreasing
+    in D, hence so is their minimum: there is no cliff at the macro threshold.
+    """
+    flops = _flop_mem_op(depth, width, p, rports, wports, sync_read)
+    if not (p.macro_enable and sync_read):
+        return flops
+    D, W = depth, width
+    macro = _macro_op(max(D, 16, ceil_div(p.macro_min_bits, W)), W, p)
+    pick = {s: ("macro" if getattr(macro, s) < getattr(flops, s) else "flops") for s in ("min", "typ", "max")}
+    if all(v == "flops" for v in pick.values()):
+        return flops
+    src = macro if pick["typ"] == "macro" else flops
+    return OpCost(
+        min(macro.min, flops.min), min(macro.typ, flops.typ), min(macro.max, flops.max),
+        {s: (macro if pick[s] == "macro" else flops).arch[s] for s in pick},
+        src.breakdown, "mem", "poor", src.flags,
+    )
+
+
+def _flop_mem_op(depth: int, width: int, p: Profile, rports: int, wports: int, sync_read: bool) -> OpCost:
     D, W, R, Pw = depth, width, rports, wports
     P = p.P
-    if p.macro_enable and sync_read and D * W >= p.macro_min_bits and D >= 16:
-        table = _interp(p, D, W)
-        flags: tuple[str, ...] = ()
-        if table is not None:
-            cost, fmin, fmax = table, p.F["macro_table_min"], p.F["macro_table_max"]
-        else:
-            m = p.macro
-            cost = m["c0"] + pm(m["c_bit"] * D * W, 1000) + m["c_row"] * D + m["c_col"] * W
-            fmin, fmax = p.F["macro_min"], p.F["macro_max"]
-            flags = ("macro_no_table",)
-        typ = Acc().add_milli("MACRO", cost)
-        sc = Sc(Acc(pm(cost, fmin), dict(typ.counts)), typ, Acc(pm(cost, fmax), dict(typ.counts)),
-                {"min": "macro", "typ": "macro", "max": "macro"}, sigma=True, flags=flags)
-        return finalize(sc, "mem", "poor", p)
     s = clog2(D)
     dec = decode_acc(s, p) if s >= 2 else None
 
@@ -191,25 +218,35 @@ def sop_literals(on: set[int], dc: set[int], nv: int) -> int:
 
 
 def rom_op(depth: int, width: int, p: Profile, contents: list[int] | tuple[int, ...] | None = None) -> OpCost:
-    """D x W constant table. Without ``contents`` every column is assumed to be random logic."""
+    """D x W constant table.  Without ``contents`` every column is assumed to be random logic.
+
+    typ is the cheaper of two textbook implementations:
+
+    * decoder + OR planes: one shared ``D``-output decoder, then each remaining column ORs the
+      words in which it is set (or, through an inverter, clear), ``min(ones, zeros)`` inputs at
+      ``rom_plane`` GE per merged input (NAND4 first level plus the OR tree);
+    * two-level logic per column (``rom_lit`` GE per literal of a minimal sum of products; for
+      random data ``D·log2(D)/6`` literals), which wins for few columns or very small tables.
+
+    min is ``rom_min`` times typ, max the all-columns MUX2 tree (or typ if larger).
+    """
     D, W = depth, width
     if D <= 1:
         return zero("mem", "poor")
     s = clog2(D)
     P = p.P
     mux_hi = ceil_div(D, 2) * P["MUX2"]
-    generic = rdiv(p.C["rom_col"] * D * 1000, ilog2_fix(D))
+    plane_unit = p.C["rom_plane"]
+    lit_unit = p.C["rom_lit"]
 
-    def col_cost(lits: int | None) -> tuple[int, int, int]:
-        ty = generic if lits is None else lits * p.C["rom_lit"]
-        return pm(ty, p.F["rom_min"]), ty, max(mux_hi, ty)
-
-    lo = ty = hi = 0
     inv = 0
     cols = 0
+    plane = 0            # milli-GE of the OR-plane inputs of all remaining columns
+    sop = 0              # milli-GE of the per-column two-level implementation
     if contents is None:
-        lo, ty, hi = (v * W for v in col_cost(None))
         cols = W
+        plane = W * rdiv(D * plane_unit, 2)
+        sop = W * rdiv(D * ilog2_fix(D) * lit_unit, 6000)
     else:
         words = list(contents)[:D]
         care = len(words)
@@ -232,13 +269,21 @@ def rom_op(depth: int, width: int, p: Profile, contents: list[int] | tuple[int, 
                 continue
             seen.append(col)
             cols += 1
-            lits = None
+            ones = sum(col)
+            plane += min(ones, care - ones) * plane_unit
             if s <= 6:
                 on = {i for i, b in enumerate(col) if b}
                 off = {i for i, b in enumerate(col) if not b}
-                lits = min(sop_literals(on, dc, s), sop_literals(off, dc, s))
-            a, b, c = col_cost(lits)
-            lo, ty, hi = lo + a, ty + b, hi + c
+                sop += min(sop_literals(on, dc, s), sop_literals(off, dc, s)) * lit_unit
+            else:
+                sop += rdiv(D * ilog2_fix(D) * lit_unit, 6000)
+    ty = 0
+    if cols:
+        dec = decode_acc(s, p).typ.total if s >= 2 else P["INV"]
+        textbook = dec + plane
+        ty = min(textbook, sop)
+    lo = pm(ty, p.F["rom_min"])
+    hi = max(cols * mux_hi, ty)
     acc_lo, acc_ty, acc_hi = Acc(lo, {}), Acc(ty, {}), Acc(hi, {})
     for a in (acc_lo, acc_ty, acc_hi):
         a.add("INV", inv, P["INV"])

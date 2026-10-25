@@ -134,5 +134,21 @@ def _analyze_ir(m: ModuleIR, fusion: bool, sharing: bool) -> ModuleIR:
     if order is None:
         order, _cyc = topo_order(m)
     compute_keys(m, order)
+    _report_unobservable(m)
     m.analyzed = True
     return m
+
+
+def _report_unobservable(m: ModuleIR) -> None:
+    """INFO diagnostic: logic and state that reach no output cost nothing (so, for instance, adding a counter whose
+    value nobody reads changes nothing)."""
+    m.diagnostics = [d for d in m.diagnostics if d.code != "UNOBSERVABLE_LOGIC"]
+    r, o = m.unobservable["regs"], m.unobservable["ops"]
+    if r or o:
+        parts = []
+        if r:
+            parts.append(f"{r} unobservable register{'s' if r != 1 else ''}/memor{'ies' if r != 1 else 'y'}")
+        if o:
+            parts.append(f"{o} unobservable operation{'s' if o != 1 else ''}")
+        m.diag("UNOBSERVABLE_LOGIC", " and ".join(parts) + " removed: logic that reaches no output, register or "
+               "memory read costs 0", "info", False, m.origin)

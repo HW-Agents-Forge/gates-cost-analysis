@@ -135,9 +135,12 @@ class Exact(unittest.TestCase):
         a = cost_op("MEM", {"depth": 1024, "width": 32}, P)
         self.assertEqual(a.arch["typ"], "flop_array")
         self.assertAlmostEqual(a.typ / 1000, ref.mem_flop(1024, 32)[1], delta=0.01)
-        # too small, too shallow, macros disabled
-        self.assertEqual(cost_op("MEM", {"depth": 8, "width": 1024, "sync_read": True}, P).arch["typ"], "flop_array")
-        self.assertEqual(cost_op("MEM", {"depth": 64, "width": 32, "sync_read": True}, P).arch["typ"], "flop_array")
+        # small memories: the cheaper of the flop array and the smallest macro (padded to macro_min_bits, 16 words)
+        self.assertEqual(cost_op("MEM", {"depth": 16, "width": 8, "sync_read": True}, P).arch["typ"], "flop_array")
+        small = cost_op("MEM", {"depth": 64, "width": 32, "sync_read": True}, P)
+        pad = 3000 + 0.6 * 128 * 32 + 4 * 128 + 30 * 32          # 128 x 32 = macro_min_bits
+        self.assertEqual(small.arch["typ"], "macro")
+        self.assertAlmostEqual(small.typ / 1000, pad, delta=0.01)
         off = load_profile("generic-asic", {"memory": {"macro_enable": False}})
         self.assertEqual(cost_op("MEM", {"depth": 1024, "width": 32, "sync_read": True}, off).arch["typ"], "flop_array")
 
@@ -166,7 +169,9 @@ class Exact(unittest.TestCase):
         self.assertEqual(three.min, one.min + 670)
         # without contents every column is random logic: typ = 2.0 D / log2 D per column
         r = cost_op("ROM", {"depth": 64, "width": 8}, P)
-        self.assertAlmostEqual(r.typ / 1000, 8 * 2.0 * 64 / 6, delta=0.05)
+        # = min(decoder + OR planes, two-level logic); decoder 64 + 8 columns x 32 ones x 0.55
+        dec = 64 * 1.33 + (8 + 8) * 1.33
+        self.assertAlmostEqual(r.typ / 1000, dec + 8 * 32 * 0.55, delta=0.05)
         self.assertAlmostEqual(r.min / 1000, r.typ / 2000, delta=0.01)
         self.assertEqual(r.quality, "poor")
 

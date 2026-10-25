@@ -190,6 +190,7 @@ class DeadLogic(unittest.TestCase):
         m.b.blackbox("pll", "u_pll", {"x": t.s}, {})
         mem = m.b.memory("ram", 16, 8)
         mem.write(a.s[0:4], t.s, en=SigSpec.const(1, 1), clk=clk.s)
+        m.out("q", E(m, mem.read(a.s[0:4])))        # a memory is live only when a read port is observed
         ir = m.done()
         self.assertEqual(len(nodes_of(ir, "ADD")), 1)
         self.assertEqual(len(nodes_of(ir, "BLACKBOX")), 1)

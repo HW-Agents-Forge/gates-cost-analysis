@@ -308,9 +308,23 @@ def pow_op(n: int, e: int, p: Profile, out: int | None = None) -> OpCost:
 # ---------------------------------------------------------------------------------------
 # dividers
 
+def div_rows(n: int, m: int) -> int:
+    """Subtract/select cells of an n-bit by m-bit unsigned array divider: ``sum_i min(i + 1, m)``.
+
+    Row ``i`` (one quotient bit) works on a partial remainder that holds only ``i + 1`` significant bits (the
+    dividend is zero-extended, so the upper bits of the first rows are constant zero).  Those rows reduce to a
+    comparison of the top divisor bits (a shared OR chain) and a subtract/restore of the low ``i + 1`` bits, so the
+    array is triangular while ``i + 1 < m`` and rectangular afterwards.
+    """
+    r = min(n, m)
+    return r * (r + 1) // 2 + (n - r) * m
+
+
 def _div_core(n: int, m: int, p: Profile) -> OpCost:
-    lo = Acc().add("FA", n * (m + 1), p.P["FA"]).add("XOR2", n * (m + 1), p.P["XOR2"])
-    ty = Acc().add("FA", n * (m + 1), p.P["FA"]).add("MUX2", n * m, p.P["MUX2"]).scaled(p.F["div_typ"])
+    t = div_rows(n, m)
+    chain = Acc().add("OR_IN", m, p.C["red_and_typ"])           # shared "upper divisor bits non-zero" prefix chain
+    lo = Acc().add("FA", t + n, p.P["FA"]).add("XOR2", t + n, p.P["XOR2"]).plus(chain)
+    ty = Acc().add("FA", t + n, p.P["FA"]).add("MUX2", t, p.P["MUX2"]).plus(chain).scaled(p.F["div_typ"])
     hi = ty.scaled(p.F["div_max"])
     arch = {"min": "nonrestoring", "typ": "restoring", "max": "restoring_fast"}
     return finalize(Sc(lo, ty, hi, arch, sigma=True), "div", "poor", p)

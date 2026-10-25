@@ -238,6 +238,18 @@ class StmtMixin:
         return True
 
     # -- stores --------------------------------------------------------------------
+    def record_init(self, p, piece: SigSpec):
+        """A constant write to a memory word inside an initial block: remember it as the memory's contents."""
+        mem = p.mem
+        a = p.addr.const_value() if p.addr is not None else None
+        v = piece.const_value()
+        if a is None or a.xmask or v is None or v.xmask or p.dyn:
+            mem.init_unknown = True
+            return
+        word = mem.init.get(a.value, 0)
+        m = ((1 << p.w) - 1) << p.off
+        mem.init[a.value] = (word & ~m) | ((v.value << p.off) & m)
+
     def store_parts(self, parts, sig: SigSpec, nb: bool):
         pos = 0
         for p in reversed(parts):
@@ -247,6 +259,9 @@ class StmtMixin:
 
     def store(self, p, piece: SigSpec, nb: bool):
         blk = self.blk
+        if p.mem is not None and self.init_mode:
+            self.record_init(p, piece)
+            return
         if p.mem is not None:
             mem = p.mem
             partial = bool(p.off) or p.w != mem.width or bool(p.dyn)
@@ -756,6 +771,12 @@ class StmtMixin:
 
     def x_callstmt(self, s: A.CallStmt):
         call = s.call
+        if isinstance(call, A.SysCall):                  # ``$readmemh("f", rom)`` in an initial block: unknown contents
+            if self.init_mode and len(call.args) > 1 and isinstance(call.args[1], A.Ident):
+                sym = self.lookup(call.args[1].name)
+                if getattr(sym, "mem", None) is not None:
+                    sym.mem.init_unknown = True
+            return
         if not isinstance(call, A.Call):
             return
         f = self.find_func(call)

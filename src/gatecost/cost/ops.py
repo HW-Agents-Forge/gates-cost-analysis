@@ -120,7 +120,7 @@ _reg(logic.SHIFTS, lambda op, a, p: logic.shift_op(op, _int(a, "n"), _int(a, "s"
 _reg(BITWISE_OPS, lambda op, a, p: logic.bitwise_op(op, _int(a, "n", "w", "width"), p))
 _reg(CMP_OPS, lambda op, a, p: _cmp(op, a, p))
 _reg(tuple(REDUCE_OPS), lambda op, a, p: logic.reduce_op(REDUCE_OPS[op], _int(a, "n", "w", "width"), p))
-_reg(("MUX",), lambda op, a, p: logic.mux_op(_int(a, "k"), _int(a, "w", "n"), p, _int(a, "const_inputs", default=0, lo=0), bool(a.get("same_inputs"))))
+_reg(("MUX",), lambda op, a, p: logic.mux_op(_int(a, "k"), _int(a, "w", "n"), p, _int(a, "const_inputs", default=0, lo=0), bool(a.get("same_inputs")), bool(a.get("complement"))))
 _reg(("PMUX",), lambda op, a, p: logic.pmux_op(_int(a, "k"), _int(a, "w", "n"), p))
 _reg(("PRIORITY",), lambda op, a, p: logic.priority_op(_int(a, "k"), _int(a, "w", "n"), p))
 _reg(("DECODE",), lambda op, a, p: logic.decode_op(_int(a, "s", lo=0), p))
