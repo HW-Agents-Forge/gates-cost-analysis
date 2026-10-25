@@ -865,6 +865,8 @@ _BUILTIN = {
 
 _BUILTIN.update(FIXED_BUILTINS)
 _BUILTIN.update(FLOAT_BUILTINS)
+#: names of the fixed_pkg / float_pkg helpers: any user function of that name takes precedence over the model
+OpsMixin.USER_FIRST = frozenset(FIXED_BUILTINS) | frozenset(FLOAT_BUILTINS)
 _EV[N.Unary] = OpsMixin.ev_unary
 _EV[N.Binary] = OpsMixin.ev_binary
 

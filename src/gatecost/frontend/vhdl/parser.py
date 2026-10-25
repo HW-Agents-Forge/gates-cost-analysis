@@ -1602,7 +1602,7 @@ class Parser:
                 self.info_skip("PSL directive", t)
                 self.sync(())
                 return N.Skipped("psl", None, line=t.line, col=t.col)
-        if k not in ("id", "xid") and not (k == "op" and t.val == "("):
+        if k not in ("id", "xid") and not (k == "op" and t.val in ("(", "<<")):
             self.err("unexpected %s in concurrent statement" % self.describe(t))
         target = self.parse_target()
         if self.kw("generic", "port") and isinstance(target, (N.Ident, N.Select)):
@@ -2032,7 +2032,7 @@ class Parser:
             if v == "with":
                 return self.parse_selected(label, False)
             self.err("unexpected %s in sequential statement" % self.describe(t))
-        if k not in ("id", "xid") and not (k == "op" and t.val == "("):
+        if k not in ("id", "xid") and not (k == "op" and t.val in ("(", "<<")):
             self.err("unexpected %s in sequential statement" % self.describe(t))
         target = self.parse_target()
         if self.op("<="):

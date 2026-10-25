@@ -527,7 +527,7 @@ class ExprMixin:
                 return T.BUILTIN_TYPES[mark.name]
             if isinstance(mark, N.Select) and mark.suffix in T.BUILTIN_TYPES:
                 return T.BUILTIN_TYPES[mark.suffix]
-            self.diag("UNSUPPORTED_CONSTRUCT", "unknown type '%s'" % (self.flat_name(mark) or "?"), mark)
+            self.diag("UNSUPPORTED_CONSTRUCT", "unknown type '%s'" % (".".join(self.flat_name(mark) or ["?"])), mark)
             return T.T_STD_LOGIC
         if isinstance(mark, N.Attr):
             nm = mark.name
@@ -790,7 +790,8 @@ class ExprMixin:
             if k == "type":
                 return self.type_convert(syms[0].t, args, sc, e)
             if k == "func":
-                if isinstance(p, N.Ident) and self.has_builtin(p.name) and not self.user_overload_fits(syms, args, sc):
+                if isinstance(p, N.Ident) and self.has_builtin(p.name) and p.name not in self.USER_FIRST \
+                        and not self.user_overload_fits(syms, args, sc):
                     return self.builtin_call(p.name, args, e, sc, hint)
                 return self.call_user(syms, args, e, sc, hint)
             if k == "mem":
@@ -980,6 +981,8 @@ class ExprMixin:
     def index_pos_sig(self, t, iv, node):
         """Position (from the rightmost element) of a dynamic index, as an unsigned SigSpec, and element count."""
         isg, sg = self.num(iv)
+        if not t.length:
+            raise Unsupported("index into a null array (%s %s %s)" % (t.left, t.dir, t.right))
         lo = min(t.left, t.right)
         n = t.length
         if sg:

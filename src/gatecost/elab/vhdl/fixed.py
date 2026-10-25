@@ -386,6 +386,8 @@ class FixedMixin:
         return Val(T.vec_type(cls, w), r) if w > 0 else Val(T.constrain(T.vec_type(cls, 1), -1, 0, "downto"), SigSpec(()))
 
     def bi_fx_to_real(self, name, args, e, sc, hint):
+        if len(args) != 1:
+            raise Unsupported("to_real with %d arguments" % len(args))
         (x,) = self.call_args(name, args, sc)[:1]
         if x.t.kind == "real":
             return x
