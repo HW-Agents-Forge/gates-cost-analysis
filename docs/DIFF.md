@@ -11,7 +11,17 @@ Both answers must be exact in the arithmetic sense (contributors add up to the t
 
 ## 1. Inputs
 
-The differ takes two **cost trees**, `before` and `after` (`SPEC.md` §5.5), produced with the same profile, defines, and top module. If the profile, defines, or top module differ, the differ still runs but emits a `CONFIG_MISMATCH` diagnostic and caps confidence at `low`.
+The differ takes two **cost trees**, `before` and `after` (`SPEC.md` §5.5), produced with the same profile, defines, and top module. If the profile, defines, parameters, or top module differ, the differ still runs but emits a `CONFIG_MISMATCH` diagnostic and caps confidence at `low`.
+
+### 1.1 Configuration of each side
+
+Normally one `gatecost.toml` (plus the command line) configures both sides. When the project file itself differs between the sides, each side is analyzed with its own:
+
+- **git (`--base-ref`, default `HEAD`) and `--since-snapshot`:** the baseline side reads the file as of the base reference or snapshot (absent there: no project file); the current side reads the working tree's. If the two are byte-identical nothing changes. A baseline file that cannot be parsed is replaced by the current one, with a `CONFIG_MISMATCH` warning.
+- **`--before DIR --after DIR`:** without `--config`, each side reads the `gatecost.toml` of its own directory; a directory without one uses the project file found for the invocation (`--root`/working directory). `--config FILE` serves both sides.
+- Command-line options (`--top`, `--define`, `--param`, `--incdir`, ...) apply to both sides and win over either file.
+
+`CONFIG_MISMATCH` names exactly what differs: `top` (both sides pin a different module), `defines.NAME`, `params.NAME`, `sources`, `incdirs`, `filelists`, `exclude`, `limits`, `profile`. Such a diff is never answered from the changed-cone shortcut. A relative `--incdir` or `--filelist` of a `--before`/`--after` run that does not point into the `--after` tree is resolved against each side's own directory.
 
 Cost-tree nodes form the hierarchy `design → module instance → operation`. Each operation node carries:
 

@@ -343,7 +343,7 @@ class VhdlElaborator:
                 ctx.diag("MISSING_UNIT", "top entity '%s' not found" % top)
             for ent in ents:
                 try:
-                    key = self.elab_root(ent, generics if (top is not None or len(ents) == 1) else None)
+                    key = self.elab_root(ent, generics)
                 except RecursionError:
                     ctx.diag("LIMIT_REACHED", "recursion limit while elaborating '%s'" % ent.name, ent.file, ent.line, ent.col)
                     key = None

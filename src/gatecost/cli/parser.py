@@ -35,6 +35,8 @@ class _Parser(argparse.ArgumentParser):
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--top", metavar="MODULE", help="top module or entity")
     p.add_argument("--define", action="append", metavar="NAME[=VALUE]", help="preprocessor define; repeatable")
+    p.add_argument("--param", action="append", metavar="NAME=VALUE",
+                   help="top-level parameter or generic value; repeatable")
     p.add_argument("--incdir", action="append", metavar="DIR", help="include directory; repeatable")
     p.add_argument("--filelist", action="append", metavar="FILE", help="read a .f filelist; repeatable")
     p.add_argument("--profile", metavar="NAME|PATH", help="cost profile (default generic-asic)")
@@ -171,7 +173,7 @@ def help_text(topic: str | None) -> str:
     if p is None:
         raise GatecostError("BAD_ARGUMENT", f"unknown command {topic!r}")
     lines = [f"usage: gatecost {topic} [options]"]
-    shared = {"--top", "--define", "--incdir", "--filelist", "--profile", "--config", "--root", "--format",
+    shared = {"--top", "--define", "--param", "--incdir", "--filelist", "--profile", "--config", "--root", "--format",
               "--max-lines", "--verbose", "--quiet", "--no-meta", "--no-cache", "--budget"}
     compact = topic in ("diff", "cost", "snapshot")
     common: list[str] = []

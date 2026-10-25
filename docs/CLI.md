@@ -34,6 +34,7 @@ This document defines every command, option, the `estimate` input language, and 
 | `PATH ...` | Restrict the **source set** to these files or directories (default: discovery per `DISTRIBUTION.md` §4). For `diff`, the whole source set is still used to resolve the hierarchy when the paths are a subset; only changes inside the paths are reported. |
 | `--top MODULE` | Top module or entity. |
 | `--define NAME[=VALUE]` | Preprocessor define (Verilog/SystemVerilog) or constant override for conditional elaboration; repeatable. |
+| `--param NAME=VALUE` | Value of a parameter (Verilog/SystemVerilog) or generic (VHDL, case-insensitive) of the **top** unit; repeatable. Without it a parameter keeps its default, and one without a default is assumed to be 32 (`UNRESOLVED_PARAM`). See §2.1.1. |
 | `--incdir DIR` | Include directory; repeatable. |
 | `--filelist FILE` | Read sources, include directories and defines from a `.f` filelist; repeatable. |
 | `--profile NAME\|PATH` | Cost profile (default `generic-asic`). |
@@ -45,6 +46,12 @@ This document defines every command, option, the `estimate` input language, and 
 | `--no-cache` | Neither read nor write any cache. |
 | `--no-meta` | Omit the `meta` object in `json`. |
 | `--budget GE` | Exit with code 1 if the resulting total (after the change, for `diff`) exceeds `GE`. |
+
+#### 2.1.1 `--param` values
+
+`VALUE` is typed: an integer (decimal, `0x`, `0b`, `0o`, underscores allowed, optionally signed), a based Verilog literal (`8'h1f`, `4'sb1010`; its width is kept, truncating the value to it), a real (`0.5`, `1e-3`), a boolean (`true`/`false`, for VHDL `boolean` generics and 0/1 Verilog parameters) or a string (`fast`; quote it, e.g. `'"123"'`, to keep text that looks like another type). The value reaches the top unit unchanged: a `real` Verilog parameter keeps its real value, a VHDL `string` generic gets the characters.
+
+A name that the top unit does not declare is ignored with a warning `UNKNOWN_PARAMETER` (`unknown parameter 'X' of top 'T'; known: A, B`); a malformed argument (`--param W`, `--param 1x=3`) is `BAD_ARGUMENT`. Only top-level parameters can be set (hierarchical names are rejected); parameters of instantiated modules come from the instantiations. With several top candidates and no `--top`, a name is applied to every candidate that declares it. The values take part in every cache key, appear in the JSON `config.params`, and are compared by `diff` (`CONFIG_MISMATCH`). `snapshot` records them like the defines.
 
 ### 2.2 `diff`
 
@@ -87,7 +94,7 @@ gatecost snapshot --list                    list snapshots (id, file count, modu
 gatecost snapshot --delete ID|--all         delete snapshots
 ```
 
-A snapshot stores the sources (not the cache), the defines, and the profile name in `<project>/.gatecost/snapshots/`. At most 10 snapshots are kept (oldest removed first); `--keep N` changes the limit.
+A snapshot stores the sources (not the cache), the defines, the `--param` values, and the profile name in `<project>/.gatecost/snapshots/`. At most 10 snapshots are kept (oldest removed first); `--keep N` changes the limit.
 
 ### 2.5 `init`
 
@@ -205,6 +212,7 @@ filelists = ["rtl/files.f"]
 incdirs = ["rtl/include"]
 exclude = ["rtl/legacy/**", "build", "sim"]   # added to the built-in exclusions
 defines = { SYNTHESIS = "1", WIDTH = "32" }
+params = { DEPTH = 1024, DATA_WIDTH = 8 }    # parameters / generics of the top unit; also a [project.params] table
 languages = ["verilog", "vhdl"]           # restrict front-ends (default: both)
 
 [project.libraries]                       # VHDL library mapping (default: all in "work")
@@ -246,6 +254,8 @@ Rules:
 
 - `sources` globs support `**`. Paths use forward slashes on all platforms.
 - A relative path in the file is relative to the file's directory.
+- `[project.params]` values are TOML integers, floats, booleans or strings; a string goes through the `--param` value grammar (§2.1.1, so `"8'h1f"` is a based literal and `"\"123\""` the string `123`). `--param` wins over the file per name. A malformed entry is `BAD_CONFIG`.
+- With `diff`, the file is read for each side (see `DIFF.md` §1.1): editing it between the baseline and now is a configuration change, not a silent no-op.
 - `[cost.override]` accepts the same tables as a profile file (`COST_MODEL.md` §6) and is applied on top of the selected profile.
 - The file contains no executable content; the tool never evaluates expressions from it.
 

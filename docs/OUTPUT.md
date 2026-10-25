@@ -157,7 +157,7 @@ Every JSON output is one object:
   "command": "diff",
   "status": "ok",
   "profile": {"name": "generic-asic", "nand2_area_um2": 0.798},
-  "config": {"top": "top_core", "defines": {"SYNTHESIS": "1"}, "sources": 42},
+  "config": {"top": "top_core", "defines": {"SYNTHESIS": "1"}, "params": {"DATA_WIDTH": 8}, "sources": 42},
   "result": {},
   "diagnostics": [],
   "meta": {"elapsed_ms": 212, "cache": "warm"}

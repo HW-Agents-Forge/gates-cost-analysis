@@ -66,6 +66,7 @@ class Ctx:
         self.inprogress = set()
         self.pkg_scopes = {}
         self.stubbed = set()
+        self.param_known = {}          # top module -> its overridable parameters (when overrides are given)
         self.total_inst = 0
         self._inst_warned = False
         self.opts = {"const_ports": propagate_const_ports}
@@ -284,6 +285,44 @@ class Ctx:
         return b.finalize(check="off")
 
 
+def verilog_param_value(v):
+    """The elaboration value of a typed parameter override (python bool/int/float/str, a based literal, an IR
+    constant), or None when it has no Verilog form."""
+    from gatecost.params import Lit
+
+    if isinstance(v, bool):
+        v = int(v)
+    if isinstance(v, Lit):
+        return V(SigSpec.const(v.value & mask(v.width), v.width), v.signed)
+    if isinstance(v, int):
+        w = 32 if -(1 << 31) <= v < (1 << 31) else v.bit_length() + 1
+        return V(SigSpec.const(v & mask(w), w), True)
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")):
+            return V(SigSpec.const(0, 32), True, v)
+        return V(SigSpec.const(int(round(v)) & mask(32), 32), True, v)
+    if isinstance(v, str):
+        bits = 0
+        for ch in v:
+            bits = (bits << 8) | (ord(ch) & 0xFF)
+        return V(SigSpec.const(bits, max(1, 8 * len(v))), False)
+    if isinstance(v, Const):
+        return V(SigSpec((v,)), False)
+    return None
+
+
+def top_overrides(mod, params):
+    """Overrides of the non-type parameters of ``mod`` named in ``params`` (exact names, as in Verilog)."""
+    ov = {}
+    for pd in param_decls(mod):
+        if pd.is_type or pd.name not in params:
+            continue
+        v = verilog_param_value(params[pd.name])
+        if v is not None:
+            ov[pd.name] = v
+    return ov
+
+
 class VerilogForeign:
     """Foreign-module protocol (see ``gatecost.elab.vhdl``) for a Verilog/SystemVerilog module."""
 
@@ -307,12 +346,9 @@ class VerilogForeign:
             if pd.is_type:
                 continue
             v = (params or {}).get(pd.name, low.get(pd.name.lower()))
-            if isinstance(v, bool):
-                v = int(v)
-            if isinstance(v, int):
-                ov[pd.name] = V(SigSpec.const(v & mask(32), 32), True)
-            elif isinstance(v, Const):
-                ov[pd.name] = V(SigSpec((v,)), False)
+            v = verilog_param_value(v)
+            if v is not None:
+                ov[pd.name] = v
         return self.ctx.get_header(self.mod, ov)
 
     def ports(self, params):
@@ -366,7 +402,7 @@ def needed_modules(parsed, changed, tops, ctx=None):
     return need
 
 
-def elaborate_verilog(parsed, ctx: Ctx, top: str | None, exclude_lower=(), have_other_language=False):
+def elaborate_verilog(parsed, ctx: Ctx, top: str | None, exclude_lower=(), have_other_language=False, params=None):
     """Elaborate the roots (or ``top``) of a parsed design into ``ctx.design``.
 
     Returns ``(top_name, top_keys, tops)``."""
@@ -397,6 +433,8 @@ def elaborate_verilog(parsed, ctx: Ctx, top: str | None, exclude_lower=(), have_
     keys = {}
     for nm in chosen:
         mod = ctx.modmap[nm]
-        hdr = ctx.get_header(mod, {})
+        hdr = ctx.get_header(mod, top_overrides(mod, params) if params else {})
+        if params:
+            ctx.param_known[nm] = [pd.name for pd in param_decls(mod) if not pd.is_type]
         keys[nm] = ctx.ensure_module(mod, hdr, {}, 0, None)
     return chosen[0] if chosen else None, keys, tops

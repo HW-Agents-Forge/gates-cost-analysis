@@ -477,7 +477,8 @@ def build_cost_tree(design, profile: Profile, *, config: dict | None = None,
         for a in design.modules[key].assumptions:
             if a not in assumptions:
                 assumptions.append(a)
-    cfg = {"profile": profile.name, "defines": dict(config.get("defines") or {}), "top": config.get("top")}
+    cfg = {"profile": profile.name, "defines": dict(config.get("defines") or {}), "top": config.get("top"),
+           "params": list(config.get("params") or [])}
     for k, v in config.items():
         cfg.setdefault(k, v)
     return DesignCostTree(top_key=design.top, modules=modules, instance_counts=counts,

@@ -9,13 +9,15 @@ import shutil
 import stat
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .baseline import _DirTree, restrict_prefixes, select_sources
 from .cache import inside_skill_dir, project_key, user_state_dir, writable_state_dir
 from .discovery import language_of
 from .errors import GatecostError
+from .params import canon as canon_params
+from .params import to_text
 from .paths import state_dir
 from .result import Diagnostic
 
@@ -32,6 +34,7 @@ class SnapshotInfo:
     profile: str
     modules: int
     created_ns: int
+    params: dict = field(default_factory=dict)    # name -> value text (see gatecost.params)
 
     @property
     def files_dir(self) -> Path:
@@ -86,6 +89,7 @@ def _load(d: Path) -> SnapshotInfo | None:
         return SnapshotInfo(
             id=str(meta["id"]), dir=d, files=list(meta["files"]), defines=dict(meta.get("defines", {})),
             profile=str(meta.get("profile", "")), modules=int(meta.get("modules", 0)), created_ns=int(meta["created_ns"]),
+            params=dict(meta.get("params", {})),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -138,7 +142,8 @@ def create(settings, paths=(), keep: int | None = None) -> tuple[SnapshotInfo, l
     if not rtl_rels:
         raise GatecostError("NO_SOURCES", "no RTL sources found to snapshot")
     h = hashlib.blake2b(digest_size=16)
-    for part in (json.dumps(sorted(settings.defines.items())), settings.profile):
+    extra = [json.dumps(canon_params(settings.params))] if getattr(settings, "params", None) else []
+    for part in (json.dumps(sorted(settings.defines.items())), settings.profile, *extra):
         h.update(part.encode() + b"\0")
     contents: dict[str, bytes] = {}
     modules = 0
@@ -167,6 +172,7 @@ def create(settings, paths=(), keep: int | None = None) -> tuple[SnapshotInfo, l
             p.write_bytes(data)
             p.chmod(0o444)
         meta = {"id": sid, "created_ns": time.time_ns(), "files": sorted(contents), "defines": dict(settings.defines),
+                "params": {k: to_text(v) for k, v in getattr(settings, "params", {}).items()},
                 "profile": settings.profile, "modules": modules, "root": str(root)}
         (tmp / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
         final = snaps / sid
