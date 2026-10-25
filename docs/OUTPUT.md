@@ -294,6 +294,7 @@ Errors are never mixed with partial results in `agent` format: a failed run prin
 | `BAD_CONFIG` | 2 | Invalid `gatecost.toml` or profile. |
 | `TOP_NOT_FOUND` | 3 | The requested top module does not exist. |
 | `INTERNAL` | 3 | Unexpected internal failure (the message includes a short report identifier; details on standard error). |
+| `INTERNAL` (cache pack gone) | 3 | A cache pack vanished or was rewritten during the run (`gatecost clean`, or pruning by another process). The message names the pack and the remedy (`rerun with --no-cache`). |
 | `BUDGET_EXCEEDED` | 1 | A `--budget` or `--fail-on-increase` threshold was crossed (a normal result is still printed first). |
 
 ## 7. Tests
