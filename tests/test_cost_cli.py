@@ -330,7 +330,7 @@ class Profiles(unittest.TestCase):
         self.assertEqual(code, 0)
         doc = __import__("tomllib").loads(out)
         self.assertEqual(doc["meta"]["name"], "generic-asic")
-        self.assertEqual(doc["primitives"]["FA"], 5.33)
+        self.assertEqual(doc["primitives"]["FA"], 6.67)
         self.assertIn("coefficients", doc)
 
     def test_show_applies_extends(self):

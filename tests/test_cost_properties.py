@@ -116,6 +116,7 @@ class Monotonic(unittest.TestCase):
             self.assertMonotone(lambda n: c3("MUL", n=n, m=fixed, signed=True), label="MUL signed")
             self.assertMonotone(lambda t: c3("MUL", n=24, m=16, trunc=t), range(1, 41), label="MUL trunc")
             self.assertMonotone(lambda n: c3("MAC", n=n, m=fixed), label="MAC")
+            self.assertMonotone(lambda e: c3("MAC", n=16, m=fixed, c=32, extra=e), range(0, 12), label="MAC extra")
 
     def test_selection_and_decoding(self):
         for k in (1, 2, 3, 4, 5, 8, 17):

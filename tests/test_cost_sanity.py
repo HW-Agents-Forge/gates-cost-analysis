@@ -55,7 +55,8 @@ REFERENCE = [
 
 # Round 2: twenty more designs with analytically known counts (shift registers, LFSR, gray code, saturation, encoders,
 # popcount, abs/neg, comparator chain, CAM, register file, rotator, CRC, Booth, ring/Johnson counters).  The textbook
-# value is written next to each design as a sum of primitives (FA 5.33, HA 3.33, XOR2 2, MUX2 2.33, DFF 5.67, ...).
+# value is written next to each design as a sum of primitives (FA 5.33, HA 3.33, XOR2 2, MUX2 2.33, DFF 5.67, ...;
+# popcount8 uses the gate-built FA of 6.67 adopted by the Yosys calibration).
 REFERENCE_ROUND2 = [
     ('shreg8_en', 'module t(input clk, en, d, output q); reg [7:0] r; always @(posedge clk) if (en) r <= {r[6:0], d}; assign q = r[7]; endmodule', 64.0),
     ('lfsr16', 'module t(input clk, output q); reg [15:0] r; always @(posedge clk) r <= {r[14:0], r[15]^r[14]^r[12]^r[3]}; assign q = r[15]; endmodule', 96.7),
@@ -65,7 +66,7 @@ REFERENCE_ROUND2 = [
     ('satadd_s8', "module t(input signed [7:0] a, b, output signed [7:0] y); wire signed [7:0] s = a + b; wire ovf = (a[7] == b[7]) && (s[7] != a[7]); assign y = ovf ? (a[7] ? 8'h80 : 8'h7f) : s; endmodule", 70.0),
     ('prienc8', 'module t(input [7:0] a, output reg [2:0] y, output v); integer i; always @* begin y = 0; for (i = 0; i < 8; i = i + 1) if (a[i]) y = i; end assign v = |a; endmodule', 25.0),
     ('dec3to8_en', "module t(input [2:0] a, input en, output [7:0] y); assign y = en ? (8'b1 << a) : 8'b0; endmodule", 24.0),
-    ('popcount8', 'module t(input [7:0] a, output [3:0] y); integer i; reg [3:0] s; always @* begin s = 0; for (i = 0; i < 8; i = i + 1) s = s + a[i]; end assign y = s; endmodule', 26.0),
+    ('popcount8', 'module t(input [7:0] a, output [3:0] y); integer i; reg [3:0] s; always @* begin s = 0; for (i = 0; i < 8; i = i + 1) s = s + a[i]; end assign y = s; endmodule', 33.4),
     ('abs8', 'module t(input signed [7:0] a, output [7:0] y); assign y = a[7] ? -a : a; endmodule', 40.0),
     ('neg8', 'module t(input [7:0] a, output [7:0] y); assign y = -a; endmodule', 23.3),
     ('cmpchain8', 'module t(input [7:0] a, b, c, output y); assign y = (a < b) && (b < c); endmodule', 58.0),
@@ -276,7 +277,9 @@ class DividerAndSigned(unittest.TestCase):
         u = typ("module t(input [7:0] a, b, output [15:0] y); assign y = a * b; endmodule")
         s = typ("module t(input signed [7:0] a, b, output signed [15:0] y); assign y = a * b; endmodule")
         self.assertGreater(s, u)
-        self.assertLess(s, u + 60)
+        # non-Booth signed product: Baugh-Wooley correction plus the sign-extended array (signed_ext = 0.15);
+        # Yosys + Nangate 45: mul_s8 / mul_u8 = 560 / 456 = 1.23
+        self.assertLess(s, 1.25 * u)
 
     def test_signed_mac_keeps_the_sign_correction(self):
         u = typ("module t(input clk, input [7:0] a,b, output reg [23:0] acc); always @(posedge clk) acc <= acc + a*b; endmodule")
@@ -344,11 +347,25 @@ class UnobservableLogic(unittest.TestCase):
         self.assertIn("UNOBSERVABLE_LOGIC", diag_codes(src))
 
 
+class CalibrationIdioms(unittest.TestCase):
+    """RTL idioms fixed against the Yosys + Nangate 45 reference (tests/reference/yosys_nangate45.csv)."""
+
+    def test_indexed_word_select_is_a_word_mux(self):
+        # regression (mux8_slice_w32: typ 387 vs Yosys 522.7 = 224 MUX2): the amount s*32 has 5 known-zero bits and
+        # the data word is 256 bits wide; the builder passes both to the shifter
+        src = "module t(input [2:0] s, input [255:0] d, output [31:0] y); assign y = d[s*32 +: 32]; endmodule"
+        self.assertAlmostEqual(typ(src), 7 * 32 * 2.33, delta=0.5)
+
+    def test_xor_reduction_has_no_glue_logic_scale(self):
+        self.assertAlmostEqual(typ("module t(input [31:0] a, output y); assign y = ^a; endmodule"), 31 * 2.0, delta=0.01)
+
+
 class PopcountAndCam(unittest.TestCase):
     def test_popcount_is_a_bit_heap_not_two_rows_plus_cpa(self):
         src = ("module t(input [7:0] a, output [3:0] y); integer i; reg [3:0] s; "
                "always @* begin s = 0; for (i = 0; i < 8; i = i + 1) s = s + a[i]; end assign y = s; endmodule")
-        self.assertLess(typ(src), 40)         # 4 FA + a few HA (was 54.5)
+        # bit-heap bound: 4 FA + 4 HA = 40.0 GE (FA 6.67); two rows + CPA would be 6 FA + ADD4, about 64 GE
+        self.assertLessEqual(typ(src), 4 * 6.67 + 4 * 3.33 + 0.01)
 
     def test_constant_address_reads_have_no_mux_tree(self):
         src = ("module t(input clk, we, input [1:0] wa, input [7:0] wd, output [7:0] a, b); reg [7:0] e [0:3]; "

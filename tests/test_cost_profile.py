@@ -21,7 +21,7 @@ class Builtin(unittest.TestCase):
         self.assertEqual(p.name, "generic-asic")
         self.assertEqual(p.nand2_area_um2, 0.798)
         want = {"INV": 0.67, "BUF": 1.0, "NAND2": 1.0, "NAND3": 1.33, "NAND4": 1.67, "AND2": 1.33, "AOI21": 1.33, "AOI22": 1.67,
-                "AO22": 2.0, "XOR2": 2.0, "MUX2": 2.33, "MUX4": 4.67, "MAJ3": 2.33, "HA": 3.33, "FA": 5.33, "DLAT": 3.33,
+                "AO22": 2.0, "XOR2": 2.0, "MUX2": 2.33, "MUX4": 4.67, "MAJ3": 2.33, "HA": 3.33, "FA": 6.67, "DLAT": 3.33,
                 "DFF": 5.67, "DFFR": 6.67, "DFFRS": 7.67, "EDFF": 7.33, "SDFF_ADD": 1.0, "ICG": 5.0}
         for k, v in want.items():
             self.assertEqual(p.P[k], round(v * 1000), k)
@@ -52,14 +52,14 @@ class Builtin(unittest.TestCase):
 class Extends(unittest.TestCase):
     def test_override_a_primitive_propagates(self):
         with tempfile.TemporaryDirectory() as d:
-            f = write(d, "acme.toml", 'extends = "generic-asic"\n[meta]\nname = "acme"\nnand2_area_um2 = 0.47\n[primitives]\nFA = 6.0\n')
+            f = write(d, "acme.toml", 'extends = "generic-asic"\n[meta]\nname = "acme"\nnand2_area_um2 = 0.47\n[primitives]\nFA = 7.5\n')
             p = load_profile(f)
         base = load_profile()
-        self.assertEqual((p.name, p.nand2_area_um2, p.P["FA"], p.P["HA"]), ("acme", 0.47, 6000, 3330))
+        self.assertEqual((p.name, p.nand2_area_um2, p.P["FA"], p.P["HA"]), ("acme", 0.47, 7500, 3330))
         # every operation that uses a full adder follows
         self.assertGreater(cost_op("ADD", {"n": 32}, p).min, cost_op("ADD", {"n": 32}, base).min)
         self.assertEqual(cost_op("MUX", {"k": 4, "w": 8}, p).typ, cost_op("MUX", {"k": 4, "w": 8}, base).typ)
-        self.assertEqual(cost_op("ADD", {"n": 32}, p).min - cost_op("ADD", {"n": 32}, base).min, 31 * 670)
+        self.assertEqual(cost_op("ADD", {"n": 32}, p).min - cost_op("ADD", {"n": 32}, base).min, 31 * 830)
 
     def test_chain_and_relative_paths(self):
         with tempfile.TemporaryDirectory() as d:
@@ -97,7 +97,7 @@ class Extends(unittest.TestCase):
 
     def test_scaled(self):
         p = load_profile().scaled(3, 2)
-        self.assertEqual(p.P["FA"], 7995)
+        self.assertEqual(p.P["FA"], 10005)
         self.assertEqual(p.macro["c0"], 4_500_000)
 
 

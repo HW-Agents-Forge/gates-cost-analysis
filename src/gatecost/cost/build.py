@@ -160,7 +160,14 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         lhs_one = bool(op == "SHL" and A is not None and A.get("is_const") and A["const"] == 1)
         if lhs_one:
             tags.append("lhs_one")
-        return (cost_op(op, {"n": n, "s": s, "lhs_one": lhs_one}, p), f"{op} w{n} by {s}", (n, s), facts, tags)
+        at = {"n": n, "s": s, "lhs_one": lhs_one}
+        tz = int((B or {}).get("tz") or 0)
+        if tz > 0 and not lhs_one:
+            at["tz"] = tz                      # shift by multiples of 2^tz: the low levels do not exist
+        wa = int(e.get("wa") or 0)
+        if op in ("SHR", "SAR") and wa > n:
+            at["wa"] = wa                      # n bits selected out of a wider word (d[s*W +: W])
+        return cost_op(op, at, p), f"{op} w{n} by {s}", (n, s), facts, tags
     if op in ("AND", "OR", "XOR", "XNOR", "NOT"):
         if w <= 0:
             return zero("logic"), f"{op} w0", (0,), facts, tags
@@ -296,12 +303,7 @@ def _cost_sum(nd: dict, p: Profile):
         facts["struct"] = {"k": k, "mul": "const"}
         return m + s, f"MAC w{n} const +{nT}", (w,), facts, tags
     n, mm = max(wa, wb), min(wa, wb)
-    oc = cost_op("MAC", {"n": n, "m": mm, "c": w, "signed": bool(mul.get("signed"))}, p)
-    if nT > 1:
-        fa = p.P["FA"] * w * (nT - 1)
-        add_max = cost_op("ADD", {"n": w}, p).max * (nT - 1)
-        oc = OpCost(oc.min + fa, oc.typ + fa, max(oc.max + add_max, oc.typ + fa), oc.arch, oc.breakdown,
-                    oc.category, oc.quality, oc.flags)
+    oc = cost_op("MAC", {"n": n, "m": mm, "c": w, "signed": bool(mul.get("signed")), "extra": max(0, nT - 1)}, p)
     facts["struct"] = {"k": k, "mul": [n, mm]}
     return oc, f"MAC {n}x{mm} +{nT}", (w,), facts, tags
 

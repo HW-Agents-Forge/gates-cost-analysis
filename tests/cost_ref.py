@@ -4,9 +4,12 @@ Used by the exact-value tests (tolerance 0.01 GE). It deliberately shares no cod
 ``gatecost.cost``. Defaults are the generic-asic primitives and sigma = 1.3 / 1.15,
 overhead.max = 1.15 (applied only where no sigma appears in the max column).
 """
-INV, BUF, AND2, OR2, XOR2, MUX2, AO22 = 0.67, 1.0, 1.33, 1.33, 2.0, 2.33, 2.0
-HA, FA, DLAT, DFF, DFFR, DFFRS, EDFF, ICG, SDFF = 3.33, 5.33, 3.33, 5.67, 6.67, 7.67, 7.33, 5.0, 1.0
+INV, BUF, AND2, OR2, XOR2, MUX2, AO22, AOI22 = 0.67, 1.0, 1.33, 1.33, 2.0, 2.33, 2.0, 1.67
+NOR2, NOR3, NOR4, MAJ3 = 1.0, 1.33, 1.67, 2.33
+HA, FA, DLAT, DFF, DFFR, DFFRS, EDFF, ICG, SDFF = 3.33, 6.67, 3.33, 5.67, 6.67, 7.67, 7.33, 5.0, 1.0
 SA, SO, OVM, ALPHA = 1.3, 1.15, 1.15, 0.4
+G = 1.33            # prefix cell (AOI21/OAI21)
+SIGNED_EXT = 0.15   # non-Booth signed multiplier: array growth from sign-extended operands
 
 
 def clog2(n):
@@ -20,19 +23,18 @@ def tri(lo, mid, hi):
 def add(n):
     if n == 1:
         return 2.0, 2.0, 2.0 * OVM
-    L, G = clog2(n), 2.0
+    L = clog2(n)
     lo = (n - 1) * FA + HA
     mid = n * HA + (2 * n - 2 - L) * G + (n - 1) * XOR2
     hi = SA * (n * HA + (n * L - n + 1) * G + (n - 1) * XOR2)
-    return tri(lo, mid, hi)
+    lo, typ, hi = tri(lo, mid, hi)
+    return min(lo, typ), typ, hi
 
 
 def sub(n):
-    lo, mid, hi = add(n)[0], None, None
-    L, G = clog2(n), 2.0
-    mid = n * HA + (2 * n - 2 - L) * G + (n - 1) * XOR2 + 0.33 * n
-    hi = SA * (n * HA + (n * L - n + 1) * G + (n - 1) * XOR2) + n * INV
-    return tri(lo, mid, hi)
+    # a + ~b + 1: typ and max add one inverter per bit (typ: not alpha-interpolated); min absorbs it
+    lo, typ, hi = add(n)
+    return lo, typ + n * INV, hi + n * INV
 
 
 def eq(n):
@@ -53,13 +55,19 @@ def mux(k, w):
 
 
 def pmux(k, w):
-    h = -(-k // 2)
-    return (w * (h * AO22 + (h - 1) * 0.75), w * (h * AO22 + (h - 1) * OR2), k * w * MUX2 * OVM)
+    # k one-hot arms + the default: half an AOI22 per arm, NAND tree over ceil((k+1)/2) AOI outputs
+    h = -(-(k + 1) // 2)
+    arms = (k + 1) * AOI22 / 2
+    return (w * (arms + (h - 1) * 0.55), w * (arms + (h - 1) * 0.75), k * w * MUX2 * OVM)
 
 
 def decode(s):
     pre = ((1 << (s // 2)) + (1 << (s - s // 2))) * 1.33
-    return (1 << s) * 1.0 + pre, (1 << s) * AND2 + pre, (1 << s) * (s - 1) * AND2 * OVM
+    lo, typ, hi = (1 << s) * NOR2 + pre, (1 << s) * AND2 + pre, (1 << s) * (s - 1) * AND2 * OVM
+    if s <= 4:  # direct form: one s-input NOR per output, s inverters
+        direct = (1 << s) * (NOR2, NOR3, NOR4)[s - 2] + s * INV
+        lo, typ = min(lo, direct), min(typ, direct)
+    return lo, typ, hi
 
 
 def shl(n, s):
@@ -88,7 +96,7 @@ def booth_tree(n, m):
 
 
 def cpa(w):
-    L, G = clog2(w), 2.0
+    L = clog2(w)
     lo = (w - 1) * FA + HA
     mid = w * HA + (2 * w - 2 - L) * G + (w - 1) * XOR2
     hi = SA * (w * HA + (w * L - w + 1) * G + (w - 1) * XOR2)
@@ -103,11 +111,15 @@ def mul(n, m, signed=False):
         return v, v, v * OVM
     lo_c, mid_c, hi_c = cpa(n + m)
     arr = array_mul(n, m)
-    bt = booth_tree(n, m)
-    lo = min(arr, bt + lo_c)
-    typ = min(arr, bt + lo_c + ALPHA * (mid_c - lo_c))
+    # Booth candidate (min only): an m-bit operand is also an (m+1)-bit one
+    bt = min(booth_tree(n, m) + lo_c, booth_tree(n, m + 1) + cpa(n + m + 1)[0])
+    lo = min(arr, bt)
+    typ = arr + ALPHA * max(0.0, mid_c - lo_c)   # non-Booth carry-save array, CPA moved towards the mid adder
     wal = n * m * AND2 + max(0, n * m - 2 * (n + m)) * FA
     hi = SA * (wal + hi_c / SA)
+    if signed:  # operands sign-extended to the product width (typ, max); min keeps Baugh-Wooley only
+        typ += SIGNED_EXT * arr
+        hi += SA * SIGNED_EXT * arr
     return lo + ex, typ + ex, hi + ex
 
 
@@ -116,8 +128,8 @@ def div(n, m):
     r = min(n, m)
     t = r * (r + 1) // 2 + (n - r) * m
     chain = m * 0.75
-    lo = (t + n) * (FA + XOR2) + chain
-    typ = 1.2 * ((t + n) * FA + t * MUX2 + chain)
+    lo = t * FA + chain                                   # restore select absorbed in the cell
+    typ = t * (FA + AND2) + n * MAJ3 + chain              # r ^ (q & d) per cell, one borrow-out per row
     return lo, typ, 2.5 * typ
 
 
