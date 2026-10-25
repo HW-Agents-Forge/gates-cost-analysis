@@ -15,13 +15,15 @@ from .conc import ConcMixin, base_names
 from .core import Ctx, NotConst, Unsupported, int_val
 from .decl import DeclMixin
 from .expr import ExprMixin
+from .fixed import FixedMixin
+from .floatp import FloatMixin
 from .inst import InstMixin, flat_ports
 from .ops import OpsMixin
 from .stmt import StmtMixin
 from .values import Scope, Sym, Val
 
 
-class Elab(ExprMixin, OpsMixin, StmtMixin, DeclMixin, ConcMixin, InstMixin):
+class Elab(ExprMixin, OpsMixin, FixedMixin, FloatMixin, StmtMixin, DeclMixin, ConcMixin, InstMixin):
     """Evaluator/elaborator bound to one IR builder (one per module under construction)."""
 
     def __init__(self, ctx, builder):
@@ -150,7 +152,7 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
             direction = "in"
         nets = []
         for fn, ft in flat_ports(pn, pt):
-            signed = bool(ft.signed) if ft.kind == "int" else ft.cls == "s"
+            signed = bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES
             nets.append(b.port(fn, direction, ft.width, signed))
         sig = SigSpec.concat([n.sig for n in nets])
         s = Sym("obj", pn, pt, sig=sig)
@@ -266,7 +268,7 @@ class _Foreign:
         for pn, mode, pt, d in E.entity_ports(self.ent, esc):
             for fn, ft in flat_ports(pn, pt):
                 direction = "in" if mode in ("in", "linkage") else ("out" if mode in ("out", "buffer") else "inout")
-                out.append((fn, direction, ft.width, bool(ft.signed) if ft.kind == "int" else ft.cls == "s"))
+                out.append((fn, direction, ft.width, bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES))
         return out
 
     def elaborate(self, params, const_ports):

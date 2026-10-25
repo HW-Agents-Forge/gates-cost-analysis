@@ -20,6 +20,15 @@ _CONTROL_CHARS.update({"c%d" % i: i for i in range(128, 160)})
 _TIME_FS = {"fs": 1, "ps": 10 ** 3, "ns": 10 ** 6, "us": 10 ** 9, "ms": 10 ** 12, "sec": 10 ** 15,
             "min": 6 * 10 ** 16, "hr": 36 * 10 ** 17}
 _HEXVAL = {c: i for i, c in enumerate("0123456789ABCDEF")}
+#: ieee.fixed_float_types literals and the package-default style constants
+_FIXED_NAMES = {
+    "fixed_wrap": lambda: Val(T.T_FIXED_OVF, None, 0), "fixed_saturate": lambda: Val(T.T_FIXED_OVF, None, 1),
+    "fixed_round": lambda: Val(T.T_FIXED_RND, None, 0), "fixed_truncate": lambda: Val(T.T_FIXED_RND, None, 1),
+    "fixed_overflow_style": lambda: Val(T.T_FIXED_OVF, None, 1), "fixed_round_style": lambda: Val(T.T_FIXED_RND, None, 0),
+    "fixed_guard_bits": lambda: int_val(3), "no_warning": lambda: bool_const(False),
+    "round_nearest": lambda: Val(T.T_FIXED_RND, None, 0), "round_zero": lambda: Val(T.T_FIXED_RND, None, 1),
+    "round_inf": lambda: Val(T.T_FIXED_RND, None, 0), "round_neginf": lambda: Val(T.T_FIXED_RND, None, 1),
+}
 _SLBIT = {"0": (0, 0), "1": (1, 0), "L": (0, 0), "H": (1, 0), "U": (0, 1), "X": (0, 1), "W": (0, 1), "-": (0, 1), "Z": (0, 1)}
 
 
@@ -69,7 +78,7 @@ class ExprMixin:
         t = v.t
         if t.kind == "int":
             return bool(t.signed) or (v.c is not None and v.c < 0)
-        return t.cls == "s"
+        return t.cls in T.SIGNED_CLASSES
 
     def num(self, v):
         """(sig, signed) numeric view."""
@@ -81,7 +90,7 @@ class ExprMixin:
                 return SigSpec.const(c & mask(w), w), s
             return v.sig, bool(t.signed)
         s = self.sig_of(v)
-        return s, t.cls == "s"
+        return s, t.cls in T.SIGNED_CLASSES
 
     def const_int(self, v):
         if v.c is not None:
@@ -91,7 +100,7 @@ class ExprMixin:
         if v.sig is not None:
             c = v.sig.const_value()
             if c is not None and not c.xmask:
-                return c.as_signed() if (v.t.kind == "int" and v.t.signed) or v.t.cls == "s" else c.value
+                return c.as_signed() if (v.t.kind == "int" and v.t.signed) or v.t.cls in T.SIGNED_CLASSES else c.value
         raise NotConst()
 
     def const_val(self, v):
@@ -239,6 +248,8 @@ class ExprMixin:
             return bool_const(name == "true")
         if name in ("note", "warning", "error", "failure"):
             return int_val(0)
+        if name in _FIXED_NAMES:                  # ieee.fixed_float_types
+            return _FIXED_NAMES[name]()
         if ieee.lookup(name):
             return self.builtin_call(name, [], e, sc, hint)
         if name == "now":

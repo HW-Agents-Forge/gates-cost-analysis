@@ -391,7 +391,7 @@ class DeclMixin:
             s.mode = mode
             sc.declare(s)
             return
-        signed = bool(t.signed) if t.kind == "int" else t.cls == "s"
+        signed = bool(t.signed) if t.kind == "int" else t.cls in T.SIGNED_CLASSES
         net = self.b.net(t.width, name, signed)
         s = Sym("obj", d.name, t, sig=net.sig)
         s.mode = mode

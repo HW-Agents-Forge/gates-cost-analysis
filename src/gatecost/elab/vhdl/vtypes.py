@@ -1,6 +1,7 @@
 """VHDL type model for the elaborator: scalar, enum, integer, array and record types with widths."""
 from __future__ import annotations
 
+from ...frontend.vhdl.ieee import FLOAT_FORMATS
 from ...ir import Const, SigSpec
 
 
@@ -174,6 +175,11 @@ T_SLV = array_type("std_logic_vector", T_STD_LOGIC, cls="slv")
 T_SUV = array_type("std_ulogic_vector", T_STD_LOGIC, cls="suv")
 T_UNSIGNED = array_type("unsigned", T_STD_LOGIC, cls="u")
 T_SIGNED = array_type("signed", T_STD_LOGIC, cls="s")
+T_UFIXED = array_type("ufixed", T_STD_LOGIC, cls="uf")
+T_SFIXED = array_type("sfixed", T_STD_LOGIC, cls="sf")
+T_FLOAT = array_type("float", T_STD_LOGIC, cls="fl")
+T_FIXED_OVF = enum_type("fixed_overflow_style_type", ["fixed_wrap", "fixed_saturate"])
+T_FIXED_RND = enum_type("fixed_round_style_type", ["fixed_round", "fixed_truncate"])
 T_BV = array_type("bit_vector", T_BIT, cls="bv")
 T_STRING = array_type("string", T_CHARACTER, cls="str")
 T_UNKNOWN = VType("other", "unknown")
@@ -185,8 +191,18 @@ BUILTIN_TYPES = {
     "real": T_REAL, "time": T_TIME, "std_logic_vector": T_SLV, "std_ulogic_vector": T_SUV,
     "unsigned": T_UNSIGNED, "signed": T_SIGNED, "bit_vector": T_BV, "string": T_STRING,
     "severity_level": enum_type("severity_level", ["note", "warning", "error", "failure"]),
+    "ufixed": T_UFIXED, "unresolved_ufixed": T_UFIXED, "u_ufixed": T_UFIXED,
+    "sfixed": T_SFIXED, "unresolved_sfixed": T_SFIXED, "u_sfixed": T_SFIXED,
+    "float": T_FLOAT, "unresolved_float": T_FLOAT, "u_float": T_FLOAT,
+    "fixed_overflow_style_type": T_FIXED_OVF, "fixed_round_style_type": T_FIXED_RND,
 }
-_BASE_BY_CLS = {"u": T_UNSIGNED, "s": T_SIGNED, "slv": T_SLV, "suv": T_SUV, "bv": T_BV}
+for _n, (_e, _f) in FLOAT_FORMATS.items():
+    BUILTIN_TYPES[_n] = constrain(T_FLOAT, _e, -_f, "downto")
+    BUILTIN_TYPES[_n].name = _n
+_BASE_BY_CLS = {"u": T_UNSIGNED, "s": T_SIGNED, "slv": T_SLV, "suv": T_SUV, "bv": T_BV, "uf": T_UFIXED,
+                "sf": T_SFIXED, "fl": T_FLOAT}
+#: IEEE type classes whose values are signed two's complement bit patterns
+SIGNED_CLASSES = ("s", "sf")
 
 
 def vec_type(cls, width, like=None):

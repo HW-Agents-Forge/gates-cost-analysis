@@ -64,6 +64,10 @@ TYPES = {
     # numeric_std / std_logic_arith
     "unsigned": dict(cls="u", kind="array", element="std_logic", package="numeric_std"),
     "signed": dict(cls="s", kind="array", element="std_logic", package="numeric_std"),
+    # ieee.fixed_pkg / ieee.float_pkg (VHDL-2008): arrays indexed ``high downto low`` with low possibly negative
+    "ufixed": dict(cls="uf", kind="array", element="std_logic", package="fixed_pkg"),
+    "sfixed": dict(cls="sf", kind="array", element="std_logic", package="fixed_pkg"),
+    "float": dict(cls="fl", kind="array", element="std_logic", package="float_pkg"),
 }
 
 STD_LOGIC_VALUES = "UX01ZWLH-"
@@ -81,7 +85,7 @@ def type_class(type_name: str) -> str | None:
 
 _ACCEPTS = {
     "suv": {"suv", "slv"}, "slv": {"slv"}, "int": {"int", "nat"}, "nat": {"nat", "int"},
-    "sl": {"sl", "bit"}, "u": {"u"}, "s": {"s"}, "bool": {"bool"}, "bv": {"bv"}, "bit": {"bit", "sl"},
+    "sl": {"sl", "bit"}, "u": {"u"}, "s": {"s"}, "uf": {"uf"}, "sf": {"sf"}, "fl": {"fl"}, "bool": {"bool"}, "bv": {"bv"}, "bit": {"bit", "sl"},
     "real": {"real", "int", "nat"}, "any": None,
 }
 
@@ -252,7 +256,9 @@ KNOWN_PACKAGES = frozenset(
      ("ieee", "std_logic_1164"), ("ieee", "numeric_std"), ("ieee", "numeric_std_unsigned"),
      ("ieee", "math_real"), ("ieee", "math_complex"), ("ieee", "std_logic_arith"),
      ("ieee", "std_logic_unsigned"), ("ieee", "std_logic_signed"), ("ieee", "std_logic_textio"),
-     ("ieee", "std_logic_misc")])
+     ("ieee", "std_logic_misc"),
+     ("ieee", "fixed_pkg"), ("ieee", "float_pkg"), ("ieee", "fixed_float_types"),
+     ("ieee_proposed", "fixed_pkg"), ("ieee_proposed", "float_pkg"), ("ieee_proposed", "fixed_float_types")])
 #: recognized and ignored (no effect on the estimate)
 IGNORED_PACKAGES = frozenset(["std.textio", "std.env", "ieee.std_logic_textio"])
 
@@ -422,3 +428,6 @@ WIDTH_RULE_TABLE = (
     ("std_logic_signed", "conv_integer", ("slv",), (8,), (), "int", None),
     ("std_logic_1164", "and", ("slv", "slv"), (8, 8), (), "suv", 8),
 )
+
+
+from .ieee_fixed import *  # noqa: E402,F401,F403  (fixed_pkg / float_pkg model)
