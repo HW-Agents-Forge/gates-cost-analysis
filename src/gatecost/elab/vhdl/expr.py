@@ -37,6 +37,8 @@ class ExprMixin:
 
     def unknown(self, hint=None, why=None):
         if hint is not None and hint.kind in ("array", "record", "enum", "int") and hint.width:
+            if hint.width > (1 << 20):
+                return Val(T.T_STD_LOGIC, SigSpec.x(1))      # an all-X value this wide cannot be built (memory)
             return Val(hint, SigSpec.x(hint.width))
         return Val(T.T_STD_LOGIC, SigSpec.x(1))
 
@@ -620,6 +622,14 @@ class ExprMixin:
             t.width = t.length * el.width if el.width is not None else None
         return t
 
+    def mem_type(self, pre, sc):
+        """Array type of ``pre`` when it names a memory (its attributes need no value), else None."""
+        if isinstance(pre, (N.Ident, N.Select)):
+            syms = self.name_syms(pre, sc)
+            if syms and syms[0].kind == "mem":
+                return syms[0].t
+        return None
+
     def eval_range(self, r, sc):
         """(left, right, dir) of a range-valued expression."""
         if isinstance(r, N.Range):
@@ -637,6 +647,8 @@ class ExprMixin:
             return rg
         if isinstance(r, N.Attr) and r.name in ("range", "reverse_range"):
             t = self.try_type(r.prefix, sc)
+            if t is None:
+                t = self.mem_type(r.prefix, sc)
             if t is None:
                 t = self.eval(r.prefix, sc).t
             if r.arg is not None and t.kind == "array":
@@ -683,6 +695,8 @@ class ExprMixin:
             return self.string_val("", None)
         t = self.try_type(pre, sc)
         v = None
+        if t is None:
+            t = self.mem_type(pre, sc)
         if t is None:
             v = self.eval(pre, sc)
             t = v.t
@@ -765,6 +779,8 @@ class ExprMixin:
             if k == "type":
                 return self.type_convert(syms[0].t, args, sc, e)
             if k == "func":
+                if isinstance(p, N.Ident) and self.has_builtin(p.name) and not self.user_overload_fits(syms, args, sc):
+                    return self.builtin_call(p.name, args, e, sc, hint)
                 return self.call_user(syms, args, e, sc, hint)
             if k == "mem":
                 return self.mem_read(syms[0], args, sc, e)
@@ -1038,6 +1054,10 @@ class ExprMixin:
     # ------------------------------------------------------------------ aggregates
     def ev_aggregate(self, e, sc, hint):
         t = hint
+        if t is not None and t.kind == "enum" and len(e.items) == 1 and e.items[0].choices is not None \
+                and len(e.items[0].choices) == 1 and isinstance(e.items[0].choices[0], N.Others):
+            # ``(others => '1')`` against a scalar: a null-width / one-bit stand-in port (see entity_ports)
+            return self.eval(e.items[0].value, sc, t)
         if t is None or t.kind not in ("array", "record"):
             return self.agg_unhinted(e, sc)
         if t.kind == "record":
@@ -1121,7 +1141,7 @@ class ExprMixin:
                     for ch in (it.choices or []):
                         if isinstance(ch, N.Others):
                             continue
-                        if isinstance(ch, N.Range):
+                        if isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
                             l, r, _d = self.eval_range(ch, sc)
                             idxs += [l, r]
                         else:
@@ -1136,6 +1156,9 @@ class ExprMixin:
             # the IR rejects a value this wide anyway: do not build it element by element
             self.diag("LIMIT_REACHED", "aggregate of %d bits exceeds the net width limit (%d); its value is unknown"
                       % (length * ew, lim.max_net_width), e)
+            if length * ew > (1 << 24):
+                # not even an all-X constant of this size can be built (it is one big integer: gigabytes)
+                raise Unsupported("aggregate of %d bits is too wide to represent" % (length * ew))
             return Val(t, SigSpec.x(length * ew))
         tmp = {}
         pos_i = 0

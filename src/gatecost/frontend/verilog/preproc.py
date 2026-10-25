@@ -61,6 +61,7 @@ _IGNORED_DIRS = frozenset((
     "delay_mode_distributed", "delay_mode_path", "delay_mode_unit", "delay_mode_zero",
     "suppress_faults", "nosuppress_faults", "enable_portfaults", "disable_portfaults",
     "protect", "endprotect", "protected", "endprotected",
+    "uselib",           # library search directive (`uselib lib = x file = y); no meaning for costing
 ))
 _COND_DIRS = frozenset(("ifdef", "ifndef", "elsif", "else", "endif"))
 
@@ -505,6 +506,13 @@ class Preprocessor:
         mac = self.macros.get(name)
         if mac is None:
             self.sink.add("UNDEFINED_MACRO", f"undefined macro `{name}", site[0], site[1], site[2])
+            # an undefined function-like macro: drop its balanced argument list too, so the
+            # arguments do not leak into the surrounding source as stray tokens
+            wm = _WS_PAREN.match(s, end)
+            if wm is not None:
+                args, end2 = self._scan_args(s, wm.end() - 1)
+                if args is not None:
+                    end = end2
             return "", end
         if name in stack:
             self.sink.add("MACRO_ERROR", f"recursive expansion of macro `{name}", site[0], site[1], site[2])

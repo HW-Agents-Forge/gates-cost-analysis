@@ -126,7 +126,41 @@ def read_inputs(files, incdirs, defines, root: Path) -> Inputs:
                 inp.include_items.append((n, data))
                 if p.suffix.lower() in RTL_EXT:
                     inp.texts[n] = data.decode("utf-8", "replace")
+    _add_implicit_includes(inp, seen, root)
     return inp
+
+
+_INCLUDE_DIRECTIVE = re.compile(r'`include\s*(?:"([^"\n]+)"|<([^>\n]+)>)')
+
+
+def _add_implicit_includes(inp: Inputs, seen: set, root: Path) -> None:
+    """Headers found through the including file's own directory belong to the analysis input as well: they
+    are part of the cache key and of the line alignment, exactly like those of an include directory."""
+    from .frontend.common.reader import resolve_include
+
+    queue = [(Path(f), inp.texts.get(rel_name(Path(f), root), "")) for f in inp.files
+             if Path(f).suffix.lower() in VERILOG_EXT]
+    while queue and len(seen) < _MAX_INCLUDE_FILES:
+        path, text = queue.pop()
+        for m in _INCLUDE_DIRECTIVE.finditer(text):
+            name = m.group(1) or m.group(2)
+            if os.path.isabs(name):
+                continue
+            found = resolve_include(name, str(path.parent), inp.incdirs)
+            if found is None:
+                continue
+            p = Path(found)
+            n = rel_name(p, root)
+            if n in seen:
+                continue
+            try:
+                data = p.read_bytes()
+            except OSError:
+                continue
+            seen.add(n)
+            inp.include_items.append((n, data))
+            inp.texts[n] = data.decode("utf-8", "replace")
+            queue.append((p, inp.texts[n]))
 
 
 def profile_digest(profile) -> str:

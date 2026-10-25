@@ -78,6 +78,28 @@ def is_z_expr(e):
     return False
 
 
+_STATIC_ATTRS = frozenset(("length", "high", "low", "left", "right", "range", "reverse_range", "ascending"))
+
+
+def hw_names_in(e, hw):
+    """Identifiers of ``hw`` that ``e`` reads as values: the prefix of a static array attribute
+    (``mem'high``, ``mem'range``) is not a hardware dependency."""
+    out = []
+    stack = [e]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, N.Attr) and n.name in _STATIC_ATTRS:
+            if n.arg is not None and isinstance(n.arg, N.Node):
+                stack.append(n.arg)
+            continue
+        if isinstance(n, N.Ident):
+            if n.name in hw:
+                out.append(n.name)
+            continue
+        stack.extend(n.children())
+    return out
+
+
 class ConcMixin:
     # ------------------------------------------------------------------ prescan
     def prescan(self, units):
@@ -116,13 +138,13 @@ class ConcMixin:
                     tgt = n.target
                     if isinstance(tgt, N.Apply) and isinstance(tgt.prefix, N.Ident):
                         for a in tgt.args:
-                            if any(isinstance(x, N.Ident) and x.name in hw for x in walk(a.actual)):
+                            if hw_names_in(a.actual, hw):
                                 mems.add(tgt.prefix.name)
                     # a(i)(j) : base of nested apply
                     t = tgt
                     while isinstance(t, (N.Apply, N.Select, N.Slice)):
                         if isinstance(t, N.Apply) and isinstance(t.prefix, N.Ident):
-                            if any(isinstance(x, N.Ident) and x.name in hw for a in t.args for x in walk(a.actual)):
+                            if any(hw_names_in(a.actual, hw) for a in t.args):
                                 mems.add(t.prefix.name)
                         t = t.prefix
         self.state_names = state
@@ -319,7 +341,7 @@ class ConcMixin:
                     pe = self.parse_edge(br.cond)
                     if pe is not None:
                         return ("clocked", pe[0], pe[1], s.branches[:k], br.body, pe[2])
-                break
+                # an ``if`` without a clock edge (e.g. an elaboration-time ``assert``) may precede the edge
         return ("comb", None, None, [], [x for x in body if not isinstance(x, N.WaitStmt)], [])
 
     def state_var_names(self, p):
@@ -426,11 +448,32 @@ class ConcMixin:
             return None
         return clocked, (others if has_out else [])
 
+    @staticmethod
+    def flatten_else_if(stmts):
+        """``if a then .. else if b then .. end if; end if;`` is ``if a then .. elsif b then .. end if;``:
+        merge it so that a clock edge in the nested ``if`` (after an asynchronous reset) is recognised."""
+        for s in stmts or ():
+            if isinstance(s, N.IfStmt):
+                while s.else_body is not None and len(s.else_body) == 1 and isinstance(s.else_body[0], N.IfStmt) \
+                        and s.else_body[0].label is None:
+                    inner = s.else_body[0]
+                    s.branches = list(s.branches) + list(inner.branches)
+                    s.else_body = inner.else_body
+
     def elab_process(self, p, sc):
+        self.flatten_else_if(p.body)
         if p.sim_only:
             self.diag("SIMULATION_ONLY_PROCESS", "process%s is simulation-only and skipped" % ((" '%s'" % p.label) if p.label else ""), p)
             return
         if not any(isinstance(n, (N.SignalAssign, N.SelectAssign, N.ProcCall)) for n in walk(p)):
+            return
+        waits = [n for n in walk(p) if isinstance(n, N.WaitStmt)]
+        lead = 1 if p.body and isinstance(p.body[0], N.WaitStmt) and p.body[0].until is not None else 0
+        if len(waits) - lead >= 2:
+            # several waits: a behavioural, multi-cycle (testbench-style) process; there is no single
+            # clock edge to map it onto, and unrolling it is both meaningless and very slow
+            self.diag("UNSUPPORTED_CONSTRUCT", "process%s has %d wait statements (multi-cycle behavioural code); skipped"
+                      % ((" '%s'" % p.label) if p.label else "", len(waits)), p)
             return
         sp = self.split_process(p)
         if sp is not None:
@@ -475,6 +518,7 @@ class ConcMixin:
         xc.state_vars = self.state_var_names(p) if kind == "clocked" else set()
         saved = self.proc
         self.proc = xc
+        self.loop_iters = self.ctl_iters = 0
         try:
             self.declare_items(p.decls, pscope, xc)
 

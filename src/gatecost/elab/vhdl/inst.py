@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ...frontend.vhdl import nodes as N
 from ...ir import Const, Design, LowerBlock, SigSpec
-from ...ir.sigspec import mask
+from ...ir.sigspec import Slice, mask
 from . import vtypes as T
 from .core import NotConst, Unsupported, int_val
 from .stmt import XC
@@ -92,6 +92,11 @@ class InstMixin:
             return self.fit(Val(gt, None, 0), gt)
         if gt.width:
             return Val(gt, SigSpec.const(0, gt.width))
+        if gt.kind == "array" and gt.width is None and gt.elem is not None and gt.elem.width:
+            # an unconstrained array / string generic: a short all-zero value keeps the name defined
+            # (otherwise every use degrades to "unknown name" / "scalar to array" diagnostics)
+            ct = T.constrain(gt, 1, 8, "to") if gt.cls == "str" else T.constrain(gt, 7, 0, "downto")
+            return Val(ct, SigSpec.const(0, ct.width))
         return int_val(32)
 
     def bind_generics(self, ent, esc, provider, type_provider=None):
@@ -303,7 +308,15 @@ class InstMixin:
                 a = gpos[pos]
             if a is None or isinstance(a.actual, N.Open):
                 return None
-            return self.eval(a.actual, sc, gt)
+            v = self.eval(a.actual, sc, gt)
+            s = v.sig if isinstance(v, Val) else None
+            if s is not None and any(isinstance(c, Slice) for c in s.chunks):
+                # a signal as a generic actual (illegal VHDL): its nets belong to the parent module and
+                # would leak into the child as dangling references
+                self.diag("UNSUPPORTED_CONSTRUCT", "generic '%s' actual is not a constant expression; the default "
+                          "(or an assumed value) is used" % g.name, a.actual)
+                return None
+            return v
 
         def type_provider(g, pos):
             a = gmap.get(g.name)

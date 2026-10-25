@@ -43,6 +43,9 @@ def _addsub(op: str, a: Mapping[str, Any], p: Profile) -> OpCost:
     has, k = _const(a)
     if has:
         return arith.add_const_op(n, k, p, sub=op == "SUB")
+    m = _int(a, "m", default=0, lo=0)
+    if m:
+        return arith.add_narrow_op(n, m, p, sub=op == "SUB")
     return arith.add_op(n, p, sub=op == "SUB")
 
 
@@ -101,7 +104,14 @@ def _reg(names, fn) -> None:
 
 _reg(("ADD", "SUB"), lambda op, a, p: _addsub(op, a, p))
 _reg(("NEG",), lambda op, a, p: arith.neg_op(_int(a, "n", "w", "width"), p))
-_reg(("SUM",), lambda op, a, p: arith.sum_op(_int(a, "k"), _int(a, "w", "n"), p))
+def _sum(op: str, a: Mapping[str, Any], p: Profile) -> OpCost:
+    terms = a.get("terms")
+    if terms:  # per-term effective widths, result width ``w``
+        return arith.sum_terms_op(tuple(int(t) for t in terms), _int(a, "w", "n"), p)
+    return arith.sum_op(_int(a, "k"), _int(a, "w", "n"), p)
+
+
+_reg(("SUM",), _sum)
 _reg(("MUL",), lambda op, a, p: _mul(a, p))
 _reg(("MAC",), lambda op, a, p: arith.mac_op(_int(a, "n"), _int(a, "m"), _int(a, "c", default=_int(a, "n") + _int(a, "m")), p, bool(a.get("signed"))))
 _reg(("DIV", "MOD"), lambda op, a, p: _div(op, a, p))

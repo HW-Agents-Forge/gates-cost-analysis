@@ -76,6 +76,21 @@ def load_project_file(path: Path | None) -> ProjectConfig:
             elif isinstance(value, bool) and bool not in types or not isinstance(value, types):
                 names = "/".join(t.__name__ for t in types)
                 raise GatecostError("BAD_CONFIG", f"{section}.{key} must be of type {names}")
+    for key in ("sources", "filelists", "incdirs", "exclude", "languages"):
+        val = cfg.get("project", key)
+        if val is not None and not all(isinstance(x, str) for x in val):
+            raise GatecostError("BAD_CONFIG", f"project.{key} must be a list of strings")
+    langs = cfg.get("project", "languages")
+    if langs is not None:
+        bad = [x for x in langs if x.lower() not in ("verilog", "systemverilog", "vhdl")]
+        if bad or not langs:
+            raise GatecostError("BAD_CONFIG", "project.languages must be a non-empty list of: verilog, systemverilog, vhdl")
+    for key, val in (cfg.data.get("limits") or {}).items():
+        if key in _SCHEMA["limits"] and isinstance(val, int) and val < 1:
+            raise GatecostError("BAD_CONFIG", f"limits.{key} must be >= 1")
+    ml = cfg.get("report", "max_lines")
+    if ml is not None and ml < 0:
+        raise GatecostError("BAD_CONFIG", "report.max_lines must be >= 0")
     fmt = cfg.get("report", "format")
     if fmt is not None and fmt not in FORMATS:
         raise GatecostError("BAD_CONFIG", f"report.format must be one of {', '.join(FORMATS)}")

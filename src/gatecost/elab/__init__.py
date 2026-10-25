@@ -26,6 +26,11 @@ Public API
                 (alias ``inline_depth``), ``max_instances`` 100000, ``expr_depth`` 500, ``const_func_steps`` 100000, plus
                 ``max_hier_depth`` 128 and ``const_port_variants`` 256 (maximum distinct constant-port
                 specializations per ``(module, parameters)`` before propagation is switched off for it),
+                ``const_func_fast`` 1 (0 disables the pure-integer fast path that evaluates functions called with
+                constant arguments, see ``constfunc.py``), ``const_func_fast_steps`` 2000000 (loop iterations of one
+                fast call) and ``const_func_fast_total_steps`` 40000000 (per function, over all its calls); a call the
+                fast path cannot answer falls back to the general path, which is bounded by ``const_func_steps``
+                and ``const_func_total_steps`` 600000,
                 and the IR limits ``max_nodes``, ``max_nets``, ``max_net_width``, ``max_mem_depth``.
                 Reaching a limit is a ``LIMIT_REACHED`` diagnostic, never an exception.
 ``side``        ``"before"``/``"after"`` stamped on every diagnostic.

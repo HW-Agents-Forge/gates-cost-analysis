@@ -105,7 +105,12 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         n = max(n - lo, 0)
         if n == 0:
             return zero("addcmp"), f"{op} w0", (0,), facts, tags
-        return cost_op(op, {"n": n}, p), f"{op} w{n}", (n,), facts, tags
+        at = {"n": n}
+        narrow = min(e.get("wa", 0), e.get("wb", 0)) - lo
+        if 0 < narrow < n - 1:
+            at["m"] = narrow
+            facts["narrow_operand"] = narrow
+        return cost_op(op, at, p), f"{op} w{n}", (n,), facts, tags
     if op == "NEG":
         if w <= 0:
             return zero("addcmp"), "NEG w0", (0,), facts, tags
@@ -257,7 +262,10 @@ def _cost_sum(nd: dict, p: Profile):
     if w <= 0 or k < 2:
         return zero("addcmp"), f"SUM {k} w{w}", (w,), facts, tags
     nT = k - (1 if mul else 0)
+    terms = [int(t) for t in e.get("terms", ())]
     if not mul:
+        if len(terms) == k and all(t > 0 for t in terms):
+            return cost_op("SUM", {"terms": terms, "w": w}, p), f"SUM {k} w{w}", (w,), facts, tags
         return cost_op("SUM", {"k": k, "w": w}, p), f"SUM {k} w{w}", (w,), facts, tags
     wa, wb = mul["wa"], mul["wb"]
     if not wa or not wb:

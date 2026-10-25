@@ -89,6 +89,7 @@ class Builder:
         m = self.module
         if width > self.limits.max_net_width:
             self._limit("net width", f"{name or 'net'} has {width} bits (limit {self.limits.max_net_width})")
+            width = self.limits.max_net_width      # the module is abandoned; keep later masks / slices bounded
         elif len(m.nets) - self._removed_nets >= self.limits.max_nets:
             self._limit("net count", f"more than {self.limits.max_nets} nets")
         n = Net(m.next_net_id, width, signed, name, port)
@@ -587,6 +588,7 @@ class MemHandle:
         out = b._new_net(self.width, f"{self.name}.r{i}", False, None)
         self.reads.append({"addr": addr, "clk": None if clk is None else b._s(clk), "en": None if en is None else b._s(en),
                            "edge": clk_edge, "out": out})
+        self._pin(addr, clk, en)
         return out.sig
 
     def write(self, addr, data, *, en=None, clk=None, clk_edge: str = "pos", origin=None,
@@ -605,6 +607,14 @@ class MemHandle:
             w["lane"] = (lo, lw)
             w["data"] = _fit(b._s(data), lw)
         self.writes.append(w)
+        self._pin(addr, data, en, clk)
+
+    def _pin(self, *sigs) -> None:
+        """Count the port operands as used until ``seal`` emits the node: a garbage collection
+        (``Builder.discard``) running before then must not drop the logic that feeds them."""
+        for x in sigs:
+            if x is not None:
+                self.b._ref(self.b._s(x), 1)
 
     def _merge_lanes(self) -> None:
         """Merge disjoint partial-word writes (see :meth:`write`) into byte-enable ports."""
