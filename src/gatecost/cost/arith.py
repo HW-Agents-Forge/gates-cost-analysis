@@ -21,8 +21,8 @@ def add_acc(arch: str, n: int, p: Profile) -> Acc:
         a.add("HA", n, p.P["HA"]).add("PREFIX", 2 * n - 2 - L, G).add("XOR2", n - 1, p.P["XOR2"])
     elif arch == "kogge_stone":
         a.add("HA", n, p.P["HA"]).add("PREFIX", n * L - n + 1, G).add("XOR2", n - 1, p.P["XOR2"])
-    else:  # validated at profile load time
-        raise ValueError(f"unknown adder architecture {arch!r}")
+    else:  # validated at profile load time (profile.ADD_ARCHS): reaching this is an invariant breach
+        raise ValueError(f"unknown adder architecture {arch!r} (expected ripple, brent_kung or kogge_stone)")
     return a
 
 
@@ -344,7 +344,7 @@ def div_op(n: int, m: int, p: Profile, signed: bool = False, k: int | None = Non
     """DIV/MOD of an n-bit dividend by an m-bit divisor (or by constant ``k``)."""
     if k is not None:
         if k <= 0:
-            raise ValueError("division by a constant must use a positive divisor")
+            raise ValueError(f"division by a constant must use a positive divisor, got {k}")
         if k & (k - 1) == 0:  # power of two
             if k == 1 or not signed:
                 return zero("div", "poor")
@@ -367,6 +367,6 @@ def div_op(n: int, m: int, p: Profile, signed: bool = False, k: int | None = Non
 def ilog2_fix(n: int) -> int:
     """Piecewise-linear log2(n) in milli (exact at powers of two); monotone, no floats."""
     if n < 1:
-        raise ValueError("log2 of a non-positive number")
+        raise ValueError(f"log2 of a non-positive number ({n})")
     f = flog2(n)
     return f * 1000 + rdiv((n - (1 << f)) * 1000, 1 << f)
