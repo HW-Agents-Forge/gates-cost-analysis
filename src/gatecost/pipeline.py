@@ -362,7 +362,7 @@ def build_index(inp: Inputs, res, ifdefs: dict) -> dict | None:
             return None
         facts = res.file_facts
         return _file_index(facts, inp, ifdefs) if facts is not None else None
-    except Exception:
+    except Exception:  # best-effort optimisation: None means a full analysis, the result is identical
         return None
 
 
