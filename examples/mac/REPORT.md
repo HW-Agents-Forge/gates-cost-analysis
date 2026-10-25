@@ -36,50 +36,50 @@ WHY medium: delta range is +/-42% of the estimate
 
 ```console
 $ gatecost diff --before baseline/sv --after pipelined/sv --root . --top mac --verbose
-DELTA +159 GE (-221..+473) +21.4% verdict=UNCERTAIN confidence=low
-TOP mac before=743 after=902
+DELTA +134 GE (-285..+447) +18.0% verdict=UNCERTAIN confidence=low
+TOP mac before=743 after=877
 +496 mac.sv:16 added DFF x16 (register stage) + MUL 8x8 x1
 -496 mac.sv:21 removed MAC 8x8 +1
-+159 mac.sv:21 added ADD w24
-MODULE mac{ACC_W=24,W=8} x1->x1 intrinsic=+159 multiplicity=0
-CATEGORIES addcmp=+159 mul=-128 seq=+128
-WHY low: delta range is +/-219% of the estimate
++134 mac.sv:21 added ADD w24
+MODULE mac{ACC_W=24,W=8} x1->x1 intrinsic=+134 multiplicity=0
+CATEGORIES addcmp=+134 mul=-128 seq=+128
+WHY low: delta range is +/-273% of the estimate
 ```
 
 ### VHDL
 
 ```console
 $ gatecost diff --before baseline/vhdl --after pipelined/vhdl --root . --top mac --verbose
-DELTA +159 GE (-221..+473) +21.4% verdict=UNCERTAIN confidence=low
-TOP mac before=743 after=902
+DELTA +134 GE (-285..+447) +18.0% verdict=UNCERTAIN confidence=low
+TOP mac before=743 after=877
 -496 mac.vhd:44 removed MAC 8x8 +1
 +368 mac.vhd:31 added MUL 8x8
-+159 mac.vhd:44 added ADD w24
++134 mac.vhd:44 added ADD w24
 +128 mac.vhd:27 added DFF x16 (register stage)
-MODULE mac{acc_w=24,w=8} x1->x1 intrinsic=+159 multiplicity=0
-CATEGORIES addcmp=+159 mul=-128 seq=+128
-WHY low: delta range is +/-219% of the estimate
+MODULE mac{acc_w=24,w=8} x1->x1 intrinsic=+134 multiplicity=0
+CATEGORIES addcmp=+134 mul=-128 seq=+128
+WHY low: delta range is +/-273% of the estimate
 ```
 
 ### Pull-request comment format (`--format markdown`, SystemVerilog)
 
-#### gatecost: UNCERTAIN +159 GE (-221..+473), +21.4%, confidence low
+#### gatecost: UNCERTAIN +134 GE (-285..+447), +18.0%, confidence low
 
-Top `mac`: 743 -> 902 GE
+Top `mac`: 743 -> 877 GE
 
 | Δ GE | location | reason | description |
 |---:|---|---|---|
 | +496 | `mac.sv:16` | added | DFF x16 (register stage) + MUL 8x8 |
 | -496 | `mac.sv:21` | removed | MAC 8x8 +1 |
-| +159 | `mac.sv:21` | added | ADD w24 |
+| +134 | `mac.sv:21` | added | ADD w24 |
 
-**Confidence low:** delta range is +/-219% of the estimate
+**Confidence low:** delta range is +/-273% of the estimate
 
 <details><summary>Details</summary>
 
 | category | Δ GE |
 |---|---:|
-| addcmp | +159 |
+| addcmp | +134 |
 | mul | -128 |
 | seq | +128 |
 

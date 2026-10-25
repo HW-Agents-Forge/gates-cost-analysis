@@ -21,6 +21,7 @@ INIT_TEMPLATE = """\
 # filelists = ["rtl/files.f"]
 # exclude = ["rtl/legacy/**"]      # added to the built-in exclusions
 # defines = {{ SYNTHESIS = "1" }}
+# params = {{ DATA_WIDTH = 8 }}      # parameters / generics of the top
 # languages = ["verilog", "vhdl"]
 
 # [project.libraries]              # VHDL library mapping (default: all in "work")

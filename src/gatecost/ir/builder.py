@@ -263,6 +263,11 @@ class Builder:
         for node in reversed(self.module.nodes):
             if node.alive and node.op not in ("DFF", "LATCH", "MEM", "INST", "BLACKBOX"):
                 if all(o.fanout == 0 and not o.port for o in node.outputs):
+                    # only operations the designer named (a declared but unused wire) are reported, not the
+                    # temporaries of lowering
+                    if node.op != "NOT" and node.alive and any(
+                            o.name and not o.name.startswith(("$", "_")) for o in node.outputs):
+                        self.module.unobservable["ops"] += 1
                     self.discard_node(node)
 
     def discard_node(self, node: Node) -> None:
@@ -574,6 +579,8 @@ class MemHandle:
         self.origin = origin
         self.reads: list[dict] = []
         self.writes: list[dict] = []
+        self.init: dict[int, int] = {}         # word contents assigned by an initial block
+        self.init_unknown = False              # loaded from a file or written with a non-constant value
         self.node: Node | None = None
         self._outs: list[Net] = []
         b.__dict__.setdefault("_mems", []).append(self)
@@ -706,6 +713,10 @@ class MemHandle:
         attrs = {"depth": self.depth, "width": self.width, "rports": len(self.reads),
                  "wports": len(self.writes), "read_style": style, "rstyles": tuple(rstyles),
                  "mem_name": self.name}
+        if not self.writes and (self.init or self.init_unknown):
+            attrs["rom"] = True
+            if self.init and not self.init_unknown:
+                attrs["init"] = tuple(self.init.get(i, 0) for i in range(self.depth)) if self.depth <= 1 << 16 else None
         lanes = tuple(w.get("lanes") for w in self.writes)
         if any(l is not None and (len(l) > 1 or l[0][1] < self.width) for l in lanes):
             attrs["wlanes"] = tuple(l if l is not None else ((0, self.width),) for l in lanes)

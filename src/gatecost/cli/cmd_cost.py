@@ -268,7 +268,7 @@ def run(args, settings, cfg) -> tuple[str, int]:
 
     cache = resolve_cache(settings)
     t0 = time.perf_counter()
-    inp = pipeline.read_inputs(files, incdirs, defines, settings.root)
+    inp = pipeline.read_inputs(files, incdirs, defines, settings.root, settings.params)
     sr = pipeline.analyze_side(inp, profile, settings.top, limits, cache, elaborate=get_elaborator(), side="after")
     tree = sr.tree
     assumed = list(sr.assumptions)
@@ -287,7 +287,10 @@ def run(args, settings, cfg) -> tuple[str, int]:
                                     f"{settings.budget:g} GE", "error", True, "after"))
     diags = _dedupe(diags)
     status = "partial" if any(d.affects_cost for d in diags if d.code != "BUDGET_EXCEEDED") else "ok"
-    cfg_out = {"top": result.top, "defines": dict(defines), "sources": len(files)}
+    from ..params import params_json
+
+    cfg_out = {"top": result.top, "defines": dict(defines), "params": params_json(settings.params),
+               "sources": len(files)}
     out = Output(command="cost", status=status, profile={"name": profile.name, "nand2_area_um2": profile.nand2_area_um2},
                  config=cfg_out, result=result, diagnostics=diags,
                  meta={"elapsed_ms": round((time.perf_counter() - t0) * 1000), "cache": cache.state})

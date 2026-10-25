@@ -15,13 +15,15 @@ from .conc import ConcMixin, base_names
 from .core import Ctx, NotConst, Unsupported, int_val
 from .decl import DeclMixin
 from .expr import ExprMixin
-from .inst import InstMixin, flat_ports
+from .fixed import FixedMixin
+from .floatp import FloatMixin
+from .inst import InstMixin, ViewMode, flat_ports
 from .ops import OpsMixin
 from .stmt import StmtMixin
 from .values import Scope, Sym, Val
 
 
-class Elab(ExprMixin, OpsMixin, StmtMixin, DeclMixin, ConcMixin, InstMixin):
+class Elab(ExprMixin, OpsMixin, FixedMixin, FloatMixin, StmtMixin, DeclMixin, ConcMixin, InstMixin):
     """Evaluator/elaborator bound to one IR builder (one per module under construction)."""
 
     def __init__(self, ctx, builder):
@@ -141,7 +143,8 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
                     assigned.update(base_names(a.actual))
     hints = {k[5:]: v for k, v in params.items() if k.startswith("$len:")}
     for pn, mode, pt, default in E.entity_ports(ent, esc, hints):
-        mode = (mode or "in").lower()
+        view_dirs = mode.dirs if isinstance(mode, ViewMode) else None
+        mode = "view" if view_dirs is not None else (mode or "in").lower()
         if mode in ("inout", "buffer"):
             direction = "out" if (pn in assigned or mode == "buffer") else "in"
         elif mode == "out":
@@ -150,7 +153,10 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
             direction = "in"
         nets = []
         for fn, ft in flat_ports(pn, pt):
-            signed = bool(ft.signed) if ft.kind == "int" else ft.cls == "s"
+            signed = bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES
+            if view_dirs is not None:
+                dd = view_dirs.get(fn, "in")
+                direction = ("out" if pn in assigned else "in") if dd == "inout" else ("out" if dd == "out" else "in")
             nets.append(b.port(fn, direction, ft.width, signed))
         sig = SigSpec.concat([n.sig for n in nets])
         s = Sym("obj", pn, pt, sig=sig)
@@ -265,8 +271,11 @@ class _Foreign:
         out = []
         for pn, mode, pt, d in E.entity_ports(self.ent, esc):
             for fn, ft in flat_ports(pn, pt):
-                direction = "in" if mode in ("in", "linkage") else ("out" if mode in ("out", "buffer") else "inout")
-                out.append((fn, direction, ft.width, bool(ft.signed) if ft.kind == "int" else ft.cls == "s"))
+                if isinstance(mode, ViewMode):
+                    direction = mode.dirs.get(fn, "in")
+                else:
+                    direction = "in" if mode in ("in", "linkage") else ("out" if mode in ("out", "buffer") else "inout")
+                out.append((fn, direction, ft.width, bool(ft.signed) if ft.kind == "int" else ft.cls in T.SIGNED_CLASSES))
         return out
 
     def elaborate(self, params, const_ports):
@@ -343,7 +352,7 @@ class VhdlElaborator:
                 ctx.diag("MISSING_UNIT", "top entity '%s' not found" % top)
             for ent in ents:
                 try:
-                    key = self.elab_root(ent, generics if (top is not None or len(ents) == 1) else None)
+                    key = self.elab_root(ent, generics)
                 except RecursionError:
                     ctx.diag("LIMIT_REACHED", "recursion limit while elaborating '%s'" % ent.name, ent.file, ent.line, ent.col)
                     key = None

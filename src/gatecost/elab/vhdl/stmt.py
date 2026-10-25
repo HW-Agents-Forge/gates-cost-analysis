@@ -92,6 +92,9 @@ class StmtMixin:
         if isinstance(e, N.Slice):
             base = self.lvalue(e.prefix, sc)
             return self.slice_lv_any(base, e.range, sc, e)
+        if isinstance(e, N.ExternalName):
+            raise Unsupported("assignment to the external name '<< %s %s >>' (not resolved across the hierarchy)"
+                              % (e.cls, e.path))
         if isinstance(e, N.Aggregate):
             parts = [self.lvalue(it.value, sc) for it in e.items]
             lv = LV(None, parts=parts)
@@ -214,6 +217,8 @@ class StmtMixin:
                 return
             blk.mem_write(lv.mem, lv.addr, sg.resize(mw, False), origin=o)
             return
+        if lv.width == 0 and not lv.dyn:
+            return                                   # null-range target
         lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
         if lv.width > lim.max_net_width:
             # a target this wide (typically from a garbage-in generic) would only be resized, never costed
@@ -339,6 +344,13 @@ class StmtMixin:
     def mem_slice_parts(self, e, sc):
         """(memory prefix node, [index, ...]) for ``mem(a to b)`` / ``mem(a to b)`` written as slice or range
         application on a name that denotes a memory with constant bounds, else None."""
+        if isinstance(e, N.Ident):                       # the whole memory
+            syms = sc.lookup(e.name)
+            if syms and syms[0].kind == "mem":
+                t = syms[0].t
+                l, r = t.left, t.right
+                return e, (list(range(l, r + 1)) if t.dir == "to" else list(range(l, r - 1, -1)))
+            return None
         if isinstance(e, N.Slice):
             pre, rng = e.prefix, e.range
         elif isinstance(e, N.Apply) and len(e.args) == 1 and self.is_range_expr(e.args[0].actual, sc):
@@ -356,6 +368,35 @@ class StmtMixin:
             return None
         idx = list(range(l, r + 1)) if d == "to" else list(range(l, r - 1, -1))
         return pre, idx
+
+    def mem_aggregate_words(self, agg, didx, sc):
+        """One expression per index of ``didx`` for a (positional / named / ``others``) aggregate, else None."""
+        words = {}
+        others = None
+        pos = 0
+        for it in agg.items:
+            if it.choices is None:
+                if pos >= len(didx):
+                    return None
+                words[didx[pos]] = it.value
+                pos += 1
+                continue
+            for ch in it.choices:
+                if isinstance(ch, N.Others):
+                    others = it.value
+                elif isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
+                    l, r, _d = self.eval_range(ch, sc)
+                    for i in range(min(l, r), max(l, r) + 1):
+                        words[i] = it.value
+                else:
+                    words[self.const_int(self.eval(ch, sc))] = it.value
+        out = []
+        for i in didx:
+            v = words.get(i, others)
+            if v is None:
+                return None
+            out.append(v)
+        return out
 
     def st_mem_slice_assign(self, xc, s, sc):
         """``mem(0 to n-1) <= mem(1 to n)`` (a word shift register) / ``mem(a to b) <= (others => x)``:
@@ -378,9 +419,10 @@ class StmtMixin:
             if len(sidx) != len(didx):
                 return False
             values = [elem(spre, j) for j in sidx]
-        elif isinstance(rhs, N.Aggregate) and len(rhs.items) == 1 and rhs.items[0].choices \
-                and len(rhs.items[0].choices) == 1 and isinstance(rhs.items[0].choices[0], N.Others):
-            values = [rhs.items[0].value] * len(didx)
+        elif isinstance(rhs, N.Aggregate):
+            values = self.mem_aggregate_words(rhs, didx, sc)
+            if values is None:
+                return False
         else:
             return False
         # the right-hand sides all read the old contents: evaluate them before any word is written
@@ -864,7 +906,7 @@ class StmtMixin:
             rh = fn.ret_t if fn.ret_t is not None and fn.ret_t.width else None
             if rh is None:
                 rd = getattr(fn, "ret_decl", None)
-                if rd is not None and rd.kind == "array" and isinstance(s.value, N.Aggregate):
+                if rd is not None and rd.kind in ("array", "record") and isinstance(s.value, N.Aggregate):
                     rh = rd         # unconstrained return type: lets ``(x'range => '0')`` find its element type
             v = self.eval(s.value, sc, rh)
             if fn.ret_t is not None and fn.ret_t.width and not (fn.ret_t.kind == "array" and fn.ret_t.width is None):
@@ -938,7 +980,24 @@ class StmtMixin:
                 return False
         return True
 
-    def pick_overload(self, syms, args, sc):
+    def ret_fits(self, fd, hint):
+        """Does the return type of ``fd`` fit the expected type ``hint`` (overloads that differ by result only)?"""
+        rn = fd.node.return_type
+        if rn is None or hint is None:
+            return True
+        try:
+            rt = self.resolve_subtype(rn, fd.scope)
+        except Exception:
+            return True
+        if rt.kind != hint.kind:
+            return False
+        if rt.kind == "array":
+            return rt.cls == hint.cls or rt.cls is None or hint.cls is None
+        if rt.kind == "enum":
+            return rt.lits is hint.lits or (rt.cls is not None and rt.cls == hint.cls)
+        return True
+
+    def pick_overload(self, syms, args, sc, hint=None):
         cands = []
         n = len(args)
         for s in syms:
@@ -954,21 +1013,27 @@ class StmtMixin:
             return None
         if len(cands) == 1:
             return cands[0].val
-        # prefer matching argument types
+        # prefer matching argument types, then the expected result type
         vals = []
         try:
             vals = [self.eval(a.actual, sc) for a in args]
         except Exception:
             pass
         if len(vals) == n:
+            ok = []
             if all(a.formal is None for a in args):
-                for s in cands:
-                    if len(s.val.node.params) == n and self.user_params_match(s.val, vals):
-                        return s.val
-            # named associations, or parameters left to their defaults: match the supplied ones
-            for s in cands:
-                if self.user_params_match(s.val, vals, args):
-                    return s.val
+                ok = [s for s in cands if len(s.val.node.params) == n and self.user_params_match(s.val, vals)]
+            if not ok:
+                # named associations, or parameters left to their defaults: match the supplied ones
+                ok = [s for s in cands if self.user_params_match(s.val, vals, args)]
+            if ok:
+                if len(ok) > 1 and hint is not None:
+                    ok = [s for s in ok if self.ret_fits(s.val, hint)] or ok
+                return ok[0].val
+        if hint is not None:
+            fit = [s for s in cands if self.ret_fits(s.val, hint)]
+            if fit:
+                return fit[-1].val
         return cands[-1].val
 
     def user_overload_fits(self, syms, args, sc):
@@ -1060,8 +1125,25 @@ class StmtMixin:
             fscope.declare(Sym("const", p.name, v.t, val=v))
         return post
 
+    def unknown_ret(self, fd, hint):
+        """All-X value of the declared return type of ``fd`` (a failed call keeps its type: no cascade of
+        ``no '**' for sl and str`` style diagnostics on the consumers)."""
+        try:
+            rt = self.resolve_subtype(fd.node.return_type, fd.scope) if fd.node.return_type is not None else None
+        except Exception:
+            rt = None
+        if rt is None:
+            return self.unknown(hint)
+        if rt.kind == "array" and rt.width is None:
+            if hint is not None and hint.kind == "array" and hint.width:
+                return self.unknown(hint)
+            rt = T.constrain(rt, 1, 1, "to") if rt.cls == "str" else T.constrain(rt, 0, 0, "downto")
+        if rt.width:
+            return Val(rt, SigSpec.x(rt.width))
+        return self.unknown(hint)
+
     def call_user(self, syms, args, e, sc, hint):
-        fd = self.pick_overload(syms, args, sc)
+        fd = self.pick_overload(syms, args, sc, hint)
         if fd is None:
             self.diag("UNRESOLVED_OVERLOAD", "no matching overload of '%s'" % syms[0].name, e)
             return self.unknown(hint)
@@ -1071,10 +1153,10 @@ class StmtMixin:
         body = fd.body_node
         if body is None or not body.body and not body.decls and not body.has_body:
             self.diag("UNSUPPORTED_CONSTRUCT", "function '%s' has no body" % node.name, e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         if self.call_depth >= self.ctx.limits["inline_depth"]:
             self.diag("LIMIT_REACHED", "function inlining depth %d reached at '%s'" % (self.ctx.limits["inline_depth"], node.name), e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         self.call_depth += 1
         xc = None
         if self.call_depth == 1:
@@ -1097,7 +1179,7 @@ class StmtMixin:
             fn = xc.fn
             if fn.ret_net is None:
                 self.diag("UNSUPPORTED_CONSTRUCT", "function '%s' returns no value on this path" % node.name, e)
-                return self.unknown(hint)
+                return self.unknown_ret(fd, hint)
             sig = blk.read(fn.ret_net.sig)
             rt = ret_t if (ret_t is not None and ret_t.width == sig.width) else getattr(fn, "ret_t_eff", ret_t)
             if rt is not None and rt.kind == "array" and rt.width is None:
@@ -1105,6 +1187,9 @@ class StmtMixin:
                 rt = T.constrain(rt, n - 1, 0, "downto")
             if rt is None:
                 rt = T.T_STD_LOGIC
+            if ret_t is not None and ret_t.kind == "array" and rt.kind != "array":
+                # the body returned a scalar for an array result (a failed sub-expression): keep the declared kind
+                return self.unknown_ret(fd, hint)
             v = Val(rt, sig, None, getattr(fn, "ret_z", 0))
             if rt.kind == "int" and sig.const_value() is not None and not sig.const_value().xmask:
                 c = sig.const_value()
@@ -1119,7 +1204,7 @@ class StmtMixin:
             return v
         except StopLimit:
             self.diag("LIMIT_REACHED", "constant-function interpreter step limit reached in '%s'" % node.name, e)
-            return self.unknown(hint)
+            return self.unknown_ret(fd, hint)
         finally:
             self.call_depth -= 1
             self.file = saved_file

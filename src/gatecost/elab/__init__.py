@@ -130,6 +130,7 @@ from dataclasses import dataclass, field, replace
 from gatecost._lazy import LazyMap
 from gatecost.errors import GatecostError
 from gatecost.frontend.verilog import ast as A
+from gatecost.params import for_vhdl
 from gatecost.result import Diagnostic
 
 _VERILOG_EXT = {".v", ".vh", ".sv", ".svh"}
@@ -263,8 +264,13 @@ def quick_facts(files, *, root, defines: dict | None = None, incdirs=(), limits:
 
 def elaborate_project(files, *, root, top: str | None = None, defines: dict | None = None, incdirs=(),
                       limits: dict | None = None, side: str = "after", only_modules=None,
-                      propagate_const_ports: bool = True, roots_hint=None, needed_hint=None, extra_parse_diags=()) -> ElabResult:
-    """Parse and elaborate a set of RTL files into an analyzed :class:`gatecost.ir.Design`."""
+                      propagate_const_ports: bool = True, roots_hint=None, needed_hint=None, extra_parse_diags=(),
+                      params: dict | None = None) -> ElabResult:
+    """Parse and elaborate a set of RTL files into an analyzed :class:`gatecost.ir.Design`.
+
+    ``params`` overrides the parameters (Verilog) or generics (VHDL, case-insensitive) of the top unit(s): typed
+    python values (``int``, ``float``, ``bool``, ``str``, :class:`gatecost.params.Lit`).  A name that no
+    elaborated top declares is reported as ``UNKNOWN_PARAMETER`` and ignored."""
     from gatecost.frontend.verilog import Limits as PLimits
     from gatecost.frontend.verilog import parse_files as vparse
 
@@ -275,6 +281,12 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         raise GatecostError("NO_SOURCES", "no RTL source files to analyze")
     v_files = [_abs(f, root) for f in files if os.path.splitext(os.fspath(f))[1].lower() in _VERILOG_EXT]
     h_files = [_abs(f, root) for f in files if os.path.splitext(os.fspath(f))[1].lower() in _VHDL_EXT]
+    # a ``.v``/``.sv`` file that actually holds VHDL (first token ``library``/``entity``/...) is parsed as VHDL
+    from gatecost.discovery import sniff_is_vhdl
+    relabelled = [f for f in v_files if sniff_is_vhdl(f)]
+    if relabelled:
+        v_files = [f for f in v_files if f not in relabelled]
+        h_files = h_files + relabelled
     alias = {"inline_depth": "call_depth", "const_steps": "const_func_steps"}
     limits = {alias.get(k, k): v for k, v in (limits or {}).items() if isinstance(v, int) and not isinstance(v, bool)}
     lim = dict(DEFAULT_LIMITS)
@@ -295,6 +307,10 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         if extra_parse_diags:      # parse diagnostics of files the caller left out (changed-cone analysis)
             diags = sorted(diags + [replace(d, side=side) for d in extra_parse_diags],
                            key=lambda d: (d.file or "", d.line or 0, d.column or 0))
+        for f in relabelled:
+            diags.append(Diagnostic("LANGUAGE_MISMATCH", "file has a Verilog/SystemVerilog extension but contains "
+                                    "VHDL (it starts with a VHDL design unit); it is parsed as VHDL", "warning",
+                                    False, side, ctx.disp(f), 1, None))
         v_units = list(parsed.modules) + list(parsed.interfaces)
         tops: list = []
         top_keys: dict = {}
@@ -317,13 +333,13 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         if run_v:
             exclude = vh.instantiated_low() if vh is not None else set()
             name, top_keys, tops = elaborate_verilog(parsed, ctx, top if in_v else None, exclude,
-                                                    have_other_language=vh is not None)
+                                                    have_other_language=vh is not None, params=params)
             if name is not None:
                 top_key = top_keys.get(name)
         if run_h:
             v_inst_low = {x.lower() for m in list(parsed.modules) + list(parsed.interfaces)
                           for x in ctx.scan(m).insts}
-            hres = vh.run(top if in_h else None, v_inst_low)
+            hres = vh.run(top if in_h else None, v_inst_low, params)
             if hres is not None:
                 diags.extend(hres["diags"])
                 for t in hres["tops"]:
@@ -336,6 +352,8 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
                 ctx.stubbed.update(hres["stubbed"])
                 ctx.assumptions.update(hres["assumptions"])
                 h_hashes = hres["hashes"]
+        if params:
+            _check_params(ctx, params, vh, hres)
         if top is None and vh is not None and len(tops) > 1:
             # roots of both languages: the alphabetically first one is the default top
             first = next((t for t in sorted(tops) if t in top_keys), None)
@@ -394,6 +412,26 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         _PN.clear()
         if sys.getrecursionlimit() != old_rec:
             sys.setrecursionlimit(old_rec)
+
+
+def _check_params(ctx, params, vh, hres) -> None:
+    """``UNKNOWN_PARAMETER`` for every override that no elaborated top unit declares."""
+    known: dict[str, set] = {t: set(ns) for t, ns in ctx.param_known.items()}       # Verilog: exact names
+    low: dict[str, set] = {}                                                       # VHDL: case-insensitive
+    if hres is not None and vh is not None and vh.parsed is not None:
+        for (_l, n), ent in vh.parsed.entities.items():
+            for t in hres["tops"]:
+                if n == t.lower():
+                    low[t] = {g.name.lower() for g in (ent.generics or ()) if g.kind == "constant"}
+    units = sorted(set(known) | set(low))
+    if not units:
+        return
+    for name in sorted(params):
+        if any(name in ns for ns in known.values()) or any(name.lower() in ns for ns in low.values()):
+            continue
+        listed = sorted(set().union(*known.values(), *low.values()))
+        ctx.add_diag("UNKNOWN_PARAMETER", f"unknown parameter '{name}' of top '{', '.join(units)}'; known: "
+                     + (", ".join(listed) if listed else "none"), "warning", True, None)
 
 
 class _VhdlSide:
@@ -477,7 +515,7 @@ class _VhdlSide:
             pass
         return out
 
-    def run(self, top, v_inst_low):
+    def run(self, top, v_inst_low, params=None):
         side = self.side
         if self.vel is not None:
             vel = self.vel
@@ -488,7 +526,7 @@ class _VhdlSide:
                     names = [e.name for e in vel.roots(None) if e.name.lower() not in v_inst_low]
                 tops, top_keys, stubbed, asm, hashes, diags = [], {}, set(), set(), [], []
                 for nm in names:
-                    r = vel.elaborate(nm)
+                    r = vel.elaborate(nm, for_vhdl(params)) if params else vel.elaborate(nm)
                     for t in r.tops:
                         if t not in tops:
                             tops.append(t)
@@ -513,9 +551,10 @@ class _VhdlSide:
                                                            f"VHDL elaboration failed ({type(exc).__name__}: {exc})",
                                                            "warning", True, side, None, None, None)]}
         try:
+            extra = {"generics": for_vhdl(params)} if params else {}
             res = self.fn(self.parsed, self.ctx.design, top=top, limits=dict(self.lim), side=side,
                           only_modules=set(self.only) if self.only is not None else None,
-                          foreign=self.ctx.verilog_lookup, root=self.root)
+                          foreign=self.ctx.verilog_lookup, root=self.root, **extra)
         except GatecostError:
             raise
         except Exception as exc:

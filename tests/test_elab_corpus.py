@@ -18,7 +18,6 @@ P = load_profile()
 
 # Documented skip diagnostics that are accepted for a corpus file: {relative path: [message fragments]}.
 DOCUMENTED_SKIPS = {
-    "verilog/mac_array.sv": ["unpacked array port"],      # array ports are flattened into one vector (FRONTEND.md 3)
 }
 # Diagnostic codes that must never appear.
 FORBIDDEN = {"PARSE_ERROR", "INTERNAL", "MISSING_MODULE", "UNRESOLVED_NAME", "UNRESOLVED_OVERLOAD", "MISSING_UNIT"}

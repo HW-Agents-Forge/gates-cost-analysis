@@ -112,8 +112,12 @@ def mul(n, m, signed=False):
 
 
 def div(n, m):
-    lo = n * (m + 1) * (FA + XOR2)
-    typ = 1.2 * n * ((m + 1) * FA + m * MUX2)
+    # triangular array: row i works on min(i + 1, m) significant remainder bits (dividend is zero-extended)
+    r = min(n, m)
+    t = r * (r + 1) // 2 + (n - r) * m
+    chain = m * 0.75
+    lo = (t + n) * (FA + XOR2) + chain
+    typ = 1.2 * ((t + n) * FA + t * MUX2 + chain)
     return lo, typ, 2.5 * typ
 
 

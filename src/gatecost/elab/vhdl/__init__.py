@@ -61,10 +61,17 @@ Behaviour notes and known gaps
   Verilog notes: one write port with per-lane enables).  ``case`` statements and selected assignments mapping
   constant choices to constants (at least 6 choices, selector 3..12 bits, ``others`` or full coverage) are ROMs.
   Guarded blocks keep their statements unguarded with a diagnostic.
+* ``ieee.fixed_pkg`` (``ufixed``/``sfixed``) has the package result ranges and quantisation/overflow styles
+  (``fixed.py``); ``ieee.float_pkg`` has exact types/constants and an approximate datapath model (``floatp.py``;
+  ``ctx.assume`` records it).  An array that is assigned as a whole in a clocked process (a reset of
+  ``mem <= (others => (others => '0'))``) is a register file, not a RAM.  Overloads that differ only by result type
+  (hdl4fpga ``"**"``) are chosen from the expected type.  Ports declared with a VHDL-2019 mode view get a direction
+  per flattened record leaf.
 * Gaps (degrade with a diagnostic): non-constant slice widths, ``wait`` other than the leading
   ``wait until <edge>``, ``while`` loops with data-dependent conditions, configuration bodies, generic
-  subprograms and design-unit-level generic package instantiation (the parser skips them; a package instantiated in
-  a declarative region works), external names, physical/real hardware values.
+  subprograms and design-unit-level generic package instantiation (the parser skips them with one diagnostic; a
+  package instantiated in a declarative region works), external names (parsed; value unknown), arrays of records
+  behind view ports, physical/real hardware values.
 """
 from __future__ import annotations
 

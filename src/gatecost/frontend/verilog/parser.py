@@ -70,6 +70,17 @@ class ParseError(Exception):
         self.msg = msg
 
 
+def _initialises_array(body) -> bool:
+    """True when an initial-block body writes an element of an array or loads one with ``$readmem*``."""
+    for n in A.walk(body):
+        c = type(n)
+        if c is A.ProcAssign and type(n.lhs) is A.Index and type(n.lhs.base) is A.Ident:
+            return True
+        if c is A.CallStmt and type(n.call) is A.SysCall:
+            return True
+    return False
+
+
 class ParsedUnit:
     __slots__ = ("modules", "packages", "interfaces", "unit_items", "udps")
 
@@ -104,6 +115,7 @@ class Parser:
         self.k = self.kinds[0]
         self.last_err = -1
         self.nerr = 0
+        self.in_initial = False
         self.ns = 0              # counter of non-synthesizable statements seen
         self.depth = 0
         self.unit = ParsedUnit()
@@ -1190,6 +1202,8 @@ class Parser:
                 self.expect(";")
             if lhs.name not in ("$error", "$fatal", "$warning", "$info", "$finish", "$stop", "$exit"):
                 self.ns += 1         # assertion-style reporting in an unreachable branch keeps a function synthesizable
+            if self.in_initial and lhs.name in ("$readmemh", "$readmemb"):
+                return A.CallStmt(loc, lhs)
             self.info(i, f"system task {lhs.name} ignored")
             return A.Null(loc)
         if isinstance(lhs, A.Cast) and isinstance(lhs.expr, A.Call):
@@ -1995,7 +2009,26 @@ class Parser:
 
     def i_initial(self, out):
         i = self.i
-        self.info(i, f"{self.k} block ignored")
+        kind = self.k
+        if kind == "initial":
+            # An initial block that fills an array (``m[3] = ...``, ``$readmemh``) initialises a ROM; it is kept as
+            # ``Always(kind="initial")``.  Any other initial block is ignored as before.
+            nerr, last, ndiag = self.nerr, self.last_err, len(self.sink.items)
+            self.in_initial = True
+            try:
+                self.adv()
+                body = self.parse_stmt()
+            except ParseError:
+                body = None
+            finally:
+                self.in_initial = False
+            if body is not None and self.nerr == nerr and _initialises_array(body):
+                out.append(A.Always(self.loc(i), "initial", None, body))
+                return
+            self.i, self.k = i, self.kinds[i]
+            self.nerr, self.last_err = nerr, last
+            del self.sink.items[ndiag:]
+        self.info(i, f"{kind} block ignored")
         self.adv()
         self.skip_statement()
 

@@ -217,8 +217,8 @@ def _header_ports(ctx, ev, mod, overrides):
         if p.dims:
             ud = ev.eval_dims(p.dims)
             if ud:
-                ev.diag("UNSUPPORTED_CONSTRUCT", f"unpacked array port '{p.name}' is flattened into one vector",
-                        p, True)
+                ev.diag("ARRAY_PORT_FLATTENED", f"unpacked array port '{p.name}' is flattened into one vector "
+                        "(element-wise wiring, no cost impact)", p, False, "info")
                 pt = pack(ud, pt, pt.signed)
         dr = _DIR.get(p.direction, "in")
         if dr == "inout":
@@ -253,7 +253,16 @@ class ModElab(BaseEv):
         self.refs = self.ctx.scan(self.mod).refs
 
     def compute_mem_names(self):
-        self.mem_names = mem_names_of(self.ctx.scan(self.mod))
+        names = set(mem_names_of(self.ctx.scan(self.mod)))
+        for it in self.mod.items:                       # arrays initialised by an ``initial`` block are ROM candidates
+            if type(it) is A.Always and it.kind == "initial":
+                for n in A.walk(it.body):
+                    if type(n) is A.ProcAssign and type(n.lhs) is A.Index and type(n.lhs.base) is A.Ident:
+                        names.add(n.lhs.base.name)
+                    elif type(n) is A.CallStmt and type(n.call) is A.SysCall and len(n.call.args) > 1 \
+                            and type(n.call.args[1]) is A.Ident:
+                        names.add(n.call.args[1].name)
+        self.mem_names = names
 
     # ------------------------------------------------------------------ driver
     def run(self):
@@ -634,8 +643,30 @@ class ModElab(BaseEv):
             self._gen_body(default.body)
 
     # ------------------------------------------------------------------ always
+    def do_initial(self, a: A.Always):
+        """Contents of arrays filled by an ``initial`` block (a ROM).  Only writes to memories are kept; the block
+        is run through the ordinary statement lowering (so loops unroll) and its other effects are discarded."""
+        self.b.origin = self.org(a.loc)
+        self.ctl = []
+        self.forced_vars = {}
+        self.rbw = set()
+        self.tmp_cands = None
+        self.sync_read_done = set()
+        self.assign_counts = {}
+        self.blk = LowerBlock(self.b, "comb", origin=self.b.origin)
+        self.init_mode = True
+        try:
+            self.exec_stmt(a.body)
+        finally:
+            self.init_mode = False
+            self.blk = None
+        self.diag("IGNORED_REGION", "initial block: only the contents of memories are used (ROM initialisation)",
+                  a, False, "info")
+
     def do_always(self, a: A.Always):
         kind = a.kind
+        if kind == "initial":
+            return self.do_initial(a)
         ev = a.event
         body = a.body
         mode = None

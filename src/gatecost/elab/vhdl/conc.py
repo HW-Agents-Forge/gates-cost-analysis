@@ -128,6 +128,7 @@ class ConcMixin:
                         decl_type[n.name] = fl[-1]
         state = set()
         mems = set()
+        whole = set()
         for p in procs:
             if p.sim_only or not process_is_clocked(p):
                 continue
@@ -136,6 +137,8 @@ class ConcMixin:
                     for nm in base_names(n.target):
                         state.add(nm)
                     tgt = n.target
+                    if isinstance(tgt, N.Ident):
+                        whole.add(tgt.name)
                     if isinstance(tgt, N.Apply) and isinstance(tgt.prefix, N.Ident):
                         for a in tgt.args:
                             if hw_names_in(a.actual, hw):
@@ -148,7 +151,9 @@ class ConcMixin:
                                 mems.add(t.prefix.name)
                         t = t.prefix
         self.state_names = state
-        self.mem_names = mems
+        # an array that is also assigned as a whole in a clocked process (``mem <= (others => (others => '0'))``,
+        # typically a reset) cannot be a RAM: it is a register file
+        self.mem_names = mems - whole
         self.onehot_types = set()
         if self.ctx.fsm_encoding == "one_hot":
             for nm in state:

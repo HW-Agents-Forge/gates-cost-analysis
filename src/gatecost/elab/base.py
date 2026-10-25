@@ -14,6 +14,8 @@ DIAG_DEFAULTS = {
     "UNSUPPORTED_CONSTRUCT": ("warning", True),
     "LIMIT_REACHED": ("warning", True),
     "TRISTATE": ("info", False),
+    "ARRAY_PORT_FLATTENED": ("info", False),
+    "UNKNOWN_PARAMETER": ("warning", True),
     "INFERRED_LATCH": ("warning", False),
     "TOP_AMBIGUOUS": ("info", False),
     "INTERNAL": ("warning", True),
@@ -46,6 +48,7 @@ class BaseEv(ExprMixin, DeclMixin, StmtMixin):
         self.forced_vars = {}
         self.assign_counts = {}
         self.sync_read_done = set()
+        self.init_mode = False
         self._cur = None
         self.path = ""
 

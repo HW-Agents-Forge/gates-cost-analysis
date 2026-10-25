@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -372,10 +373,11 @@ end architecture;
 
 
 class RunawayWidth(Base):
+    # RLIMIT_AS (an address-space cap) is only enforceable on Linux; setrlimit fails in the child on macOS
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs RLIMIT_AS")
     def test_giant_array_bound_does_not_allocate_gigabytes(self):
         import resource
         import subprocess
-        import sys
         from gatecost import REPO_ROOT
         self.write("h.vhd", HUGE_ARRAY)
 
