@@ -233,7 +233,8 @@ There is no preprocessor stage. Synthesis pragma regions (`-- synopsys translate
 - **Multiple architectures** for one entity: the last one compiled in file order is selected unless a `configuration` declaration or the project file names one; the others are reported at `info` level.
 - **Libraries.** `work` is the default library. The project file may map file groups to named libraries. Units are resolved **lazily by name**, so compile order is not required. Absence of a package or library file is handled as in §4 (`MISSING_UNIT`).
 - **Built-in IEEE model.** The front-end ships a built-in model of the standard packages, and does not need their sources:
-  - `std.standard`, `ieee.std_logic_1164`, `ieee.numeric_std`, `ieee.numeric_std_unsigned`, `ieee.math_real` and `ieee.math_complex` (constants and constant functions only);
+  - `std.standard`, `ieee.std_logic_1164`, `ieee.numeric_std`, `ieee.numeric_bit`, `ieee.numeric_std_unsigned`, `ieee.math_real` and `ieee.math_complex` (constants and constant functions only);
+  - `ieee.fixed_pkg` / `ieee_proposed.fixed_pkg` (`ufixed`, `sfixed`, `to_ufixed`/`to_sfixed`, `resize`, arithmetic with the package result ranges, see §10.5) and `ieee.float_pkg` (`float16`/`float32`/`float64`/`float128`, `float(e downto -f)`; approximate arithmetic), plus `ieee.fixed_float_types` (`fixed_wrap`, `fixed_saturate`, `fixed_round`, `fixed_truncate`);
   - the legacy `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed` packages, with their well-known signedness conventions for `std_logic_vector` arithmetic;
   - `std.textio` and `std.env` are recognized and ignored.
 - **Component and entity instantiation.** Direct entity instantiation (`entity work.foo(rtl)`) and component instantiation are both resolved to the entity of the same name in the active libraries; a component without a matching entity is a black box.
@@ -275,6 +276,8 @@ There is no preprocessor stage. Synthesis pragma regions (`-- synopsys translate
 | `std_logic`, `std_logic_vector`, `unsigned`, `signed`, `integer`, `boolean`, `bit` | Exact | |
 | `numeric_std` and `numeric_std_unsigned` operators and conversions | Exact | Built-in model. |
 | `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed` | Exact | Legacy conventions. |
+| `ieee.fixed_pkg` (`ufixed`, `sfixed`) | Exact | Array `high downto low` (negative `low`). Result ranges as in the package: `+ -` `max(high)+1 downto min(low)`; `*` `ha+hb+1 downto la+lb`; `/` `ha-lb downto la-hb-1` (signed `ha-lb+1 downto la-hb`); `rem`, `mod`, `abs`, unary `-`, comparisons, `minimum`/`maximum`, shifts, `scalb`, `reciprocal`/`divide`/`remainder`/`modulo`, `to_slv`/`to_sulv`, `to_integer`/`to_unsigned`/`to_signed`, `to_real` on constants, `find_leftmost`/`find_rightmost`. Real and integer operands are converted to the other operand's range. `resize` and `to_ufixed`/`to_sfixed` honour `fixed_wrap`/`fixed_saturate` (overflow detector + clamp mux) and `fixed_round`/`fixed_truncate` (round incrementer or plain wiring); defaults are the package's (saturate, round). Constants fold exactly. |
+| `ieee.float_pkg` | Approximated | Types and widths exact (`float16/32/64/128`, `float(e downto -f)`), constants and conversions to/from `real` exact. `+ - * /`, compares, `to_float` from integer/fixed, float to integer, `resize` between formats are an approximate gate-level model (alignment/normalising shifters, mantissa adder/multiplier/divider, rounding incrementers); zero, infinity, NaN and denormal special cases are not modelled. The run records an assumption. |
 | Enumerations and FSM state encoding | Exact | Binary by default; one-hot by policy. |
 | Records, constrained and unconstrained arrays, subtypes, aliases | Exact | Records flattened. |
 | Concurrent and sequential assignments, `when`/`select` | Exact | |
@@ -289,7 +292,10 @@ There is no preprocessor stage. Synthesis pragma regions (`-- synopsys translate
 | Tri-state (`'Z'`) | Approximated | Mux with enable; flagged. |
 | `wait`-based synthesizable styles | Approximated | Only `wait until rising_edge(clk)`. |
 | `assert`, `report`, `after`, `wait for`, file I/O, access and protected types, PSL | Skipped | No effect on the estimate. |
-| External names (2008 `<<signal ...>>`) | Skipped | Diagnostic. |
+| External names (2008 `<<signal ...>>`) | Skipped | Parsed in every position (expression, assignment target, alias); one `UNSUPPORTED_CONSTRUCT` per name: the value is unknown (X) of the declared type, assignments are ignored. |
+| Mode views (VHDL-2019 `view ... of`, `port (p : view v [of T])`, `v'converse`) | Exact for record ports | Each leaf of the flattened record port takes its direction from the view; array-of-record view ports take their direction from the use. |
+| Generic subprograms and packages in `generic (...)` | Skipped | One `UNSUPPORTED_CONSTRUCT` per generic function/procedure/package; the following generics and the ports are unaffected. Legacy `generic (T : type)` is a generic type. |
+| `.v`/`.sv` file that contains VHDL | Parsed as VHDL | Detected from the first non-comment token (`library`, `use`, `entity`, `architecture`, `package ... is`, `context`, `configuration`); one `LANGUAGE_MISMATCH` warning (does not affect cost). `//` line comments are accepted by the VHDL lexer for such files. |
 | Verilog-style user-defined primitives | Not applicable | |
 
 ### 10.6 Language-specific diagnostics
@@ -300,6 +306,7 @@ In addition to §6:
 |---|---|---|
 | `MISSING_UNIT` (package, library, or entity not found) | warning | yes |
 | `AMBIGUOUS_ARCHITECTURE` (several architectures, none selected explicitly) | warning | possibly |
+| `LANGUAGE_MISMATCH` (a Verilog-extension file that holds VHDL, parsed as VHDL) | warning | no |
 | `MULTIPLE_DRIVERS` | warning | yes |
 | `UNRESOLVED_OVERLOAD` (operator or function cannot be resolved with the lightweight type checker) | warning | yes |
 | `SIMULATION_ONLY_PROCESS` | info | no |

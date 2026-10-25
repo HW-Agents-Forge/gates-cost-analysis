@@ -20,6 +20,15 @@ _CONTROL_CHARS.update({"c%d" % i: i for i in range(128, 160)})
 _TIME_FS = {"fs": 1, "ps": 10 ** 3, "ns": 10 ** 6, "us": 10 ** 9, "ms": 10 ** 12, "sec": 10 ** 15,
             "min": 6 * 10 ** 16, "hr": 36 * 10 ** 17}
 _HEXVAL = {c: i for i, c in enumerate("0123456789ABCDEF")}
+#: ieee.fixed_float_types literals and the package-default style constants
+_FIXED_NAMES = {
+    "fixed_wrap": lambda: Val(T.T_FIXED_OVF, None, 0), "fixed_saturate": lambda: Val(T.T_FIXED_OVF, None, 1),
+    "fixed_round": lambda: Val(T.T_FIXED_RND, None, 0), "fixed_truncate": lambda: Val(T.T_FIXED_RND, None, 1),
+    "fixed_overflow_style": lambda: Val(T.T_FIXED_OVF, None, 1), "fixed_round_style": lambda: Val(T.T_FIXED_RND, None, 0),
+    "fixed_guard_bits": lambda: int_val(3), "no_warning": lambda: bool_const(False),
+    "round_nearest": lambda: Val(T.T_FIXED_RND, None, 0), "round_zero": lambda: Val(T.T_FIXED_RND, None, 1),
+    "round_inf": lambda: Val(T.T_FIXED_RND, None, 0), "round_neginf": lambda: Val(T.T_FIXED_RND, None, 1),
+}
 _SLBIT = {"0": (0, 0), "1": (1, 0), "L": (0, 0), "H": (1, 0), "U": (0, 1), "X": (0, 1), "W": (0, 1), "-": (0, 1), "Z": (0, 1)}
 
 
@@ -40,6 +49,11 @@ class ExprMixin:
             if hint.width > (1 << 20):
                 return Val(T.T_STD_LOGIC, SigSpec.x(1))      # an all-X value this wide cannot be built (memory)
             return Val(hint, SigSpec.x(hint.width))
+        if hint is not None and hint.kind == "array" and hint.width is None and hint.elem is not None and hint.elem.width:
+            # an unconstrained array expected: a one-element all-X array (a scalar would cascade into
+            # "conversion of a scalar to an array type" and "no '&' for sl and ..." diagnostics)
+            ct = T.constrain(hint, 1, 1, "to") if hint.cls == "str" else T.constrain(hint, 0, 0, "downto")
+            return Val(ct, SigSpec.x(ct.width))
         return Val(T.T_STD_LOGIC, SigSpec.x(1))
 
     def sig_of(self, v, width=None, signed=None):
@@ -69,7 +83,7 @@ class ExprMixin:
         t = v.t
         if t.kind == "int":
             return bool(t.signed) or (v.c is not None and v.c < 0)
-        return t.cls == "s"
+        return t.cls in T.SIGNED_CLASSES
 
     def num(self, v):
         """(sig, signed) numeric view."""
@@ -81,7 +95,7 @@ class ExprMixin:
                 return SigSpec.const(c & mask(w), w), s
             return v.sig, bool(t.signed)
         s = self.sig_of(v)
-        return s, t.cls == "s"
+        return s, t.cls in T.SIGNED_CLASSES
 
     def const_int(self, v):
         if v.c is not None:
@@ -91,7 +105,7 @@ class ExprMixin:
         if v.sig is not None:
             c = v.sig.const_value()
             if c is not None and not c.xmask:
-                return c.as_signed() if (v.t.kind == "int" and v.t.signed) or v.t.cls == "s" else c.value
+                return c.as_signed() if (v.t.kind == "int" and v.t.signed) or v.t.cls in T.SIGNED_CLASSES else c.value
         raise NotConst()
 
     def const_val(self, v):
@@ -239,6 +253,12 @@ class ExprMixin:
             return bool_const(name == "true")
         if name in ("note", "warning", "error", "failure"):
             return int_val(0)
+        if name in ("fixed_overflow_style", "fixed_round_style"):
+            sat, rnd = self.fx_model_styles(sc)
+            return Val(T.T_FIXED_OVF, None, int(sat)) if name == "fixed_overflow_style" else \
+                Val(T.T_FIXED_RND, None, 0 if rnd else 1)
+        if name in _FIXED_NAMES:                  # ieee.fixed_float_types
+            return _FIXED_NAMES[name]()
         if ieee.lookup(name):
             return self.builtin_call(name, [], e, sc, hint)
         if name == "now":
@@ -516,7 +536,7 @@ class ExprMixin:
                 return T.BUILTIN_TYPES[mark.name]
             if isinstance(mark, N.Select) and mark.suffix in T.BUILTIN_TYPES:
                 return T.BUILTIN_TYPES[mark.suffix]
-            self.diag("UNSUPPORTED_CONSTRUCT", "unknown type '%s'" % (self.flat_name(mark) or "?"), mark)
+            self.diag("UNSUPPORTED_CONSTRUCT", "unknown type '%s'" % (".".join(self.flat_name(mark) or ["?"])), mark)
             return T.T_STD_LOGIC
         if isinstance(mark, N.Attr):
             nm = mark.name
@@ -779,7 +799,8 @@ class ExprMixin:
             if k == "type":
                 return self.type_convert(syms[0].t, args, sc, e)
             if k == "func":
-                if isinstance(p, N.Ident) and self.has_builtin(p.name) and not self.user_overload_fits(syms, args, sc):
+                if isinstance(p, N.Ident) and self.has_builtin(p.name) and p.name not in self.USER_FIRST \
+                        and not self.user_overload_fits(syms, args, sc):
                     return self.builtin_call(p.name, args, e, sc, hint)
                 return self.call_user(syms, args, e, sc, hint)
             if k == "mem":
@@ -969,6 +990,8 @@ class ExprMixin:
     def index_pos_sig(self, t, iv, node):
         """Position (from the rightmost element) of a dynamic index, as an unsigned SigSpec, and element count."""
         isg, sg = self.num(iv)
+        if not t.length:
+            raise Unsupported("index into a null array (%s %s %s)" % (t.left, t.dir, t.right))
         lo = min(t.left, t.right)
         n = t.length
         if sg:
@@ -1093,16 +1116,21 @@ class ExprMixin:
         out = []
         z = 0
         off = 0
+        actual = {}
         for fname, ft in t.fields:
             ex = parts.get(fname, others)
             if ex is None:
-                v = Val(ft, SigSpec.x(ft.width))
+                v = Val(ft, SigSpec.x(ft.width or 1))
             else:
                 v = self.fit(self.eval(ex, sc, ft), ft, e)
             s = self.sig_of(v)
+            if ft.width is None and v.t.width == s.width and v.t.kind == ft.kind:
+                actual[fname] = v.t          # unconstrained field: the record takes the constraint of the value
             out.append(s)
             z |= v.z << off
             off += s.width
+        if actual:
+            t = T.constrain_fields(t, actual)
         return Val(t, SigSpec.concat(out), None, z)
 
     def agg_array(self, e, sc, t):
@@ -1204,6 +1232,19 @@ class ExprMixin:
     def ev_range_as_val(self, e, sc, hint):
         raise Unsupported("range used as a value")
 
+    def ev_external(self, e, sc, hint):
+        """``<< signal .tb.dut.x : T >>``: the target lives in another module instance, which is elaborated
+        separately; the value is unknown (X) of the declared type."""
+        t = None
+        if e.subtype is not None:
+            try:
+                t = self.resolve_subtype(e.subtype, sc)
+            except Exception:
+                t = None
+        self.diag("UNSUPPORTED_CONSTRUCT", "external name '<< %s %s >>' is not resolved across the hierarchy; "
+                  "read as unknown" % (e.cls, e.path), e)
+        return self.unknown(t if t is not None and t.width else hint)
+
     def ev_skipped(self, e, sc, hint):
         raise Unsupported("skipped construct (%s)" % getattr(e, "kind", ""))
 
@@ -1213,5 +1254,5 @@ _EV = {
     N.PhysicalLit: ExprMixin.ev_physical, N.Select: ExprMixin.ev_select, N.Apply: ExprMixin.ev_apply,
     N.Slice: ExprMixin.ev_slice, N.Attr: ExprMixin.ev_attr, N.Qualified: ExprMixin.ev_qualified,
     N.Aggregate: ExprMixin.ev_aggregate, N.Others: ExprMixin.ev_others, N.Open: ExprMixin.ev_open,
-    N.Range: ExprMixin.ev_range_as_val, N.Skipped: ExprMixin.ev_skipped,
+    N.Range: ExprMixin.ev_range_as_val, N.Skipped: ExprMixin.ev_skipped, N.ExternalName: ExprMixin.ev_external,
 }

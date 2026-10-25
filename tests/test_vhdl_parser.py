@@ -470,10 +470,12 @@ class SkippedRegionTests(unittest.TestCase):
         self.assertEqual(len(a.stmts), 3)
         self.assertEqual(len(self.infos(r)), 4)
 
-    def test_external_names_are_unsupported(self):
+    def test_external_names_are_parsed(self):
+        # parsed into an ExternalName node (the elaborator reports it once, see tests/test_vhdl_fixed_syntax.py)
         r, a = arch("", "x <= << signal .tb.dut.s : bit >>;")
-        self.assertIn("UNSUPPORTED_CONSTRUCT", codes(r))
+        self.assertEqual(errors(r), [])
         self.assertEqual(len(a.stmts), 1)
+        self.assertIsInstance(a.stmts[0].alts[0].values[0], N.ExternalName)
 
     def test_pragma_region_reported_and_excluded(self):
         r = one("entity e is end;\narchitecture a of e is begin\n-- synopsys translate_off\nx <= ;\n"

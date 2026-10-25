@@ -281,6 +281,12 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         raise GatecostError("NO_SOURCES", "no RTL source files to analyze")
     v_files = [_abs(f, root) for f in files if os.path.splitext(os.fspath(f))[1].lower() in _VERILOG_EXT]
     h_files = [_abs(f, root) for f in files if os.path.splitext(os.fspath(f))[1].lower() in _VHDL_EXT]
+    # a ``.v``/``.sv`` file that actually holds VHDL (first token ``library``/``entity``/...) is parsed as VHDL
+    from gatecost.discovery import sniff_is_vhdl
+    relabelled = [f for f in v_files if sniff_is_vhdl(f)]
+    if relabelled:
+        v_files = [f for f in v_files if f not in relabelled]
+        h_files = h_files + relabelled
     alias = {"inline_depth": "call_depth", "const_steps": "const_func_steps"}
     limits = {alias.get(k, k): v for k, v in (limits or {}).items() if isinstance(v, int) and not isinstance(v, bool)}
     lim = dict(DEFAULT_LIMITS)
@@ -301,6 +307,10 @@ def elaborate_project(files, *, root, top: str | None = None, defines: dict | No
         if extra_parse_diags:      # parse diagnostics of files the caller left out (changed-cone analysis)
             diags = sorted(diags + [replace(d, side=side) for d in extra_parse_diags],
                            key=lambda d: (d.file or "", d.line or 0, d.column or 0))
+        for f in relabelled:
+            diags.append(Diagnostic("LANGUAGE_MISMATCH", "file has a Verilog/SystemVerilog extension but contains "
+                                    "VHDL (it starts with a VHDL design unit); it is parsed as VHDL", "warning",
+                                    False, side, ctx.disp(f), 1, None))
         v_units = list(parsed.modules) + list(parsed.interfaces)
         tops: list = []
         top_keys: dict = {}

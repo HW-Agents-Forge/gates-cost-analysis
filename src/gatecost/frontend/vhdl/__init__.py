@@ -65,6 +65,10 @@ Subtypes and types
 ``Subprogram(kind: "function"|"procedure", name ("\"+\"" for operators), pure, params: [Param],
     return_type, decls, body: [stmt]|None, has_body)``, ``PackageInst(name, target: tuple, generic_map)``.
 ``Skipped(kind, text)`` stands for any skipped item (files, disconnections, configuration specs, ...).
+``ViewDecl(name, type_mark, elements: [ViewElem(name, mode)])`` is a VHDL-2019 mode view (``mode``: ``"in"|"out"|
+"inout"|"buffer"|"linkage"`` or an ``Ident``/``Select`` naming a sub-view).  A port declared ``p : view v [of T]`` /
+``p : view (v) of T`` is ``Port(name, mode="view", subtype=ViewInd(mark, subtype: SubtypeInd|None, array: bool))``
+(``mark`` may be ``Attr(v, "converse")``).
 
 Expressions
 ~~~~~~~~~~~
@@ -80,7 +84,8 @@ reductions); ``Binary(op, left, right)`` (ops: logical, relational incl. ``?=`` 
 ``* / mod rem``, ``**``); ``Range(left, direction: "to"|"downto", right)``; ``Literal(kind: "int"|"real"|
 "based"|"char"|"str"|"null", value, text)``; ``BitStringLit(size|None, base: "b"|"o"|"x"|"d", sign:
 "u"|"s"|None, digits: upper-case without underscores)``; ``PhysicalLit(value: Literal, unit)``;
-``Others()``, ``Open()``, ``Unaffected()``; ``Skipped("external_name"|"access")``.
+``Others()``, ``Open()``, ``Unaffected()``; ``ExternalName(cls: "signal"|"constant"|"variable", path: str, subtype)``
+(``<< signal .tb.dut.x : std_logic >>``, ``path`` as written, e.g. ``".tb.dut.x"``, ``"^.dut.t"``); ``Skipped("access")``.
 
 Statements (concurrent and sequential share assignment nodes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

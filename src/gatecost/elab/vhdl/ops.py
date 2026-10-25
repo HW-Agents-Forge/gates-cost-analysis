@@ -9,6 +9,8 @@ from ...ir.sigspec import mask
 from . import vtypes as T
 from .core import NotConst, Unsupported, bool_const, bool_val, int_val, real_val, range_int_type
 from .expr import _EV
+from .fixed import FIXED_BUILTINS, is_fixed, is_floatv
+from .floatp import FLOAT_BUILTINS
 from .vtypes import minbits
 from .values import Val
 
@@ -50,7 +52,7 @@ class OpsMixin:
         if t.kind == "int":
             return self.num(v)
         s = self.sig_of(v)
-        if t.cls == "s":
+        if t.cls in T.SIGNED_CLASSES:
             return s, True
         if t.cls in ("slv", "suv") and self.legacy_sem(sc) == "s":
             return s, True
@@ -87,6 +89,8 @@ class OpsMixin:
         b = self.b
         o = self.org(e)
         t = v.t
+        if op in ("-", "abs") and t.kind == "array" and t.cls in ("uf", "sf", "fl"):
+            return self.fl_unary(op, v, e) if t.cls == "fl" else self.fx_unary(op, v, e)
         if op == "+":
             return v
         if op == "-":
@@ -180,16 +184,22 @@ class OpsMixin:
             h0 = (self.unconstrained_like(hint) if r0.t.kind == "enum" and hint is not None and hint.kind == "array"
                   else self.unconstrained_like(r0.t))
         acc = self.eval(n, sc, h0)
-        for node in reversed(chain):
+        for ci in range(len(chain) - 1, -1, -1):
+            node = chain[ci]
             op = node.op
+            nh = hint
+            if op == "**" and ci > 0 and chain[ci - 1].op in ("+", "-", "*", "/", "mod", "rem"):
+                nh = T.T_INTEGER    # ``obj ** "path" - 1``: a user ``"**"`` overloaded on its result is numeric here
             ht = acc.t if (acc.t.kind in ("array", "enum") and op not in ("&", "**") and op not in _SHIFT) else None
             if op == "&" and acc.t.kind == "array":
                 ht = self.unconstrained_like(acc.t) if isinstance(node.right, N.Aggregate) else None
             r = pre.get(id(node))
             if r is None:
+                if isinstance(node.right, N.Binary) and node.right.op == "**" and op in ("+", "-", "*", "/", "mod", "rem"):
+                    ht = T.T_INTEGER        # ``4 * obj ** "path"``: pick the numeric overload of a user ``"**"``
                 r = self.eval(node.right, sc, ht)
             try:
-                acc = self.binary_op(op, acc, r, node, sc, hint)
+                acc = self.binary_op(op, acc, r, node, sc, nh)
             except NotConst:
                 raise
             except Exception as ex:
@@ -220,15 +230,19 @@ class OpsMixin:
                 cand.append(s)
         if not cand:
             return None
-        for s in cand:
-            if self.user_params_match(s.val, [l, r]):
-                return self.call_user([s], [N.Assoc(None, _Lit(l)), N.Assoc(None, _Lit(r))], node, sc, hint)
+        ok = [s for s in cand if self.user_params_match(s.val, [l, r])]
+        if ok:
+            return self.call_user(ok, [N.Assoc(None, _Lit(l)), N.Assoc(None, _Lit(r))], node, sc, hint)
         return None
 
     def binary_op(self, op, l, r, node, sc, hint):
         u = self.user_op(op, l, r, node, sc, hint) if sc.lookup('"%s"' % op) else None
         if u is not None:
             return u
+        if op not in _LOGIC and op not in _SHIFT and op != "&" and (is_fixed(l) or is_fixed(r)):
+            return self.fx_binary(op, l, r, node, sc)
+        if op not in _LOGIC and op not in _SHIFT and op != "&" and (is_floatv(l) or is_floatv(r)):
+            return self.fl_binary(op, l, r, node, sc)
         if op in _LOGIC:
             return self.op_logic(op, l, r, node)
         if op in ("=", "/="):
@@ -548,6 +562,12 @@ class OpsMixin:
         if r.t.kind == "int":
             cr = "int"
         fs = ieee.resolve(op, [cl, cr], sc.pkgs) or ieee.resolve(op, [cl, cr])
+        if fs is None and {cl, cr} & {"u", "s"} and {cl, cr} & {"slv", "suv", "bv"}:
+            # ``unsigned(x) + ("0" & x"500")``: the concatenation of literals takes the other operand's type
+            ncl = cl if cl in ("u", "s") else cr
+            fs = ieee.resolve(op, [ncl, ncl], sc.pkgs) or ieee.resolve(op, [ncl, ncl])
+            if fs is not None:
+                cl = cr = ncl
         if fs is None:
             self.diag("UNRESOLVED_OVERLOAD", "no '%s' for %s and %s" % (op, cl, cr), node)
             return self.fallback_arith(op, l, r, node, sc)
@@ -672,6 +692,10 @@ class OpsMixin:
         t = x.t
         if t.kind == "int":
             return x
+        if is_fixed(x):
+            return self.fx_to_integer(x, e)
+        if is_floatv(x):
+            return self.fl_to_integer(x, e)
         s, sg = self.numv(x, sc)
         c = s.const_value()
         if c is not None and not c.xmask:
@@ -683,6 +707,8 @@ class OpsMixin:
     def bi_to_vec(self, name, args, e, sc, hint):
         vals = self.call_args(name, args, sc)
         x = vals[0]
+        if name in ("to_unsigned", "to_signed") and (is_fixed(x) or is_floatv(x)):
+            return self.fl_to_vec(name, args, e, sc) if is_floatv(x) else self.bi_fx_to_vec(name, args, e, sc, hint)
         if len(vals) < 2:
             raise Unsupported("%s needs a size" % name)
         sz = vals[1]
@@ -711,6 +737,10 @@ class OpsMixin:
     def bi_resize(self, name, args, e, sc, hint):
         vals = self.call_args(name, args, sc)
         x, n = vals[0], vals[1]
+        if is_fixed(x):
+            return self.bi_fx_resize(name, args, e, sc, hint)
+        if is_floatv(x):
+            return self.fl_resize(args, e, sc)
         if x.t.kind == "int":
             raise Unsupported("resize of an integer")
         nn = self.sig_of(n).width if n.t.kind == "array" else self.const_int(n)
@@ -744,7 +774,7 @@ class OpsMixin:
         b = self.b
         o = self.org(e)
         cls = x.t.cls
-        signed = cls == "s" or (cls in ("slv", "suv") and self.legacy_sem(sc) == "s" and name in ("shr",))
+        signed = cls in T.SIGNED_CLASSES or (cls in ("slv", "suv") and self.legacy_sem(sc) == "s" and name in ("shr",))
         if name in ("shift_left", "shl"):
             res = b.shl(s, amt, w, sa=False, origin=o)
         elif name in ("shift_right", "shr"):
@@ -785,6 +815,8 @@ class OpsMixin:
 
     def bi_minmax(self, name, args, e, sc, hint):
         a, c = self.call_args(name, args, sc)
+        if is_fixed(a) or is_fixed(c):
+            return self.bi_fx_minmax(name, a, c, e, sc)
         if a.c is not None and c.c is not None and a.sig is None and c.sig is None:
             return int_val(min(a.c, c.c) if name == "minimum" else max(a.c, c.c))
         lt = self.op_rel("<", a, c, e, sc)
@@ -837,6 +869,10 @@ _BUILTIN = {
     "to_string": OpsMixin.bi_string, "to_hstring": OpsMixin.bi_string, "to_ostring": OpsMixin.bi_string,
 }
 
+_BUILTIN.update(FIXED_BUILTINS)
+_BUILTIN.update(FLOAT_BUILTINS)
+#: names of the fixed_pkg / float_pkg helpers: any user function of that name takes precedence over the model
+OpsMixin.USER_FIRST = frozenset(FIXED_BUILTINS) | frozenset(FLOAT_BUILTINS)
 _EV[N.Unary] = OpsMixin.ev_unary
 _EV[N.Binary] = OpsMixin.ev_binary
 

@@ -48,6 +48,8 @@ class DeclMixin:
             lib_eff = sc.lib if lib == "work" else lib
         env = self.get_package(lib_eff, pkg)
         if env is None:
+            if pkg in ieee.WORK_MODEL_PACKAGES and lib == "work" and pkg not in sc.pkgs:
+                sc.pkgs = list(sc.pkgs) + [pkg]
             return
         if last is None:
             sc.declare(Sym("pkg", pkg, val=env))
@@ -187,14 +189,21 @@ class DeclMixin:
             self.decl_attr_spec(d, sc)
         elif k is N.PackageInst:
             self.decl_package_inst(d, sc)
+        elif k is N.ViewDecl:
+            sc.declare(Sym("view", d.name, node=d, scope=sc, extra=False))
 
     def decl_alias(self, d, sc):
         tgt = d.target
+        if isinstance(tgt, N.Attr) and tgt.name == "converse":       # alias slave_view is master_view'converse
+            vw = self.find_view(tgt, sc)
+            if vw is not None:
+                sc.declare(Sym("view", d.name, node=vw[0], scope=vw[1], extra=vw[2]))
+                return
         if isinstance(tgt, (N.Ident, N.Select)):
             syms = self.name_syms(tgt, sc)
-            if syms and syms[0].kind in ("type", "func", "pkg", "comp"):
+            if syms and syms[0].kind in ("type", "func", "pkg", "comp", "view"):
                 for s in syms:
-                    c = Sym(s.kind, d.name, s.t, val=s.val, node=s.node, scope=s.scope)
+                    c = Sym(s.kind, d.name, s.t, val=s.val, node=s.node, scope=s.scope, extra=s.extra)
                     sc.declare(c)
                 return
         t = self.resolve_subtype(d.subtype, sc) if d.subtype is not None else None
@@ -206,6 +215,9 @@ class DeclMixin:
         name = path[-1]
         lib = path[-2] if len(path) > 1 else None
         env0 = self.get_package(None if lib == "work" else lib, name)
+        if env0 is None and name in ("fixed_generic_pkg", "float_generic_pkg"):
+            self.decl_ieee_generic_package(d, sc, name)
+            return
         if env0 is None:
             self.diag("MISSING_UNIT", "generic package '%s' not found" % name, d)
             return
@@ -222,6 +234,28 @@ class DeclMixin:
         env = PkgEnv(name, env0.lib, env0.unit)
         self.ctx.load_pkg(env, gens)
         sc.declare(Sym("pkg", d.name, val=env))
+
+    def decl_ieee_generic_package(self, d, sc, name):
+        """``package p is new ieee.fixed_generic_pkg|float_generic_pkg generic map (...)``: the built-in model is used,
+        the generic actuals only change its defaults (rounding / overflow style, float format)."""
+        model = {}
+        gl = ("fixed_round_style", "fixed_overflow_style", "fixed_guard_bits", "no_warning") \
+            if name == "fixed_generic_pkg" else \
+            ("float_exponent_width", "float_fraction_width", "float_round_style", "float_denormalize",
+             "float_check_error", "float_guard_bits", "no_warning", "fixed_pkg")
+        for i, a in enumerate(d.generic_map or ()):
+            f = a.formal.name if a.formal is not None and isinstance(a.formal, N.Ident) else (gl[i] if i < len(gl) else None)
+            if f is None or a.actual is None:
+                continue
+            ln = self.flat_name(a.actual)
+            if f in ("fixed_round_style", "fixed_overflow_style") and ln:
+                model[f] = ln[-1]
+            elif f in ("float_exponent_width", "float_fraction_width"):
+                try:
+                    model[f] = self.const_int(self.eval(a.actual, sc))
+                except Exception:
+                    pass
+        sc.fmodel = dict(sc.fmodel or {}, **model)
 
     def decl_attr_spec(self, d, sc):
         if d.attr not in ("enum_encoding", "fsm_encoding", "syn_encoding"):
@@ -372,6 +406,12 @@ class DeclMixin:
     def decl_obj(self, d, sc, xc, mode):
         t = self.resolve_subtype(d.subtype, sc)
         t = self.state_type(t, d.name)
+        if t.kind == "array" and t.left is not None and t.length == 0:
+            # null array (``std_logic_vector(-1 downto 0)``): no bits, assignments to it are no-ops
+            s = Sym("obj", d.name, t, sig=SigSpec(()))
+            s.mode = mode
+            sc.declare(s)
+            return
         if t.width is None or t.width <= 0:
             if t.kind == "array" and t.left is None and d.init is not None:
                 v = self.eval(d.init, sc, t)
@@ -391,7 +431,7 @@ class DeclMixin:
             s.mode = mode
             sc.declare(s)
             return
-        signed = bool(t.signed) if t.kind == "int" else t.cls == "s"
+        signed = bool(t.signed) if t.kind == "int" else t.cls in T.SIGNED_CLASSES
         net = self.b.net(t.width, name, signed)
         s = Sym("obj", d.name, t, sig=net.sig)
         s.mode = mode

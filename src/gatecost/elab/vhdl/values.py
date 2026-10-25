@@ -43,7 +43,7 @@ class Sym:
 
 
 class Scope:
-    __slots__ = ("names", "parent", "uses", "pkgs", "file", "lib", "label")
+    __slots__ = ("names", "parent", "uses", "pkgs", "file", "lib", "label", "fmodel")
 
     def __init__(self, parent=None, file=None, lib=None, label=""):
         self.names = {}
@@ -53,6 +53,7 @@ class Scope:
         self.file = file if file is not None else (parent.file if parent else None)
         self.lib = lib if lib is not None else (parent.lib if parent else "work")
         self.label = label
+        self.fmodel = None      # defaults of an instantiated ieee.fixed_generic_pkg / float_generic_pkg
 
     def declare(self, sym):
         self.names.setdefault(sym.name, []).append(sym)
