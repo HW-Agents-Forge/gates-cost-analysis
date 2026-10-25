@@ -1,13 +1,16 @@
 """Sequential statements through ir.LowerBlock, subprogram inlining, lvalues, loops."""
 from __future__ import annotations
 
+from typing import Any
+
 from ...frontend.vhdl import nodes as N
 from ...ir import LowerBlock, SigSpec
 from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from ...ir.sigspec import mask
 from . import vtypes as T
-from .core import NotConst, StopLimit, Unsupported, bool_const, int_val
+from .core import PROBE_MISS, NotConst, StopLimit, Unsupported, bool_const, failure_text, int_val
 from .values import LV, FuncDef, Scope, Sym, Val
+from .vtypes import VType
 
 
 class XC:
@@ -328,10 +331,8 @@ class StmtMixin:
             h(self, xc, s, sc)
         except (StopLimit, RecursionError):
             raise
-        except Exception as ex:
-            if getattr(self.ctx, "debug", False):
-                raise
-            self.diag("UNSUPPORTED_CONSTRUCT", "statement skipped (%s: %s)" % (type(ex).__name__, ex), s)
+        except Exception as ex:          # boundary: an unexpected failure skips this statement only
+            self.diag("UNSUPPORTED_CONSTRUCT", "statement skipped (%s)" % failure_text(self.ctx, ex), s)
         finally:
             self.b.origin = saved
 
@@ -364,7 +365,7 @@ class StmtMixin:
             return None
         try:
             l, r, d = self.eval_range(rng, sc)
-        except Exception:
+        except PROBE_MISS:                               # non-constant bounds: the general path handles it
             return None
         idx = list(range(l, r + 1)) if d == "to" else list(range(l, r - 1, -1))
         return pre, idx
@@ -560,7 +561,7 @@ class StmtMixin:
             if lv.parts is not None or lv.mem is not None or lv.dyn or lv.t is None:
                 return False
             alts = [(ch, self.eval(e, sc, lv.t)) for ch, e in alts]
-        except Exception:
+        except PROBE_MISS:                  # not a lookup table: the general case lowering handles it
             return False
         return self.rom_from_alts(xc, lv, sel, selsig, alts, sc, s)
 
@@ -577,7 +578,7 @@ class StmtMixin:
                 return False
             try:
                 cs = self.sig_of(self.fit(v, lv.t, node)).resize(lv.width, False).const_value()
-            except Exception:
+            except PROBE_MISS:
                 return False
             if cs is None or cs.xmask:
                 return False
@@ -944,6 +945,29 @@ class StmtMixin:
         self.call_procedure(xc, syms, args, s, sc)
 
     # ------------------------------------------------------------------ subprograms
+    def try_subtype(self, ind: object, sc: Scope, what: str | None = None, node: object = None) -> VType | None:
+        """``resolve_subtype(ind, sc)``, or None when the subtype is outside what the elaborator resolves
+        (:data:`PROBE_MISS`).  Overload heuristics pass no ``what``: their fallback needs no report.  With
+        ``what`` (the object the subtype declares) the miss degrades a value and is reported."""
+        if ind is None:                     # no subtype indication (e.g. a parameter list error)
+            return None
+        try:
+            t: VType = self.resolve_subtype(ind, sc)
+        except PROBE_MISS as ex:
+            if what is not None:
+                self.diag("UNSUPPORTED_CONSTRUCT", "the type of %s cannot be resolved (%s); the value bound to it "
+                          "keeps its own type" % (what, ex), node)
+            return None
+        return t
+
+    def try_eval_actuals(self, args: list[Any], sc: Scope) -> list[Val] | None:
+        """Values of the actuals of an association list, for overload resolution; None when one of them is
+        outside what the elaborator evaluates (:data:`PROBE_MISS`)."""
+        try:
+            return [self.eval(a.actual, sc) for a in args]
+        except PROBE_MISS:
+            return None
+
     def user_params_match(self, fd, vals, args=None):
         """Do the argument types fit the parameters?  `args` (association list) maps named
         associations onto their formals; without it `vals` is positional."""
@@ -964,9 +988,8 @@ class StmtMixin:
                     pairs.append((p, pos[pi]))
                     pi += 1
         for p, v in pairs:
-            try:
-                pt = self.resolve_subtype(p.subtype, fd.scope)
-            except Exception:
+            pt = self.try_subtype(p.subtype, fd.scope)
+            if pt is None:                  # unresolvable parameter type: does not rule the overload out
                 continue
             if pt is v.t:
                 continue
@@ -985,9 +1008,8 @@ class StmtMixin:
         rn = fd.node.return_type
         if rn is None or hint is None:
             return True
-        try:
-            rt = self.resolve_subtype(rn, fd.scope)
-        except Exception:
+        rt = self.try_subtype(rn, fd.scope)
+        if rt is None:                      # unresolvable return type: does not rule the overload out
             return True
         if rt.kind != hint.kind:
             return False
@@ -1014,12 +1036,8 @@ class StmtMixin:
         if len(cands) == 1:
             return cands[0].val
         # prefer matching argument types, then the expected result type
-        vals = []
-        try:
-            vals = [self.eval(a.actual, sc) for a in args]
-        except Exception:
-            pass
-        if len(vals) == n:
+        vals = self.try_eval_actuals(args, sc)
+        if vals is not None:
             ok = []
             if all(a.formal is None for a in args):
                 ok = [s for s in cands if len(s.val.node.params) == n and self.user_params_match(s.val, vals)]
@@ -1053,9 +1071,8 @@ class StmtMixin:
                 cands.append(fd)
         if not cands:
             return False
-        try:
-            vals = [self.eval(a.actual, sc) for a in args]
-        except Exception:
+        vals = self.try_eval_actuals(args, sc)
+        if vals is None:                    # argument types unknown: keep the user overloads
             return True
         return any(self.user_params_match(fd, vals, args) for fd in cands)
 
@@ -1078,11 +1095,7 @@ class StmtMixin:
                 pi += 1
             elif a is None and p.name not in by_name:
                 pass
-            pt = None
-            try:
-                pt = self.resolve_subtype(p.subtype, fscope) if p.subtype is not None else None
-            except Exception:
-                pt = None
+            pt = self.try_subtype(p.subtype, fscope, "parameter '%s' of '%s'" % (p.name, node.name), p)
             if a is None:
                 if p.default is None:
                     raise Unsupported("missing argument for parameter '%s'" % p.name)
@@ -1113,12 +1126,14 @@ class StmtMixin:
             if procedure and p.cls == "signal":
                 try:
                     lv = self.lvalue(a.actual, sc)
-                    s2 = Sym("obj", p.name, lv.t or pt, sig=self.lv_static_sig(lv))
+                    sig = self.lv_static_sig(lv)
+                except PROBE_MISS:          # the actual is no static signal name: passed by value below
+                    lv = None
+                if lv is not None:
+                    s2 = Sym("obj", p.name, lv.t or pt, sig=sig)
                     s2.mode = "signal"
                     fscope.declare(s2)
                     continue
-                except Exception:
-                    pass
             v = self.eval(a.actual, sc, pt)
             if pt is not None and pt.kind in ("int", "real", "enum") and pt.width is not None or (pt is not None and pt.kind == "array" and pt.width is not None):
                 v = self.fit(v, pt)
@@ -1128,10 +1143,8 @@ class StmtMixin:
     def unknown_ret(self, fd, hint):
         """All-X value of the declared return type of ``fd`` (a failed call keeps its type: no cascade of
         ``no '**' for sl and str`` style diagnostics on the consumers)."""
-        try:
-            rt = self.resolve_subtype(fd.node.return_type, fd.scope) if fd.node.return_type is not None else None
-        except Exception:
-            rt = None
+        # the call already failed and was reported: an unresolvable return type falls back to the hint
+        rt = self.try_subtype(fd.node.return_type, fd.scope)
         if rt is None:
             return self.unknown(hint)
         if rt.kind == "array" and rt.width is None:

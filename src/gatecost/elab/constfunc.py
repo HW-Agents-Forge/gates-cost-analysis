@@ -44,6 +44,14 @@ class Bail(Exception):
 
 FAIL = object()
 STATS = {"calls": 0, "fallbacks": 0}       # diagnostics for the tests: fast-path answers / abandoned calls
+#: calls abandoned on an unexpected exception of the generated code (a translator bug: the general
+#: interpreter still answers exactly; ``GATECOST_DEBUG_FASTFUNC`` re-raises it instead)
+INTERNAL_ERRORS = {"count": 0}
+#: run-time exceptions by which generated code gives a call back to the general interpreter, by design: an
+#: explicit bail-out, 2-state arithmetic that has no answer (division by zero, negative shift, huge value), an
+#: index outside a Python list, deep recursion of nested calls
+_FAST_MISS: tuple[type[BaseException], ...] = (Bail, ArithmeticError, LookupError, ValueError, RecursionError,
+                                               MemoryError)
 
 
 class _Undef:
@@ -168,7 +176,12 @@ class FastFn:
                     r = FAIL
                 else:
                     r = int(r)
-            except Exception:
+            except _FAST_MISS:
+                r = FAIL            # by design: the general interpreter answers this call
+            except Exception as ex:  # noqa: BLE001 - translator bug: the exact general path still answers
+                if _DEBUG:
+                    raise
+                INTERNAL_ERRORS["count"] += 1
                 r = FAIL
             if len(m) >= _MEMO_MAX:
                 m.clear()

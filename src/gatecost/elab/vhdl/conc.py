@@ -6,7 +6,7 @@ from ...frontend.vhdl.nodes import walk
 from ...ir import Design, LowerBlock, Origin, SigSpec
 from ...ir.sigspec import mask
 from . import vtypes as T
-from .core import NotConst, StopLimit, Unsupported, int_val
+from .core import PROBE_MISS, NotConst, StopLimit, Unsupported, failure_text, int_val
 from .stmt import XC
 from .values import Scope, Sym, Val
 
@@ -170,10 +170,8 @@ class ConcMixin:
                 raise
             except RecursionError:
                 self.diag("LIMIT_REACHED", "expression nesting too deep; statement skipped", s)
-            except Exception as ex:
-                if getattr(self.ctx, "debug", False):
-                    raise
-                self.diag("UNSUPPORTED_CONSTRUCT", "concurrent statement skipped (%s: %s)" % (type(ex).__name__, ex), s)
+            except Exception as ex:      # boundary: an unexpected failure skips this statement only
+                self.diag("UNSUPPORTED_CONSTRUCT", "concurrent statement skipped (%s)" % failure_text(self.ctx, ex), s)
 
     def elab_stmt(self, s, sc):
         k = type(s)
@@ -329,7 +327,7 @@ class ConcMixin:
                 s = self.sig_of(self.eval(cond.operand, sc))
                 if s.width == 1:
                     return s, 0
-        except Exception:
+        except PROBE_MISS:                  # not a simple reset condition: the caller treats it as logic
             pass
         return None
 
@@ -653,8 +651,9 @@ class ConcMixin:
                 if a.formal is not None and isinstance(a.formal, N.Ident):
                     try:
                         g.declare(Sym("const", a.formal.name, None, val=self.eval(a.actual, sc)))
-                    except Exception:
-                        pass
+                    except PROBE_MISS as ex:
+                        self.diag("UNRESOLVED_PARAM", "generic '%s' of block '%s' cannot be evaluated (%s); it is "
+                                  "left undefined" % (a.formal.name, s.label or "block", ex), a)
             self.declare_items(s.decls, g, None)
             self.elab_stmts(s.stmts, g)
         finally:

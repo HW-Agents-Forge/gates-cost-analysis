@@ -12,7 +12,7 @@ from ...frontend.vhdl.nodes import walk
 from ...ir import Builder, Const, Design, Origin, SigSpec
 from . import vtypes as T
 from .conc import ConcMixin, base_names
-from .core import Ctx, NotConst, Unsupported, int_val
+from .core import Ctx, NotConst, Unsupported, failure_text, int_val
 from .decl import DeclMixin
 from .expr import ExprMixin
 from .fixed import FixedMixin
@@ -80,10 +80,8 @@ class BuildCtx(Ctx):
             except RecursionError:
                 self.diag("LIMIT_REACHED", "recursion limit while elaborating '%s'" % modname, arch.file, arch.line, arch.col)
                 build_module(self, ent, arch, gvals, params, cp, key, modname, ports_only=True)
-            except Exception as ex:
-                if self.debug:
-                    raise
-                self.diag("UNSUPPORTED_CONSTRUCT", "elaboration of '%s' failed (%s: %s); ports only" % (modname, type(ex).__name__, ex),
+            except Exception as ex:      # boundary: an unexpected failure keeps the ports of this unit
+                self.diag("UNSUPPORTED_CONSTRUCT", "elaboration of '%s' failed (%s); ports only" % (modname, failure_text(self, ex)),
                           arch.file, arch.line, arch.col)
                 build_module(self, ent, arch, gvals, params, cp, key, modname, ports_only=True)
         finally:
@@ -356,10 +354,8 @@ class VhdlElaborator:
                 except RecursionError:
                     ctx.diag("LIMIT_REACHED", "recursion limit while elaborating '%s'" % ent.name, ent.file, ent.line, ent.col)
                     key = None
-                except Exception as ex:
-                    if ctx.debug:
-                        raise
-                    ctx.diag("UNSUPPORTED_CONSTRUCT", "elaboration of '%s' failed (%s: %s)" % (ent.name, type(ex).__name__, ex),
+                except Exception as ex:  # boundary: an unexpected failure drops this root only
+                    ctx.diag("UNSUPPORTED_CONSTRUCT", "elaboration of '%s' failed (%s)" % (ent.name, failure_text(ctx, ex)),
                              ent.file, ent.line, ent.col)
                     key = None
                 if key is not None:
