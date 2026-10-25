@@ -155,7 +155,7 @@ def evaluate(expr: str, env: dict):
     def eat(t=None):
         v = peek()
         if t is not None and v != t:
-            raise ValueError
+            raise ValueError(f"expected {t!r}, got {v!r}")
         pos[0] += 1
         return v
 
@@ -200,7 +200,7 @@ def evaluate(expr: str, env: dict):
     def atom():
         t = eat()
         if t is None:
-            raise ValueError
+            raise ValueError("unexpected end of expression")
         if t == "(":
             v = ternary()
             eat(")")
@@ -216,7 +216,7 @@ def evaluate(expr: str, env: dict):
             eat(")")
             if t == "$clog2":
                 return max(args[0] - 1, 0).bit_length()
-            raise ValueError
+            raise ValueError(f"unsupported system function {t}")
         name = t.split("::")[-1]
         if peek() == "(" and name.lower() in ("integer", "natural", "to_integer", "natural"):
             eat()
@@ -225,7 +225,7 @@ def evaluate(expr: str, env: dict):
             return v
         v = env.get(name, env.get(name.lower()))
         if not isinstance(v, int):
-            raise ValueError
+            raise ValueError(f"{name} has no integer value")
         return v
 
     try:
@@ -233,13 +233,14 @@ def evaluate(expr: str, env: dict):
         if pos[0] != len(toks):
             return None
         return v
-    except (ValueError, ZeroDivisionError, OverflowError, TypeError):
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError, RecursionError):
+        # RecursionError: deeply nested text; without it annotate_tree would drop the provenance of the whole tree
         return None
 
 
 def _apply(op, a, b):
     if a is None or b is None:
-        raise ValueError
+        raise ValueError(f"operand of {op!r} has no value")
     if op == "+":
         return a + b
     if op == "-":
@@ -252,11 +253,11 @@ def _apply(op, a, b):
         return a % b
     if op == "**":
         if b < 0 or b > 256:
-            raise ValueError
+            raise ValueError(f"exponent {b} outside [0, 256]")
         return a ** b
     if op == "<<":
         if b > 4096:
-            raise ValueError
+            raise ValueError(f"shift amount {b} above 4096")
         return a << b
     if op == ">>":
         return a >> b

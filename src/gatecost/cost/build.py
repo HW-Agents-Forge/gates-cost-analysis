@@ -10,7 +10,9 @@ exactly ``sum(op cost * instance count)`` in every scenario.
 """
 from __future__ import annotations
 
+import os
 from pathlib import PurePosixPath
+from typing import Any
 
 from .. import _gc
 from ..result import Confidence, Diagnostic, Ge3
@@ -260,7 +262,8 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         return oc, f"MEM {d}x{wd}", (d, wd), facts, tags
     if op == "SUM":
         return _cost_sum(nd, p)
-    raise ValueError(f"cannot cost node op {op!r}")
+    # every op of ir.core.ALL_OPS is handled above (INST and BLACKBOX by _cost_module)
+    raise ValueError(f"cannot cost node op {op!r}: not an IR operation known to the cost-tree builder")
 
 
 def _cost_sum(nd: dict, p: Profile):
@@ -346,6 +349,17 @@ def _diag(d: dict | object, root, side="after") -> Diagnostic:
     return d.as_result_diagnostic(side)
 
 
+def _node_failure(nd: dict[str, Any], exc: BaseException, root: str | None) -> Diagnostic:
+    """``INTERNAL`` diagnostic (error, affects cost) for a node whose cost could not be computed."""
+    o = nd.get("origin") or {}
+    reason = str(exc) or type(exc).__name__
+    if isinstance(exc, KeyError):
+        reason = f"missing attribute {reason}"
+    return Diagnostic("INTERNAL", f"cannot cost {nd.get('op')} node {nd.get('id')}: {reason} (zero assumed)",
+                      "error", True, "after", _rel(o.get("file", ""), root) or None, o.get("line"),
+                      o.get("column"))
+
+
 def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
     items: dict[int, _Item] = {}
     diags: list[Diagnostic] = [_diag(d, root) for d in mod["diagnostics"]]
@@ -378,7 +392,17 @@ def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
             d = f"BLACKBOX {name}" + (f" x{cnt}" if cnt > 1 else "")
             items[nd["id"]] = _Item(nd, oc, d, (), (), {"name": name, "count": cnt}, tags)
             continue
-        oc, desc, effw, facts, tags = _cost_node(nd, profile)
+        try:
+            oc, desc, effw, facts, tags = _cost_node(nd, profile)
+        except (ValueError, KeyError, ArithmeticError) as exc:
+            # A node the cost model cannot handle (unknown op, missing or invalid attribute) is an
+            # invariant breach between the IR and the cost model; report it on that node, cost it
+            # zero and keep the rest of the design instead of aborting the whole run.
+            if os.environ.get("GATECOST_ELAB_DEBUG"):
+                raise
+            diags.append(_node_failure(nd, exc, root))
+            unsupported = True
+            continue
         decl = ((_inp(nd, "A") or {}).get("width", 0), (_inp(nd, "B") or {}).get("width", 0)) \
             if op in ("MUL", "DIV", "MOD") else ((nd["outputs"][0]["width"],) if nd["outputs"] else ())
         if nd["const_folded"]:

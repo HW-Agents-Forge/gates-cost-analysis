@@ -7,7 +7,7 @@ from ...frontend.vhdl import ieee, nodes as N
 from ...ir import SigSpec
 from ...ir.sigspec import mask
 from . import vtypes as T
-from .core import NotConst, Unsupported, bool_const, bool_val, int_val, real_val, range_int_type
+from .core import NotConst, Unsupported, bool_const, bool_val, failure_text, int_val, real_val, range_int_type
 from .expr import _EV
 from .fixed import FIXED_BUILTINS, is_fixed, is_floatv
 from .floatp import FLOAT_BUILTINS
@@ -202,11 +202,13 @@ class OpsMixin:
                 acc = self.binary_op(op, acc, r, node, sc, nh)
             except NotConst:
                 raise
-            except Exception as ex:
-                if getattr(self.ctx, "debug", False):
-                    raise
+            except Exception as ex:      # boundary: the operation degrades to an unknown value
+                if isinstance(ex, Unsupported):
+                    why = str(ex)           # expected: no overload of the lightweight type checker fits
+                else:
+                    why = failure_text(self.ctx, ex)
                 self.diag("UNRESOLVED_OVERLOAD" if isinstance(ex, Unsupported) else "UNSUPPORTED_CONSTRUCT",
-                          "operator '%s' on %s and %s cannot be resolved (%s)" % (op, acc.t.name or acc.t.kind, r.t.name or r.t.kind, ex), node)
+                          "operator '%s' on %s and %s cannot be resolved (%s)" % (op, acc.t.name or acc.t.kind, r.t.name or r.t.kind, why), node)
                 acc = self.unknown(hint if hint is not None else (acc.t if acc.t.kind == "array" else None))
         return acc
 

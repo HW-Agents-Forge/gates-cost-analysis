@@ -8,7 +8,7 @@ from ...ir import Const, Origin, SigSpec
 from ...ir.sigspec import mask
 from ...ir.limits import DEFAULT_LIMITS as _IR_DEFAULT_LIMITS
 from . import vtypes as T
-from .core import NotConst, StopLimit, Unsupported, bool_const, int_val, real_val, range_int_type
+from .core import NotConst, StopLimit, Unsupported, bool_const, failure_text, int_val, real_val, range_int_type
 from .vtypes import VType, minbits
 from .values import Val, Sym
 
@@ -180,10 +180,8 @@ class ExprMixin:
             return h(self, e, sc, hint)
         except (StopLimit, RecursionError):
             raise
-        except Exception as ex:  # degrade: never fail globally
-            if getattr(self.ctx, "debug", False):
-                raise
-            self.diag("UNSUPPORTED_CONSTRUCT", "cannot evaluate expression (%s: %s)" % (type(ex).__name__, ex), e)
+        except Exception as ex:  # boundary - degrade: never fail globally
+            self.diag("UNSUPPORTED_CONSTRUCT", "cannot evaluate expression (%s)" % failure_text(self.ctx, ex), e)
             return self.unknown(hint)
 
     def eval_const_int(self, e, sc, hint=None):

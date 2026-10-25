@@ -18,12 +18,23 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import REPO_ROOT, version
+from .errors import GatecostError
 from .paths import state_dir, user_cache_dir
 
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 _MAGIC = b"GCC1"
 _SUFFIX = ".gce"
 _PACK_SUFFIX = ".gcp"
+
+
+class PackUnavailable(GatecostError, RuntimeError):
+    """A pack of module operations vanished or was rewritten after its entry was read (``gatecost clean`` or
+    pruning by another process).  Reachable without a bug, so it is a reportable error: the CLI prints the
+    message with its remedy instead of a bare ``unexpected failure (RuntimeError)``.  Still a ``RuntimeError``
+    for callers of the cache API."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("INTERNAL", message)
 
 
 # --------------------------------------------------------------------------- locations
@@ -329,8 +340,8 @@ class Cache:
         except (OSError, TypeError, ValueError):
             data = None
         if data is None or len(data) != n or hashlib.blake2b(data, digest_size=12).hexdigest() != bid:
-            raise RuntimeError(f"cache pack {pk} (module operations) is unreadable or vanished while in use; "
-                               "rerun with --no-cache")
+            raise PackUnavailable(f"cache pack {pk} (module operations) is unreadable or vanished while in use; "
+                                  "rerun with --no-cache")
         return blob_to_ops(data)
 
     # maintenance ---------------------------------------------------------
@@ -631,7 +642,7 @@ def cost_tree_from_json(text: str):
 
     obj = from_json(text)
     if not isinstance(obj, DesignCostTree):
-        raise ValueError("not a DesignCostTree")
+        raise ValueError(f"not a DesignCostTree: the JSON decodes to {type(obj).__name__}")
     return obj
 
 
@@ -645,5 +656,5 @@ def module_cost_from_json(text: str):
 
     obj = from_json(text)
     if not isinstance(obj, ModuleCost):
-        raise ValueError("not a ModuleCost")
+        raise ValueError(f"not a ModuleCost: the JSON decodes to {type(obj).__name__}")
     return obj

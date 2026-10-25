@@ -150,6 +150,25 @@ Each diagnostic has a stable code, a severity (`info`, `warning`, `error`), a lo
 | `ARRAY_PORT_FLATTENED` (unpacked array port taken as one vector; whole-array connections wire element by element) | info | no |
 | `UNOBSERVABLE_LOGIC` | info | no (the removed logic costs 0) |
 | `INCLUDE_NOT_FOUND` | warning | possibly |
+| `INTERNAL` (an invariant breach on one module or one cost node; that part costs 0 or becomes a black box) | error | yes |
+
+Messages carry the cause where one exists:
+
+- `MISSING_MODULE` for a module of the other language that fails to elaborate quotes the failure (`Type: message`).
+- `UNSUPPORTED_CONSTRUCT` also reports a VHDL subprogram parameter whose type cannot be resolved (the argument keeps its own type). A VHDL statement, expression, operator, unit or root entity that fails unexpectedly is skipped with `UNSUPPORTED_CONSTRUCT` and a message ending in `(Type: message)`.
+- `UNRESOLVED_PARAM` also reports a VHDL block generic whose actual cannot be evaluated; the generic is left undefined.
+
+Speculative fast paths (constant bounds, lookup-table detection, overload heuristics) fall back silently only on the expected "not constant / unsupported" outcome. Limits and any other exception are never swallowed by them.
+
+### Debug switches
+
+All are environment variables, meant for tests and bug reports. Unset, the tool degrades to diagnostics and never aborts the whole run.
+
+| Variable | Effect |
+|---|---|
+| `GATECOST_ELAB_DEBUG=1` | Internal errors propagate instead of becoming an `INTERNAL` diagnostic (module elaboration, cost nodes, provenance, cross-language elaboration). |
+| `GATECOST_VHDL_DEBUG=1` | The VHDL elaborator re-raises an unexpected exception instead of emitting `UNSUPPORTED_CONSTRUCT` with `Type: message`. |
+| `GATECOST_DEBUG_FASTFUNC=1` | The constant-function fast path re-raises an unexpected exception of its generated code. Unset, the call goes to the general interpreter (same answer) and the counter `elab.constfunc.INTERNAL_ERRORS["count"]` is incremented (tests only). |
 
 ## 7. Default Limits
 

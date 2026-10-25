@@ -1,7 +1,7 @@
 """The differ engine (DIFF.md). See ``gatecost.diff`` for the public API and fact conventions."""
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from math import isqrt
@@ -204,6 +204,14 @@ def _nk_base(o: CostOp) -> tuple:
     return nk
 
 
+def _take(free: list[CostOp], hit: CostOp) -> None:
+    """Remove `hit` (by identity, not equality) from `free`; groups are bounded (<= 64)."""
+    for i, o in enumerate(free):
+        if o is hit:
+            del free[i]
+            return
+
+
 def _same_op(ob: CostOp, oa: CostOp) -> bool:
     """Operations that cost and are shaped alike: pairing them can only give a zero delta."""
     return (ob.cost == oa.cost and ob.effective_widths == oa.effective_widths
@@ -248,7 +256,7 @@ def match_ops(obs, oas, aligner: Aligner):
             if hit is None:
                 todo_b.append(ob)
                 continue
-            free_a.remove(hit)
+            _take(free_a, hit)
             used_a.add(hit.id)
             matched_b.add(ob.id)
             pairs.append((ob, hit, 1))
@@ -259,7 +267,7 @@ def match_ops(obs, oas, aligner: Aligner):
                 if hit is None:
                     left_b.append(ob)
                     continue
-                free_a.remove(hit)
+                _take(free_a, hit)
                 used_a.add(hit.id)
                 matched_b.add(ob.id)
                 pairs.append((ob, hit, 1))
@@ -267,14 +275,14 @@ def match_ops(obs, oas, aligner: Aligner):
         for ob in todo_b:
             hit = next((oa for oa in free_a if oa.named_key == ob.named_key), None)
             if hit is not None:
-                free_a.remove(hit)
+                _take(free_a, hit)
                 used_a.add(hit.id)
                 matched_b.add(ob.id)
                 pairs.append((ob, hit, 1))
     rem_b: list[CostOp] = [o for o in obs if o.id not in matched_b]
     rem_a = [o for o in oas if o.id not in used_a]
     if rem_b and rem_a:
-        sidx: dict = defaultdict(list)
+        sidx: dict = defaultdict(deque)
         for o in rem_a:
             if o.shape_key:
                 sidx[o.shape_key].append(o)
@@ -282,7 +290,7 @@ def match_ops(obs, oas, aligner: Aligner):
         for ob in rem_b:
             lst = sidx.get(ob.shape_key) if ob.shape_key else None
             if lst:
-                oa = lst.pop(0)
+                oa = lst.popleft()
                 used_a.add(oa.id)
                 pairs.append((ob, oa, 2))
             else:
@@ -388,7 +396,7 @@ class _Differ:
                 ua.discard(ka)
                 work.append(mk(kb, ka))
         # renames by equal shape hash
-        hb: dict[str, list[str]] = defaultdict(list)
+        hb: dict[str, deque[str]] = defaultdict(deque)
         for k in sorted(ub):
             h = b.modules[k].canonical_hash
             if h:
@@ -396,7 +404,7 @@ class _Differ:
         for k in sorted(ua):
             h = a.modules[k].canonical_hash
             if h and hb.get(h):
-                kb = hb[h].pop(0)
+                kb = hb[h].popleft()
                 ub.discard(kb)
                 ua.discard(k)
                 work.append(mk(kb, k, "renamed"))
@@ -504,13 +512,13 @@ class _Differ:
                 self.structural.append({
                     "kind": "instance_count", "module": p.name, "path": path, "from": x.count, "to": y.count,
                     "description": f"instance {p.name}.{path} count {x.count}->{y.count}"})
-        keys_a: dict[str, list] = defaultdict(list)
+        keys_a: dict[str, deque] = defaultdict(deque)
         for e in la:
             keys_a[e.child_key].append(e)
         rest_b = []
         for e in lb:
             if keys_a.get(e.child_key):
-                keys_a[e.child_key].pop(0)  # same child under another path: instance renamed
+                keys_a[e.child_key].popleft()  # same child under another path: instance renamed
             else:
                 rest_b.append(e)
         rest_a = [e for lst in keys_a.values() for e in lst]

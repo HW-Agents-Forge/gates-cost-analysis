@@ -26,7 +26,7 @@ def _bank(base: str, n: int, style: str, p: Profile) -> Acc:
         return a.add("ASYNC_EXTRA", n, P[base] - P["DFF"])
     if style == "icg":
         return a.add(base, n, P[base]).add("ICG", 1, P["ICG"])
-    raise ValueError(style)
+    raise ValueError(f"unknown register enable style {style!r} (expected none, mux, edff or icg)")
 
 
 def reg_op(n: int, p: Profile, async_reset: bool = False, async_set_reset: bool = False,

@@ -39,6 +39,25 @@ class StopLimit(Exception):
     """A limit was reached; the enclosing construct is abandoned."""
 
 
+#: Exceptions by which the elaborator reports, by design, that a construct is outside the path being tried
+#: (a value that is not constant, a shape it does not handle).  A *speculative probe* (a fast path tried
+#: before the general one, an overload-resolution heuristic) catches exactly these and takes its documented
+#: fallback; the general path reports the construct itself when it really is a problem.  Any other exception
+#: is an elaborator bug: it is not caught by the probe and reaches the statement / unit boundary handler,
+#: which reports it as a diagnostic (:func:`failure_text`).  Limits (:class:`StopLimit`, ``RecursionError``)
+#: are never swallowed by a probe.
+PROBE_MISS: tuple[type[Exception], ...] = (NotConst, Unsupported)
+
+
+def failure_text(ctx: object, ex: BaseException) -> str:
+    """Boundary handlers (statement, operator, unit, root entity) degrade an unexpected exception into a
+    diagnostic that quotes it: this returns the ``'Type: message'`` text to quote, or re-raises ``ex`` when the
+    debug switch of the run (``GATECOST_VHDL_DEBUG``) is set, so that tests see the traceback."""
+    if getattr(ctx, "debug", False):
+        raise ex
+    return "%s: %s" % (type(ex).__name__, ex)
+
+
 class Ctx:
     """State shared by every module elaborated for one run."""
 

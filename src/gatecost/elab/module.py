@@ -1078,14 +1078,16 @@ class ModElab(BaseEv):
         finally:
             self.allow_implicit = False
         cp = Design.const_port_signature(ins) if ctx.opts["const_ports"] else {}
+        reason = ""
         try:
             key = fm.elaborate(params, cp)
-        except Exception:
+        except Exception as exc:    # language boundary: a failure of the other elaborator black-boxes this instance
             if _DEBUG:
                 raise
             key = None
+            reason = f" ({type(exc).__name__}: {exc})"
         if key is None:
-            ctx.missing(it.module, f"module '{it.module}' of the other language could not be elaborated; "
+            ctx.missing(it.module, f"module '{it.module}' of the other language could not be elaborated{reason}; "
                         "instance treated as a black box", self, it)
             res = self.b.blackbox(it.module, self.path + it.name, ins, {p: o[0] for p, o in outs.items()},
                                   count=1, origin=self.org(it.loc))

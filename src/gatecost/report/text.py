@@ -35,8 +35,9 @@ def render_text(out: Output, *, max_lines: int = 10, verbose: bool = False, quie
         ]
         lines.append("Contributors")
         lines += _table(rows, ("DELTA", "LOCATION", "REASON", "WHAT"))
-        if len(r.contributors) > max_lines or r.others_count:
-            lines.append(f"... and {len(r.contributors) - max_lines + r.others_count} more")
+        hidden = max(len(r.contributors) - max_lines, 0) + r.others_count
+        if hidden:
+            lines.append(f"... and {hidden} more")
         if verbose and r.by_category:
             lines += ["", "By category"]
             lines += _table([(k, sge(v)) for k, v in r.by_category.items()], ("CATEGORY", "DELTA"))
