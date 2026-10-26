@@ -73,6 +73,28 @@ def reduce_op(kind: str, n: int, p: Profile) -> OpCost:
     return finalize(Sc(lo, ty, hi, {"min": "tree", "typ": "tree", "max": "tree"}), "logic", "good", p, logic=kind != "XOR")
 
 
+def reduce_chain_op(kind: str, n_in: int, w: int, p: Profile) -> OpCost:
+    """A ``w``-input reduction that reuses the result of a nested reduction of the same kind (``^a[15:i]`` from
+    ``^a[15:i+1]``): ``n_in`` inputs remain (the sub-result and ``n_in - 1`` new bits).
+
+    A chain of such reductions is a prefix computation, the structure of a carry chain, costed as the adders of
+    section 3.1 are: min is the serial chain (``n_in - 1`` gates); typ moves by ``alpha`` (``alpha_add``) towards a
+    Brent-Kung prefix network, about twice the cells of the chain; max is a Kogge-Stone network, ``ceil(log2 w)``
+    cells per new input.  Every scenario is capped by the reduction computed on its own (``reduce_op(kind, w)``)."""
+    alone = reduce_op(kind, w, p)
+    cells = max(n_in - 1, 0)
+    if cells == 0:
+        return zero("logic")
+    pre = "red_xor" if kind == "XOR" else "red_and"
+    name = "XOR_IN" if kind == "XOR" else "AND_IN"
+    lo = Acc().add(name, cells, p.C[f"{pre}_min"])
+    ty = Acc().add(name, cells, p.C[f"{pre}_typ"]).scaled(1000 + p.alpha_add)   # chain + alpha * (2*chain - chain)
+    hi = Acc().add(name, min(cells * clog2(w), w - 1), p.C[f"{pre}_max"])
+    oc = finalize(Sc(lo, ty, hi, {"min": "chain", "typ": "prefix", "max": "kogge_stone"}), "logic", "good", p,
+                  logic=kind != "XOR")
+    return cap(oc, alone)
+
+
 # ---------------------------------------------------------------------------------------
 # selection
 
@@ -101,37 +123,164 @@ def mux_op(k: int, w: int, p: Profile, const_inputs: int = 0, same_inputs: bool 
     return finalize(Sc(lo, ty, hi, {"min": "mux4" if k >= 3 else "mux2", "typ": "mux2", "max": "mux2_buffered"}, sigma=True), "select", "good", p)
 
 
-def _pmux_accs(k: int, w: int, p: Profile) -> tuple[Acc, Acc, Acc]:
-    """k one-hot arms plus the default arm, per bit: each of the ``k + 1`` arms costs half an AOI22 (``AO_IN``: an
-    AOI22 serves two arms, an AOI222 three at about the same rate), and the ``h = ceil((k + 1) / 2)`` AOI outputs
-    are merged by a NAND/NOR tree at the per-merged-input cost of the comparator chains (``eq_chain_min`` /
-    ``eq_chain_typ``)."""
+#: per-bit arm profile of a PMUX / PRIORITY: the kind of each data arm in priority order, then the default arm;
+#: 0 / 1 = the arm is that constant at this bit, 2 = a variable signal no other arm of the bit carries,
+#: 3, 4, ... = a variable signal carried by every arm of the bit with the same number (same net bit)
+ArmBits = tuple[tuple[tuple[int, ...], int], ...]
+
+
+def _all_var(k: int, w: int) -> ArmBits:
+    return (((2,) * (k + 1), w),)
+
+
+def _arm_bits(k: int, w: int, arms: ArmBits | None) -> ArmBits:
+    """Validated arm profiles (``(kinds, bit count)`` pairs, ``k + 1`` kinds each, ``w`` bits in all)."""
+    if arms is None:
+        return _all_var(k, w)
+    total = 0
+    for kinds, n in arms:
+        if len(kinds) != k + 1 or any(x < 0 for x in kinds) or n < 0:
+            raise ValueError(f"arm profile {kinds!r} x{n} does not describe {k} arms and a default")
+        total += n
+    if total != w:
+        raise ValueError(f"arm profiles cover {total} bits, expected {w}")
+    return arms
+
+
+def _same(x: int, y: int | None) -> bool:
+    """Two arms that are the same signal at this bit (equal constants or the same shared variable)."""
+    return y is not None and x == y and x != 2
+
+
+def _pmux_accs(k: int, w: int, p: Profile, arms: ArmBits | None = None) -> tuple[Acc, Acc, Acc]:
+    """k one-hot arms plus the default arm, per bit: each variable arm costs half an AOI22 (``AO_IN``: an AOI22
+    serves two arms, an AOI222 three at about the same rate), and the ``h = ceil(v / 2)`` AOI outputs are merged by a
+    NAND/NOR tree at the per-merged-input cost of the comparator chains (``eq_chain_min`` / ``eq_chain_typ``).
+
+    Per bit (``arms``): an arm equal to the default is dropped (when it is selected the default is the output);
+    arms that carry the same signal share one AOI input, their selects ORed once for the whole node (one merged
+    input per extra arm, counted once per distinct set of arms); ``s & 0`` vanishes; ``s & 1`` is the select line
+    itself, one more input of the merging tree and no AOI input; a bit with a single variable arm and nothing else
+    is ``sel & x``, an AND2.  With every arm a distinct variable this is ``(k + 1)`` arm inputs and ``h - 1``
+    merges.  max is the mux chain (``_chain``)."""
     P = p.P
-    h = ceil_div(k + 1, 2)
     arm = rdiv(P["AOI22"], 2)
-    lo = Acc().add("AO_IN", (k + 1) * w, arm).add("OR_IN", (h - 1) * w, p.C["eq_chain_min"])
-    ty = Acc().add("AO_IN", (k + 1) * w, arm).add("OR_IN", (h - 1) * w, p.C["eq_chain_typ"])
-    hi = Acc().add("MUX2", k * w, P["MUX2"])
-    return lo, ty, hi
+    ao = merge = and1 = 0
+    groups: set[tuple[int, ...]] = set()
+    for kinds, n in _arm_bits(k, w, arms):
+        d = kinds[k]
+        rem = [(j, x) for j, x in enumerate(kinds[:k]) if not _same(x, d)]
+        shared: dict[int, list[int]] = {}
+        for j, x in rem:
+            if x >= 3:
+                shared.setdefault(x, []).append(j)
+        v = sum(1 for _, x in rem if x == 2) + len(shared) + (1 if d >= 2 else 0)
+        ones = sum(1 for _, x in rem if x == 1) + (1 if d == 1 else 0)
+        for js in shared.values():
+            if len(js) > 1:
+                groups.add(tuple(js))
+        if v == 1 and ones == 0:      # a single variable arm, every other one 0: sel & x
+            and1 += n
+            continue
+        ao += v * n
+        merge += max(ceil_div(v, 2) + ones - 1, 0) * n
+    sel = sum(len(g) - 1 for g in groups)
+    lo = Acc().add("AO_IN", ao, arm).add("OR_IN", merge + sel, p.C["eq_chain_min"]).add("AND2", and1, P["AND2"])
+    ty = Acc().add("AO_IN", ao, arm).add("OR_IN", merge + sel, p.C["eq_chain_typ"]).add("AND2", and1, P["AND2"])
+    return lo, ty, _chain(k, w, p, arms)
 
 
-def pmux_op(k: int, w: int, p: Profile) -> OpCost:
-    """k one-hot data inputs and a default (AOI22 pairs and a NAND tree)."""
+def _chain(k: int, w: int, p: Profile, arms: ArmBits | None = None) -> Acc:
+    """Per bit, a chain of ``k`` 2:1 muxes ``s_j ? d_j : rest`` ending on the default arm.  An arm equal to the rest
+    of the chain (``s ? x : x``) is a wire; an arm equal to the arm of the mux just below it merges into that mux
+    (``s1 ? x : (s2 ? x : r)`` is ``(s1 | s2) ? x : r``, the OR is on the 1-bit selects).  A mux with one constant
+    input is an AND2/OR2, with two different constants the select or its complement (half an INV, as for MUX)."""
+    P = p.P
+    mux = andg = inv = 0
+    for kinds, n in _arm_bits(k, w, arms):
+        rest: int | None = kinds[k]
+        head: int | None = None
+        for d in reversed(kinds[:k]):
+            if _same(d, rest) or _same(d, head):
+                continue
+            if d < 2 and rest is not None and rest < 2:
+                inv += n
+            elif d < 2 or (rest is not None and rest < 2):
+                andg += n
+            else:
+                mux += n
+            rest, head = None, d
+    return Acc().add("MUX2", mux, P["MUX2"]).add("AND2", andg, P["AND2"]).add("INV", inv, rdiv(P["INV"], 2))
+
+
+def pmux_op(k: int, w: int, p: Profile, arms: ArmBits | None = None) -> OpCost:
+    """k one-hot data inputs and a default (AOI22 pairs and a NAND tree); ``arms``: per-bit constant and shared arms."""
     if k <= 1:
         return finalize(_all(Acc().add("AND2", w, p.P["AND2"]), "and"), "select", "medium", p)
-    lo, ty, hi = _pmux_accs(k, w, p)
+    lo, ty, hi = _pmux_accs(k, w, p, arms)
     return finalize(Sc(lo, ty, hi, {"min": "aoi22", "typ": "aoi22", "max": "mux_chain"}), "select", "medium", p)
 
 
-def priority_op(k: int, w: int, p: Profile) -> OpCost:
-    """A priority chain of k inputs (if / else-if)."""
+def priority_op(k: int, w: int, p: Profile, arms: ArmBits | None = None) -> OpCost:
+    """A priority chain of k inputs (if / else-if); ``arms``: per-bit constant and shared arms."""
     P = p.P
     if k <= 1:
         return pmux_op(1, w, p)
-    lo = _pmux_accs(k, w, p)[0].add("AND2", k - 1, P["AND2"])
-    ty = Acc().add("MUX2", k * w, P["MUX2"]).scaled(p.F["priority_typ"]).add("AND2", k - 1, P["AND2"])
-    hi = Acc().add("MUX2", k * w, P["MUX2"]).add("AND2", k - 1, P["AND2"])
+    chain = _chain(k, w, p, arms)
+    lo = _pmux_accs(k, w, p, arms)[0].add("AND2", k - 1, P["AND2"])
+    ty = chain.scaled(p.F["priority_typ"]).add("AND2", k - 1, P["AND2"])
+    hi = chain.copy().add("AND2", k - 1, P["AND2"])
     return finalize(Sc(lo, ty, hi, {"min": "pmux+chain", "typ": "mux_chain", "max": "mux_chain"}), "select", "medium", p)
+
+
+#: per-bit leaf profile of a flattened select tree: ``(V, c0, c1, dflt, bit count)``: ``V`` distinct variable leaves,
+#: ``c0`` / ``c1`` (0 or 1) whether the constants 0 / 1 are leaves, ``dflt`` the default leaf (2 variable, 0 / 1 that
+#: constant); see ``gatecost.ir.muxtree``
+TreeBits = tuple[tuple[int, int, int, int, int], ...]
+
+
+def _tree_arms(bits: TreeBits) -> tuple[int, int, ArmBits]:
+    """(arms k, width w, arm profiles) of a flattened tree seen as one select over its distinct leaves per bit: the
+    default leaf innermost, then the other variable leaves, then the constant leaves; bits with fewer leaves than
+    the widest are padded with copies of their default (a wire)."""
+    rows = []
+    k = 0
+    for v, c0, c1, d, n in bits:
+        if min(v, c0, c1, n) < 0 or max(c0, c1) > 1 or d not in (0, 1, 2) or (d == 2 and v < 1) \
+                or (d == 0 and not c0) or (d == 1 and not c1):
+            raise ValueError(f"tree leaf profile {(v, c0, c1, d, n)!r} is inconsistent")
+        if n == 0:
+            continue
+        dk = 3 if d == 2 else d                       # the default variable: a class of its own (padding = wire)
+        consts = [c for c, has in ((0, c0), (1, c1)) if has and c != d]
+        arms = consts + [2] * (v - (1 if d == 2 else 0))
+        rows.append((arms, dk, n))
+        k = max(k, len(arms))
+    w = sum(n for _, _, n in rows)
+    prof = tuple((tuple(arms + [dk] * (k - len(arms)) + [dk]), n) for arms, dk, n in rows)
+    return k, w, prof
+
+
+def mux_tree_op(bits: TreeBits, sel_and: int, sel_or: int, p: Profile) -> OpCost:
+    """A tree of nested 2:1 / one-hot / priority muxes flattened per bit (``c1 ? (c2 ? a : h) : h`` is
+    ``(c1 & c2) ? a : h``): per bit a select of its *distinct* leaves, whose conditions are exclusive and built once
+    for every bit by ``sel_and`` AND2 and ``sel_or`` OR2 on 1-bit signals.
+
+    typ: the mux chain of the distinct leaves (``_chain``: ``V - 1`` MUX2 per bit, an AND2 per constant leaf);
+    min: the AND-OR form of a one-hot select (``_pmux_accs``: the leaf conditions are exclusive); max: the chain with
+    the sizing factor and select buffering of ``mux_op``.  The caller caps every scenario by the unflattened cost."""
+    P = p.P
+    k, w, arms = _tree_arms(bits)
+    if k == 0 or w == 0:
+        lo, ty = Acc(), Acc()
+    else:
+        lo = _pmux_accs(k, w, p, arms)[0]
+        ty = _chain(k, w, p, arms)
+    for a in (lo, ty):
+        a.add("AND2", sel_and, P["AND2"]).add("OR2", sel_or, P["OR2"])
+    hi = ty.scaled(p.sigma_other).add("BUF", clog2(k + 1) * ceil_div(w, 8) if k else 0, P["BUF"])
+    return finalize(Sc(lo, ty, hi, {"min": "tree_aoi", "typ": "tree_mux_chain", "max": "tree_mux_chain"}, sigma=True),
+                    "select", "medium", p)
 
 
 def decode_acc(s: int, p: Profile) -> Sc:

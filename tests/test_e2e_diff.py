@@ -171,7 +171,8 @@ class VerilogEdits(GitCase):
 
     def test_instance_count_change_is_multiplicity(self):
         self.p.edit("rtl/top.sv", "alu #(.W(AW)) u_alu (", "alu #(.W(AW)) u_alu [1:0] (")
-        self.p.edit("rtl/top.sv", ".y(q)", ".y(q)")
+        # both elements observed (one slice of q each): an unobserved element would be removed (D2)
+        self.p.edit("rtl/top.sv", "output [AW-1:0] q)", "output [2*AW-1:0] q)")
         code, out, raw = self.p.diff("--verbose")
         reasons = {c.groups[3] for c in out.contributors()}
         self.assertIn("multiplicity", reasons, raw)
@@ -181,10 +182,33 @@ class VerilogEdits(GitCase):
     def test_new_untracked_file_is_added(self):
         self.p.write("rtl/extra.sv", "module extra (input clk, input [15:0] a, b, output reg [15:0] y);\n"
                                      "  always @(posedge clk) y <= a * b;\nendmodule\n")
-        self.p.edit("rtl/top.sv", "  dp u_dp", "  extra u_ex (.clk(clk), .a(a[15:0]), .b(b[15:0]), .y());\n  dp u_dp")
+        self.p.edit("rtl/top.sv", "output [AW-1:0] q)", "output [AW-1:0] q, output [15:0] e)")
+        self.p.edit("rtl/top.sv", "  dp u_dp", "  extra u_ex (.clk(clk), .a(a[15:0]), .b(b[15:0]), .y(e));\n  dp u_dp")
         code, out, raw = self.p.diff()
         self.assertEqual(verdict(out), "INCREASE")
         self.assertTrue(any(c.groups[1] == "rtl/extra.sv" for c in out.contributors()), raw)
+
+    def test_new_instance_with_unconnected_output_costs_nothing(self):
+        # D2: an instance whose outputs reach no output of the top is removed with its whole subtree
+        self.p.write("rtl/extra.sv", "module extra (input clk, input [15:0] a, b, output reg [15:0] y);\n"
+                                     "  always @(posedge clk) y <= a * b;\nendmodule\n")
+        self.p.edit("rtl/top.sv", "  dp u_dp", "  extra u_ex (.clk(clk), .a(a[15:0]), .b(b[15:0]), .y());\n  dp u_dp")
+        code, out, raw = self.p.diff()
+        self.assertEqual(verdict(out), "NO_CHANGE", raw)
+        self.assertEqual(delta(out), 0)
+
+    def test_instance_whose_output_is_no_longer_read_is_a_decrease(self):
+        # D2: disconnecting the only observed output removes the unchanged child's whole cost
+        self.p.edit("rtl/top.sv", ".op(op), .y(q));", ".op(op), .y());\n  assign q = 0;")
+        code, out, raw = self.p.diff("--verbose")
+        self.assertEqual(verdict(out), "DECREASE", raw)
+        _, text = self.p.run("cost", "--format", "agent", "--no-cache")
+        self.assertNotIn(" alu", text)
+        self.p.checkout_clean()
+        _, before = self.p.run("cost", "--format", "agent", "--no-cache")
+        alu = [ln for ln in before.splitlines() if ln.split()[1:2] == ["alu"]]
+        self.assertTrue(alu, before)
+        self.assertAlmostEqual(-delta(out), float(alu[0].split()[0]), delta=1.0)
 
     def test_removed_logic_is_a_decrease_with_before_coordinates(self):
         self.p.edit("rtl/alu.sv", "      2'd2: y <= x;\n", "")

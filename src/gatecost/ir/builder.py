@@ -914,6 +914,9 @@ def _bitwise2(b, ops, w, sa, sb, o, n, g, at, op):
             return SigSpec.const(mask(w), w)
         if A == B:
             return A
+        r = _masked_merge_or(b, A, B, w, o, n, g)
+        if r is not None:
+            return r
     elif op == "XOR":
         if A == B:
             return SigSpec.const(0, w)
@@ -921,6 +924,9 @@ def _bitwise2(b, ops, w, sa, sb, o, n, g, at, op):
             return B
         if _is_zero(B):
             return A
+        r = _masked_merge_xor(b, A, B, w, o, n, g)
+        if r is not None:
+            return r
     else:  # XNOR
         if A == B:
             return SigSpec.const(mask(w), w)
@@ -937,6 +943,129 @@ def _bitwise2(b, ops, w, sa, sb, o, n, g, at, op):
 
 def _mk_bw(op):
     return lambda b, ops, w, sa, sb, o, n, g, at: _bitwise2(b, ops, w, sa, sb, o, n, g, at, op)
+
+
+# ---- masked merge (IR.md section 4, rule "masked merge") -----------------------------------------
+# ``(x & ~m) | (y & m)`` (any commutation) and ``x ^ ((x ^ y) & m)`` are, bit for bit, ``m[i] ? y[i] : x[i]``.
+# They are built as MUX nodes, one per run of bits whose select is the same signal bit (the bits of ``m`` are
+# followed through the wiring already recorded, so ``{{8{be[3]}}, ..., {8{be[0]}}}`` gives four 8-bit MUXes
+# selected by ``be[k]``; a free mask gives 1-bit MUXes).  A register written ``q <= (q & ~m) | (d & m)`` then
+# reaches the clock-enable recognition of the lowering with ``D = MUX(m_k, q, d)`` per segment, exactly as the
+# equivalent ``if (be[k]) q[8k+:8] <= d[8k+:8]``.  The AND / NOT / XOR nodes left unused are swept by
+# ``finalize``.  Exact rewrite: nothing is assumed about ``m``.
+
+_RESOLVE_ROUNDS = 8          # wiring hops followed when resolving the bits of a mask
+_RESOLVE_MAX_CONNS = 4096    # nets driven by more pieces are not followed (grouping only, never semantics)
+
+
+def _whole_output(sig: SigSpec, op: str, w: int) -> Node | None:
+    """The live ``op`` node whose single ``w``-bit output is exactly ``sig``, else None."""
+    sl = sig.single_slice()
+    if sl is None or sl.lo != 0 or sl.width != w or sl.net.width != w:
+        return None
+    d = sl.net.driver
+    if isinstance(d, Node) and d.op == op and d.alive and len(d.outputs) == 1 and d.outputs[0] is sl.net:
+        return d
+    return None
+
+
+def _masked_merge_or(b: Builder, A: SigSpec, B: SigSpec, w: int, o, n, g) -> SigSpec | None:
+    """``OR(AND(x, NOT(m)), AND(y, m))`` in any operand order -> per-bit ``m ? y : x``."""
+    pa, pb = _whole_output(A, "AND", w), _whole_output(B, "AND", w)
+    if pa is None or pb is None:
+        return None
+    for P, Q in ((pa, pb), (pb, pa)):
+        for i in (0, 1):
+            nt = _whole_output(P.inputs[i][1], "NOT", w)
+            if nt is None:
+                continue
+            m = nt.inputs[0][1]
+            if m.width != w:
+                continue
+            x = P.inputs[1 - i][1]
+            for j in (0, 1):
+                if Q.inputs[j][1] == m:
+                    return _select_by_mask(b, m, x, Q.inputs[1 - j][1], w, o, n, g)
+    return None
+
+
+def _masked_merge_xor(b: Builder, A: SigSpec, B: SigSpec, w: int, o, n, g) -> SigSpec | None:
+    """``XOR(x, AND(XOR(x, y), m))`` in any operand order -> per-bit ``m ? y : x``."""
+    for X, Y in ((A, B), (B, A)):
+        nd = _whole_output(Y, "AND", w)
+        if nd is None:
+            continue
+        for i in (0, 1):
+            xr = _whole_output(nd.inputs[i][1], "XOR", w)
+            if xr is None:
+                continue
+            r1, r2 = xr.inputs[0][1], xr.inputs[1][1]
+            y = r2 if r1 == X else (r1 if r2 == X else None)
+            if y is not None:
+                return _select_by_mask(b, nd.inputs[1 - i][1], X, y, w, o, n, g)
+    return None
+
+
+def _select_by_mask(b: Builder, m: SigSpec, x: SigSpec, y: SigSpec, w: int, o, n, g) -> SigSpec | None:
+    """Per-bit ``m[i] ? y[i] : x[i]`` as MUX nodes, one per run of bits selected by the same signal bit."""
+    nt = _whole_output(m, "NOT", w)
+    if nt is not None:                     # ~z ? y : x  ==  z ? x : y
+        m, x, y = nt.inputs[0][1], y, x
+    atoms = _resolve_bits(b.module, m)
+    runs: list[tuple[int, int, tuple]] = []
+    i = 0
+    while i < w:
+        j = i + 1
+        while j < w and atoms[j] == atoms[i]:
+            j += 1
+        runs.append((i, j, atoms[i]))
+        i = j
+    if n is not None and len(runs) > 1:
+        return None                        # a named result must stay one net
+    parts = []
+    for i, j, (net, v) in runs:
+        if net is None:
+            S = SigSpec.x(1) if v == 2 else SigSpec.const(v, 1)
+        else:
+            S = SigSpec.of(net, v, 1)
+        parts.append(b.op("MUX", x.slice(i, j - i), y.slice(i, j - i), S, width=j - i, origin=o,
+                          name=n, group=g))
+    return SigSpec.concat(parts)
+
+
+def _resolve_bits(mod: ModuleIR, sig: SigSpec) -> list[tuple]:
+    """Bit atoms of ``sig`` (``(net, index)`` or ``(None, 0|1|2)``) followed through the recorded wiring
+    (``Conn``) so that two bits wired to the same source compare equal.  Bounded and deterministic."""
+    atoms = list(sig.bits())
+    for _ in range(_RESOLVE_ROUNDS):
+        need: dict[int, list[int]] = {}
+        for k, (net, _idx) in enumerate(atoms):
+            if net is not None and net.id in mod.conns_by_net:
+                need.setdefault(net.id, []).append(k)
+        if not need:
+            break
+        changed = False
+        for nid in sorted(need):
+            conns = mod.conns_by_net[nid]
+            if len(conns) > _RESOLVE_MAX_CONNS:
+                continue
+            ks = need[nid]
+            lo = min(atoms[k][1] for k in ks)
+            hi = max(atoms[k][1] for k in ks) + 1
+            tab: dict[int, tuple] = {}
+            for c in conns:
+                a, e = max(lo, c.lo), min(hi, c.lo + c.src.width)
+                if a < e:
+                    for off, at in enumerate(c.src.slice(a - c.lo, e - a).bits()):
+                        tab[a + off] = at
+            for k in ks:
+                at = tab.get(atoms[k][1])
+                if at is not None:
+                    atoms[k] = at
+                    changed = True
+        if not changed:
+            break
+    return atoms
 
 
 def _op_not(b, ops, w, sa, sb, o, n, g, at):

@@ -56,7 +56,7 @@ def export_node(nd: Node, members: bool = True) -> dict:
         "op": nd.op,
         "attrs": _plain({k: v for k, v in nd.attrs.items()}),
         "origin": export_origin(nd.origin),
-        "tags": _plain(dict(nd.tags)),
+        "tags": _plain({k: v for k, v in nd.tags.items() if k != "prunable"}),   # ir.hier bookkeeping
         "named_key": list(nd.named_key) if nd.named_key else None,
         "shape_key": nd.shape.hex() if nd.shape else None,
         "outputs": [{"width": o.width, "name": o.name, "known_mask": o.kmask, "known_val": o.kval,
@@ -77,7 +77,7 @@ def export_node(nd: Node, members: bool = True) -> dict:
             "const": info["const"], "known_mask": info["kmask"], "known_val": info["kval"],
             "is_const": info["const"] is not None})})
     if nd.op in ("INST", "BLACKBOX"):
-        d["instance"] = {"name": nd.attrs.get("inst"), "module_key": nd.attrs.get("module_key"),
+        d["instance"] = {"name": nd.attrs.get("inst"), "module_key": nd.attrs.get("ctx_key") or nd.attrs.get("module_key"),
                          "blackbox": nd.attrs.get("name") if nd.op == "BLACKBOX" else None, "count": nd.attrs.get("count", 1),
                          "recursive": bool(nd.tags.get("recursive"))}
     if members and nd.members:
@@ -103,6 +103,7 @@ def export_module(m: ModuleIR) -> dict:
                    "known_mask": p.kmask, "known_val": p.kval} for p in m.ports],
         "nodes": [export_node(n) for n in nodes],
         "share_sets": _plain(m.share_sets),
+        "mux_trees": _plain(getattr(m, "mux_trees", [])),
         "diagnostics": [{"code": d.code, "message": d.message, "severity": d.severity,
                          "affects_cost": d.affects_cost, "origin": export_origin(d.origin)}
                         for d in m.diagnostics],

@@ -1478,9 +1478,18 @@ class ExprMixin:
                         self.diag("UNRESOLVED_PARAM", "part-select bounds are not constant", node, True)
                         return None
                     p1, p2 = dim_pos(a, dim), dim_pos(bb, dim)
-                    if p1 < p2:
+                    rev = p1 < p2
+                    if rev:
+                        # reversed part-select (``f[31:32]``, typically ``[N*W-1:W]`` with N = 1): illegal in
+                        # IEEE 1800, taken swapped like Yosys; never a null range in Verilog
                         p1, p2 = p2, p1
                     cnt = p1 - p2 + 1
+                    if rev or p2 < 0 or p1 >= size:
+                        ln = e.loc[1] if isinstance(e.loc, tuple) and len(e.loc) > 1 else "?"
+                        self.assume(f"part-select [{a}:{bb}] of declared range [{lft}:{rgt}] at line {ln}"
+                                    + ("; reversed, taken swapped" if rev else "")
+                                    + ("; out of range: read as unknown, write clamped"
+                                       if (p2 < 0 or p1 >= size) else ""))
                     if p2 < 0 or p1 >= size:
                         r.oob = True
                         p2 = max(0, min(p2, size - 1))
@@ -1595,6 +1604,10 @@ class ExprMixin:
                         acc = self.b.add(acc, SigSpec.const(flat, bits), bits, origin=o)
                     r.eidx = acc
 
+    def net_array_rom(self, sym: VSym) -> list | None:
+        """Contents when a variable-index read of net array ``sym`` is a ROM (module elaborator only)."""
+        return None
+
     def read_ref(self, r: Ref) -> SigSpec:
         b = self.b
         if r.oob and not (r.dyn):
@@ -1608,8 +1621,14 @@ class ExprMixin:
                 r.cache = rp
             base = r.cache
         elif r.elems is not None:
-            arms = [self.rd_var(r.vsym, n) for n in r.elems]
-            base = b.index_mux(arms, r.eidx)
+            rom = self.net_array_rom(r.vsym) if r.vsym is not None else None
+            if rom is not None:
+                ab = r.eidx.width
+                pad = rom + [0] * ((1 << ab) - len(rom)) if len(rom) < (1 << ab) else rom
+                base = b.rom(r.eidx, pad, r.vsym.pt.w, origin=b.origin)
+            else:
+                arms = [self.rd_var(r.vsym, n) for n in r.elems]
+                base = b.index_mux(arms, r.eidx)
         elif r.net is not None:
             vs = r.vsym
             if vs is not None and vs.const_sig is not None and r.net is vs.net:

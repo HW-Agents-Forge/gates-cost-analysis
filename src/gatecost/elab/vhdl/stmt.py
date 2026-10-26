@@ -119,7 +119,7 @@ class StmtMixin:
             l, r, d = self.eval_range(rng, sc)
         except NotConst:
             return self.dyn_slice_lv(base, rng, sc, node)
-        return self.slice_lv(base, l, r, d)
+        return self.slice_lv(base, l, r, d, node)
 
     def dyn_slice_lv(self, base, rng, sc, node):
         """Target ``a(i+3 downto i)``: constant width, variable position (decoded write)."""
@@ -144,19 +144,29 @@ class StmtMixin:
         self.ctx.assume("write to a slice at a variable position costed as a %d-way decoded write" % count)
         return lv
 
-    def slice_lv(self, base, l, r, d):
+    def slice_lv(self, base, l, r, d, node=None):
         t = base.t
         ew = t.ewidth or 1
         if t.left is None:
             raise Unsupported("slice of an unconstrained target")
-        lo_i, hi_i = min(l, r), max(l, r)
+        nt = T.constrain(t, l, r, d)
+        span = T.range_span(l, r, d)
+        if span is None:
+            # null slice target (``p(2 to L) <= ...`` with L = 1): assigns no bit (do_assign skips width 0)
+            return self.sub_lv(base, nt, 0, 0)
+        lo_i, hi_i = span
         if t.dir == "downto":
             p_lo, p_hi = lo_i - t.right, hi_i - t.right
         else:
             p_lo, p_hi = t.right - hi_i, t.right - lo_i
+        if p_lo < 0 or p_hi > t.length - 1:
+            self.ctx.assume("target slice %d..%d outside %d..%d at %s:%s; clamped"
+                            % (lo_i, hi_i, min(t.left, t.right), max(t.left, t.right), self.file,
+                               getattr(node, "line", "?")))
         p_lo = max(p_lo, 0)
         p_hi = min(p_hi, t.length - 1)
-        nt = T.constrain(t, l, r, d)
+        if p_hi < p_lo:
+            return self.sub_lv(base, nt, 0, 0)
         return self.sub_lv(base, nt, p_lo * ew, (p_hi - p_lo + 1) * ew)
 
     def index_lv(self, base, ex, sc, node):
@@ -220,8 +230,8 @@ class StmtMixin:
                 return
             blk.mem_write(lv.mem, lv.addr, sg.resize(mw, False), origin=o)
             return
-        if lv.width == 0 and not lv.dyn:
-            return                                   # null-range target
+        if lv.width == 0:
+            return                                   # null-range target: no bit is assigned
         lim = self.ctx.ir_limits or _IR_DEFAULT_LIMITS
         if lv.width > lim.max_net_width:
             # a target this wide (typically from a garbage-in generic) would only be resized, never costed
@@ -386,8 +396,9 @@ class StmtMixin:
                 if isinstance(ch, N.Others):
                     others = it.value
                 elif isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
-                    l, r, _d = self.eval_range(ch, sc)
-                    for i in range(min(l, r), max(l, r) + 1):
+                    l, r, d = self.eval_range(ch, sc)
+                    span = T.range_span(l, r, d)
+                    for i in (range(span[0], span[1] + 1) if span is not None else ()):
                         words[i] = it.value
                 else:
                     words[self.const_int(self.eval(ch, sc))] = it.value

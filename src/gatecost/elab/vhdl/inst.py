@@ -449,7 +449,10 @@ class InstMixin:
         raise Unsupported("formal designator")
 
     def _slice_part(self, pn, off, t, l, r, d):
-        lo_i, hi_i = min(l, r), max(l, r)
+        span = T.range_span(l, r, d)
+        if span is None:                                 # null formal slice: no bit of the port
+            return pn, off, 0, T.constrain(t, l, r, d)
+        lo_i, hi_i = span
         ew = t.ewidth or 1
         if t.dir == "downto":
             p_lo, p_hi = lo_i - t.right, hi_i - t.right
@@ -587,6 +590,8 @@ class InstMixin:
 
     def connect_outputs(self, conns, res, s):
         for pn, flats, part, lv, a in conns:
+            if part[2] == 0:
+                continue                                 # null formal slice: drives nothing
             if any(fn not in res for fn, _ in flats):
                 self.connect_view_outputs(flats, part, lv, res, a)
                 continue

@@ -115,7 +115,8 @@ def _macro_op(D: int, W: int, p: Profile) -> OpCost:
 
 
 def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1, sync_read: bool = False,
-           const_reads: int = 0) -> OpCost:
+           const_reads: int = 0, const_writes: int = 0, const_write_words: int = 0,
+           wires: bool = False) -> OpCost:
     """D x W memory: flop-based, or ``min(flops, macro)`` per scenario when synchronous.
 
     A synchronous-read memory may be implemented by a memory compiler.  The smallest macro
@@ -123,9 +124,17 @@ def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1,
     smallest macro (``D' = max(D, 16, ceil(macro_min_bits / W))``) and the result is the
     cheaper of the flop array and the macro, scenario by scenario.  Both are non-decreasing
     in D, hence so is their minimum: there is no cliff at the macro threshold.
+
+    ``const_writes`` write ports have a constant address (``const_write_words`` distinct
+    words): each drives one word, so it needs no address decoder and only a ``W``-bit
+    select on that word instead of one on every word.  ``wires``: every write port is an
+    unclocked, unconditional constant-address drive (``assign a[3] = x``, an instance
+    output bound to ``a[3]``): the array is a bundle of nets, it has no storage, and only
+    variable-address reads (mux trees) cost anything.
     """
-    flops = _flop_mem_op(depth, width, p, rports, wports, sync_read, const_reads)
-    if not (p.macro_enable and sync_read):
+    flops = _flop_mem_op(depth, width, p, rports, wports, sync_read, const_reads, const_writes,
+                         const_write_words, wires)
+    if wires or not (p.macro_enable and sync_read):
         return flops
     D, W = depth, width
     macro = _macro_op(max(D, 16, ceil_div(p.macro_min_bits, W)), W, p)
@@ -141,24 +150,38 @@ def mem_op(depth: int, width: int, p: Profile, rports: int = 1, wports: int = 1,
 
 
 def _flop_mem_op(depth: int, width: int, p: Profile, rports: int, wports: int, sync_read: bool,
-                 const_reads: int = 0) -> OpCost:
+                 const_reads: int = 0, const_writes: int = 0, const_write_words: int = 0,
+                 wires: bool = False) -> OpCost:
     D, W, R, Pw = depth, width, rports, wports
     Rv = max(R - const_reads, 0)          # read ports with a constant address are plain word taps: no mux tree
+    Cw = min(max(const_writes, 0), Pw)    # write ports with a constant address: one word each, no decoder
+    Pv = Pw - Cw
     P = p.P
     s = clog2(D)
     dec = decode_acc(s, p) if s >= 2 else None
 
     def decode(which: str, scale: int) -> Acc:
-        if s == 0:
+        if s == 0 or scale == 0:
             return Acc()
         if s == 1:
             return Acc().add("INV", scale, P["INV"])
         return getattr(dec, which).times(scale)
 
+    if wires and Pv == 0:
+        # a net array: no storage, no write logic; a variable-address read is still a mux tree
+        ty = Acc().add("MUX2", Rv * (D - 1) * W, P["MUX2"])
+        lo = Acc().add("MUX4_EQ", Rv * (D - 1) * W, p.C["mux_min"])
+        hi = ty.scaled(p.sigma_other)
+        return finalize(Sc(lo, ty, hi, {"min": "net_array", "typ": "net_array", "max": "net_array"}, sigma=True),
+                        "mem", "poor", p)
+    # write-port select per word: word d chooses among the Pv variable ports and the c_d constant
+    # ports aimed at it, i.e. Pv + c_d - 1 MUX2 per bit (the hold mux is the D*W term above).
+    # Summed over the words: (Pv - 1)*D + Cw, or Cw - (distinct words) when every port is constant.
+    wsel = (Pv - 1) * D + Cw if Pv else max(Cw - max(const_write_words, 1), 0)
     ty = Acc().add("DFF", D * W, P["DFF"]).add("MUX2", D * W, P["MUX2"])
-    ty = ty.add("MUX2", Rv * (D - 1) * W, P["MUX2"]).plus(decode("typ", Pw)).add("MUX2", (Pw - 1) * D * W, P["MUX2"])
+    ty = ty.add("MUX2", Rv * (D - 1) * W, P["MUX2"]).plus(decode("typ", Pv)).add("MUX2", wsel * W, P["MUX2"])
     lo = Acc().add("DLAT", D * W, P["DLAT"]).add("ICG", D, P["ICG"])
-    lo = lo.add("MUX4_EQ", Rv * (D - 1) * W, p.C["mux_min"]).plus(decode("min", Pw))
+    lo = lo.add("MUX4_EQ", Rv * (D - 1) * W, p.C["mux_min"]).plus(decode("min", Pv))
     if sync_read:  # the registered read data: one W-bit flop bank per read port
         ty = ty.add("DFF", R * W, P["DFF"])
         lo = lo.add("DFF", R * W, P["DFF"])

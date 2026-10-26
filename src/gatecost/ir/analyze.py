@@ -8,6 +8,7 @@ from .demand import compute_demand, dead_logic
 from .graph import topo_order
 from .keys import compute_keys
 from .knownbits import known_bits, sig_known
+from .muxtree import mark_mux_trees
 from .sigspec import Const, SigSpec, mask
 
 
@@ -101,7 +102,7 @@ def _analyze_ir(m: ModuleIR, fusion: bool, sharing: bool) -> ModuleIR:
     """Run the analysis passes on a built Module IR (in place) and return it.
 
     Order: known bits, dead logic, demanded bits, effective widths, datapath fusion,
-    resource sharing marks, keys.  Pure function of the Module IR: repeated calls give
+    resource sharing marks, select trees (annotation), keys.  Pure function of the Module IR: repeated calls give
     identical annotations.
     """
     if m.is_blackbox:
@@ -131,6 +132,7 @@ def _analyze_ir(m: ModuleIR, fusion: bool, sharing: bool) -> ModuleIR:
             order = None
     if sharing:
         mark_sharing(m)
+    mark_mux_trees(m)
     if order is None:
         order, _cyc = topo_order(m)
     compute_keys(m, order)
@@ -143,9 +145,11 @@ def _report_unobservable(m: ModuleIR) -> None:
     """INFO diagnostic: logic and state that reach no output cost nothing (so, for instance, adding a counter whose
     value nobody reads changes nothing)."""
     m.diagnostics = [d for d in m.diagnostics if d.code != "UNOBSERVABLE_LOGIC"]
-    r, o = m.unobservable["regs"], m.unobservable["ops"]
-    if r or o:
+    r, o, i = m.unobservable["regs"], m.unobservable["ops"], m.unobservable.get("insts", 0)
+    if r or o or i:
         parts = []
+        if i:
+            parts.append(f"{i} unobservable instance{'s' if i != 1 else ''}")
         if r:
             parts.append(f"{r} unobservable register{'s' if r != 1 else ''}/memor{'ies' if r != 1 else 'y'}")
         if o:

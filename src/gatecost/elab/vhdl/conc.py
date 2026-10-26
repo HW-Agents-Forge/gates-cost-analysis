@@ -611,7 +611,8 @@ class ConcMixin:
                 if self.is_range_expr(ch, sc):
                     l, r, d = self.eval_range(ch, sc)
                     cs = self.const_int(sel)
-                    if min(l, r) <= cs <= max(l, r):
+                    span = T.range_span(l, r, d)
+                    if span is not None and span[0] <= cs <= span[1]:
                         chosen = alt
                         break
                 else:

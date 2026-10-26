@@ -102,6 +102,14 @@ def _set_range(t, left, right, dir):
     t.width = t.length * t.ewidth if t.ewidth is not None else None
 
 
+def range_span(left: int, right: int, dir: str | None) -> tuple[int, int] | None:
+    """``(low, high)`` of the range ``left to/downto right``, or None for a null range (``2 to 1``,
+    ``0 downto 1``): a null range denotes no index at all, it must never be normalized with min/max."""
+    if dir == "downto":
+        return (right, left) if left >= right else None
+    return (left, right) if left <= right else None
+
+
 def constrain(t, left, right, dir):
     n = t.copy()
     n.ewidth = t.elem.width

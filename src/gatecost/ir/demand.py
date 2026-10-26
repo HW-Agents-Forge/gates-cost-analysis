@@ -6,6 +6,12 @@ from .knownbits import sig_known
 from .sigspec import Const, SigSpec, Slice, mask
 
 _ROOT_OPS = ("INST", "BLACKBOX")        # always live; a MEM is live only when some read port is observed
+# An INST tagged ``prunable`` (set by ``hier.analyze_hierarchy`` when the child has no effect other than its outputs)
+# is live only when one of its outputs is demanded, like a MEM; all its inputs are then demanded.
+
+
+def _prunable(nd: Node) -> bool:
+    return nd.op == "INST" and bool(nd.tags.get("prunable"))
 
 
 def _clip(sig: SigSpec, m: int) -> int:
@@ -121,11 +127,14 @@ def compute_demand(m: ModuleIR) -> None:
                                 wpush(cn)
             pos += w
 
+    pd = m.port_demand
     for p in m.ports:
-        if p.port in ("out", "inout"):
+        if p.port == "inout" or (p.port == "out" and pd is None):
             add(p.sig, mask(p.width))
+        elif p.port == "out":
+            add(p.sig, pd.get(p.name or "", mask(p.width)) & mask(p.width))
     for nd in m.nodes:
-        if nd.op in _ROOT_OPS:
+        if nd.op in _ROOT_OPS and not _prunable(nd):
             for s, mk in _full_inputs(nd):
                 add(s, mk)
     pop = work.pop
@@ -146,6 +155,9 @@ def compute_demand(m: ModuleIR) -> None:
                     add(s, mk)
             continue
         if op in _ROOT_OPS:
+            if _prunable(nd) and any(o.demand for o in nd.outputs):
+                for s, mk in _full_inputs(nd):
+                    add(s, mk)
             continue
         if op == "MEM":
             if any(o.demand for o in nd.outputs):
@@ -188,7 +200,7 @@ def compute_demand(m: ModuleIR) -> None:
 
 
 def node_live(nd: Node) -> bool:
-    if nd.op in _ROOT_OPS:
+    if nd.op in _ROOT_OPS and not _prunable(nd):
         return True
     return any(o.demand for o in nd.outputs)
 
@@ -232,6 +244,8 @@ def dead_logic(m: ModuleIR, order) -> int:
             removed += 1
             if nd.op in ("DFF", "LATCH", "MEM"):
                 m.unobservable["regs"] += 1
+            elif nd.op == "INST":
+                m.unobservable["insts"] = m.unobservable.get("insts", 0) + 1
             elif nd.op != "NOT":
                 m.unobservable["ops"] += 1
             for o in nd.outputs:

@@ -41,6 +41,9 @@ class Elab(ExprMixin, OpsMixin, FixedMixin, FloatMixin, StmtMixin, DeclMixin, Co
         self.state_names = set()
         self.mem_names = set()
         self.onehot_types = set()
+        self.rom_unit = None         # (architecture, its scope): source of constant-filled signal arrays
+        self.sig_roms = {}           # signal name -> whole constant value (SigSpec) or False
+        self._rom_scan_cache = None  # (drivers, excluded) of ``rom_unit``'s architecture
 
 
 class BuildCtx(Ctx):
@@ -170,6 +173,7 @@ def build_module(ctx, ent, arch, gvals, params, cp, key, modname, ports_only=Fal
     E.file = arch.file
     E.cur_lib = arch.library
     E.declare_items(arch.decls, asc, None)
+    E.rom_unit = (arch, asc)
     E.elab_stmts(arch.stmts, asc)
     m = b.finalize(check="diag")
     for k in range(0):

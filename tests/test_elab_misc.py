@@ -9,10 +9,11 @@ class Symbols(unittest.TestCase):
     def test_implicit_nets_follow_default_nettype(self):
         r = elab("""
 module sub(input a, output y); assign y = ~a; endmodule
-module top(input a, output y);
+module top(input a, output y, output y2);
   assign w = a;
   sub u(.a(w), .y(y));
   sub u2(.a(a), .y(w2));
+  assign y2 = w2;
 endmodule""", top="top")
         self.assertEqual(codes(r, True), [])
         m = top_module(r)

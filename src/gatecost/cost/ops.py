@@ -124,15 +124,38 @@ _reg(BITWISE_OPS, lambda op, a, p: logic.bitwise_op(op, _int(a, "n", "w", "width
 _reg(CMP_OPS, lambda op, a, p: _cmp(op, a, p))
 _reg(tuple(REDUCE_OPS), lambda op, a, p: logic.reduce_op(REDUCE_OPS[op], _int(a, "n", "w", "width"), p))
 _reg(("MUX",), lambda op, a, p: logic.mux_op(_int(a, "k"), _int(a, "w", "n"), p, _int(a, "const_inputs", default=0, lo=0), bool(a.get("same_inputs")), bool(a.get("complement"))))
-_reg(("PMUX",), lambda op, a, p: logic.pmux_op(_int(a, "k"), _int(a, "w", "n"), p))
-_reg(("PRIORITY",), lambda op, a, p: logic.priority_op(_int(a, "k"), _int(a, "w", "n"), p))
-_reg(("DECODE",), lambda op, a, p: logic.decode_op(_int(a, "s", lo=0), p))
+def _arms(a: Mapping[str, Any]) -> logic.ArmBits | None:
+    """``arms``: per-bit arm profiles ``[(kinds, bit count), ...]`` (see ``logic.ArmBits``), or None."""
+    v = a.get("arms")
+    if v is None:
+        return None
+    try:
+        return tuple((tuple(int(x) for x in kinds), int(n)) for kinds, n in v)
+    except (TypeError, ValueError):
+        raise ValueError(f"attribute arms must be a list of (kinds, count) pairs, got {v!r}") from None
+
+
+_reg(("PMUX",), lambda op, a, p: logic.pmux_op(_int(a, "k"), _int(a, "w", "n"), p, _arms(a)))
+_reg(("PRIORITY",), lambda op, a, p: logic.priority_op(_int(a, "k"), _int(a, "w", "n"), p, _arms(a)))
+def _mux_tree(a: Mapping[str, Any], p: Profile) -> OpCost:
+    """``bits``: ``[(V, c0, c1, dflt, count), ...]`` (``logic.TreeBits``); ``sel_and`` / ``sel_or``: select gates."""
+    v = a.get("bits")
+    try:
+        bits = tuple((int(x[0]), int(x[1]), int(x[2]), int(x[3]), int(x[4])) for x in (v or ()))
+    except (TypeError, ValueError, IndexError):
+        raise ValueError(f"attribute bits must be a list of (V, c0, c1, dflt, count), got {v!r}") from None
+    return logic.mux_tree_op(bits, _int(a, "sel_and", default=0, lo=0), _int(a, "sel_or", default=0, lo=0), p)
+
+
+_reg(("MUXTREE",), lambda op, a, p: _mux_tree(a, p))
+_reg(("DECODE",),lambda op, a, p: logic.decode_op(_int(a, "s", lo=0), p))
 _reg(("ENCODE",), lambda op, a, p: logic.encode_op(_int(a, "k"), p, bool(a.get("priority"))))
 _reg(("DFF", "REG"), lambda op, a, p: seq.reg_op(
     _int(a, "n", "w", "width"), p, bool(a.get("async_reset")), bool(a.get("async_set_reset")),
     bool(a.get("sync_reset")), bool(a.get("enable")), a.get("scan")))
 _reg(("LATCH", "DLAT"), lambda op, a, p: seq.latch_op(_int(a, "n", "w", "width"), p))
-_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read")), _int(a, "const_reads", default=0, lo=0)))
+_reg(("MEM",), lambda op, a, p: seq.mem_op(_int(a, "depth"), _int(a, "width", "w"), p, _int(a, "rports", default=1), _int(a, "wports", default=1), bool(a.get("sync_read")), _int(a, "const_reads", default=0, lo=0),
+    _int(a, "const_writes", default=0, lo=0), _int(a, "const_write_words", default=0, lo=0), bool(a.get("wires"))))
 _reg(("ROM",), lambda op, a, p: seq.rom_op(_int(a, "depth"), _int(a, "width", "w"), p, a.get("contents")))
 _reg(("BLACKBOX",), lambda op, a, p: _blackbox(a, p))
 

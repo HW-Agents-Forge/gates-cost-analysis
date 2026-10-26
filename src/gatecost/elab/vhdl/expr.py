@@ -19,6 +19,23 @@ _CONTROL_CHARS["del"] = 127
 _CONTROL_CHARS.update({"c%d" % i: i for i in range(128, 160)})
 _TIME_FS = {"fs": 1, "ps": 10 ** 3, "ns": 10 ** 6, "us": 10 ** 9, "ms": 10 ** 12, "sec": 10 ** 15,
             "min": 6 * 10 ** 16, "hr": 36 * 10 ** 17}
+
+
+def base_names_of(e) -> list:
+    """Identifier names an assignment target ultimately writes (same rule as ``conc.base_names``)."""
+    out = []
+    stack = [e]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, N.Ident):
+            out.append(n.name)
+        elif isinstance(n, (N.Apply, N.Slice, N.Select, N.Attr)):
+            stack.append(n.prefix)
+        elif isinstance(n, N.Aggregate):
+            stack.extend(it.value for it in n.items)
+    return out
+
+
 _HEXVAL = {c: i for i, c in enumerate("0123456789ABCDEF")}
 #: ieee.fixed_float_types literals and the package-default style constants
 _FIXED_NAMES = {
@@ -743,10 +760,11 @@ class ExprMixin:
                 return int_val(l)
             if nm == "right":
                 return int_val(r)
+            # 'high / 'low follow the direction, also for a null range (1 to 0: 'low = 1, 'high = 0)
             if nm == "high":
-                return int_val(max(l, r))
+                return int_val(r if d == "to" else l)
             if nm == "low":
-                return int_val(min(l, r))
+                return int_val(l if d == "to" else r)
             return bool_const(d == "to")
         if nm in ("pos", "val", "succ", "pred", "leftof", "rightof"):
             return self.attr_scalar(nm, t, e, sc)
@@ -809,7 +827,8 @@ class ExprMixin:
                     return self.type_convert(T.BUILTIN_TYPES[nm], args, sc, e)
                 return self.builtin_call(nm, args, e, sc, hint)
             if k in ("obj", "const", "alias"):
-                return self.index_into(self.val_of_syms(syms, p, sc, None), args, sc, e)
+                rom = self.signal_rom(syms[0], p, args, sc) if k == "obj" else None
+                return self.index_into(self.val_of_syms(syms, p, sc, None), args, sc, e, rom)
             if k == "enumlit":
                 raise Unsupported("enumeration literal applied")
             raise Unsupported("cannot apply '%s'" % syms[0].name)
@@ -825,7 +844,7 @@ class ExprMixin:
         base = self.eval(p, sc)
         return self.index_into(base, args, sc, e)
 
-    def index_into(self, base, args, sc, e):
+    def index_into(self, base, args, sc, e, rom=None):
         for a in args:
             ex = a.actual
             if self.is_range_expr(ex, sc):
@@ -834,8 +853,101 @@ class ExprMixin:
             else:
                 if base.t.kind != "array":
                     raise Unsupported("indexing a non-array value")
-                base = self.index_val(base, ex, sc, e)
+                base = self.index_val(base, ex, sc, e, rom)
+            rom = None
         return base
+
+    # ------------------------------------------------------------------ signal arrays filled with constants
+    ROM_MIN_ENTRIES = 8
+
+    def signal_rom(self, sym, p, args, sc):
+        """Whole constant value of an architecture signal array whose every element is driven exactly once by a
+        concurrent ``sig(CONST) <= CONST;`` and that nothing else writes, else None.  A variable-index read of
+        such a signal is a ``ROM`` with that table (``index_val``); constant-index reads keep the nets."""
+        ru = self.rom_unit
+        if ru is None or len(args) != 1 or not isinstance(p, N.Ident):
+            return None
+        arch, asc = ru
+        name = sym.name
+        if asc.names.get(name) != [sym] or sym.mode != "signal":
+            return None
+        r = self.sig_roms.get(name)
+        if r is None:
+            try:
+                r = self._signal_rom(sym, arch, asc) or False
+            except (NotConst, Unsupported, ValueError, TypeError, AttributeError, KeyError, IndexError):
+                r = False
+            self.sig_roms[name] = r
+        return r or None
+
+    def _rom_pure(self, e, asc) -> bool:
+        for x in N.walk(e):
+            if isinstance(x, N.Ident):
+                for s in asc.lookup(x.name):
+                    if s.kind not in ("const", "enumlit", "func", "type", "builtin"):
+                        return False
+            elif isinstance(x, (N.ExternalName, N.Attr)):
+                return False
+        return True
+
+    def _rom_scan(self, arch) -> tuple:
+        """One walk of the architecture: ``(drivers, excluded)``.  ``drivers`` maps a name to its top-level
+        concurrent ``name(i) <= v;`` statements (one unconditional waveform element); ``excluded`` holds every name
+        written in any other way (other targets, instance/block port maps, procedure calls) or declared again
+        (shadowing).  Cached per architecture so the cost stays linear in the number of signal arrays."""
+        sc = self._rom_scan_cache
+        if sc is not None:
+            return sc
+        top = {id(x) for x in arch.stmts or ()}
+        own = {id(x) for x in arch.decls or ()}
+        drivers: dict = {}
+        excluded: set = set()
+        for x in N.walk(arch):
+            c = type(x)
+            if c is N.SignalAssign or c is N.SelectAssign:
+                tg = x.target
+                if (c is N.SignalAssign and id(x) in top and isinstance(tg, N.Apply)
+                        and isinstance(tg.prefix, N.Ident) and len(tg.args) == 1 and tg.args[0].formal is None
+                        and not x.guarded and len(x.alts) == 1 and x.alts[0].cond is None
+                        and len(x.alts[0].values) == 1 and not isinstance(x.alts[0].values[0], N.Unaffected)):
+                    drivers.setdefault(tg.prefix.name, []).append(x)
+                else:
+                    excluded.update(base_names_of(tg))
+            elif c is N.Instance or c is N.ProcCall or c is N.BlockStmt:
+                excluded.update(y.name for y in N.walk(x) if isinstance(y, N.Ident))
+            elif c in (N.ObjectDecl, N.AliasDecl, N.Param, N.Port):
+                if not (c is N.ObjectDecl and id(x) in own):
+                    excluded.add(x.name)
+        sc = self._rom_scan_cache = (drivers, excluded)
+        return sc
+
+    def _signal_rom(self, sym, arch, asc):
+        t = sym.t
+        if t.kind != "array" or t.left is None or not t.length or not self.ROM_MIN_ENTRIES <= t.length <= 4096:
+            return None
+        ew = t.ewidth or 0
+        if ew < 1 or t.width != ew * t.length:
+            return None
+        name = sym.name
+        n = t.length
+        drivers, excluded = self._rom_scan(arch)
+        drv = drivers.get(name)
+        if name in excluded or drv is None or len(drv) != n:
+            return None
+        cells = [None] * n
+        for x in drv:
+            ix, vx = x.target.args[0].actual, x.alts[0].values[0]
+            if not self._rom_pure(ix, asc) or not self._rom_pure(vx, asc):
+                return None
+            pos = T.index_to_pos(t, self.eval_const_int(ix, asc, t.index))
+            if not 0 <= pos < n or cells[pos] is not None:
+                return None
+            cv = self.sig_of(self.fit(self.eval(vx, asc, t.elem), t.elem, x)).const_value()
+            if cv is None or cv.xmask or cv.width != ew:
+                return None
+            cells[pos] = cv.value
+        bits = int("".join(format(v, "0%db" % ew) for v in reversed(cells)), 2)
+        return SigSpec.const(bits, n * ew)
 
     def ev_slice(self, e, sc, hint):
         base = self.eval(e.prefix, sc)
@@ -930,11 +1042,17 @@ class ExprMixin:
             # unconstrained value with positional bits: assume (n-1 downto 0)
             n = s.width // ew
             t = T.constrain(t, n - 1, 0, "downto")
-        lo_i, hi_i = min(l, r), max(l, r)
-        tl, tr = t.left, t.right
-        t_lo, t_hi = min(tl, tr), max(tl, tr)
-        if hi_i < lo_i:
+        span = T.range_span(l, r, d)
+        if span is None:
+            # null slice (``p(1 to L-1)`` with L = 1): no element at all, whatever the bounds
             return Val(T.constrain(t, l, r, d), SigSpec(()), None, 0)
+        lo_i, hi_i = span
+        t_span = T.range_span(t.left, t.right, t.dir)
+        if t_span is None:
+            self.ctx.assume("slice %d..%d of a null array at %s:%s; value unknown"
+                            % (lo_i, hi_i, self.file, getattr(node, "line", "?")))
+            return Val(T.constrain(t, l, r, d), SigSpec.x((hi_i - lo_i + 1) * ew), None, 0)
+        t_lo, t_hi = t_span
         if lo_i < t_lo or hi_i > t_hi:
             self.ctx.assume("slice %d..%d outside %d..%d at %s:%s; clamped" % (lo_i, hi_i, t_lo, t_hi, self.file, getattr(node, "line", "?")))
             lo_c, hi_c = max(lo_i, t_lo), min(hi_i, t_hi)
@@ -954,7 +1072,7 @@ class ExprMixin:
         nt = T.constrain(t, l, r, d)
         return Val(nt, sub, None, (base.z >> (p_lo * ew)) & mask(sub.width))
 
-    def index_val(self, base, ex, sc, node):
+    def index_val(self, base, ex, sc, node, rom=None):
         t = base.t
         iv = self.eval(ex, sc, t.index)
         ew = t.ewidth or 1
@@ -966,6 +1084,8 @@ class ExprMixin:
         try:
             i = self.const_int(iv)
         except NotConst:
+            if rom is not None and rom.width == s.width:
+                return self.dyn_index_val(base, t, rom, iv, node)      # constant-filled signal array: ROM
             return self.dyn_index_val(base, t, s, iv, node)
         p = T.index_to_pos(t, i)
         if not (0 <= p < t.length):
@@ -1168,8 +1288,9 @@ class ExprMixin:
                         if isinstance(ch, N.Others):
                             continue
                         if isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
-                            l, r, _d = self.eval_range(ch, sc)
-                            idxs += [l, r]
+                            l, r, rd = self.eval_range(ch, sc)
+                            if T.range_span(l, r, rd) is not None:   # a null choice range names no index
+                                idxs += [l, r]
                         else:
                             idxs.append(self.const_int(self.eval(ch, sc)))
                 if not idxs:
@@ -1198,8 +1319,9 @@ class ExprMixin:
                 if isinstance(ch, N.Others):
                     continue
                 if isinstance(ch, N.Range) or (isinstance(ch, N.Attr) and ch.name in ("range", "reverse_range")):
-                    l, r, _d = self.eval_range(ch, sc)
-                    for i in range(min(l, r), max(l, r) + 1):
+                    l, r, rd = self.eval_range(ch, sc)
+                    span = T.range_span(l, r, rd)
+                    for i in (range(span[0], span[1] + 1) if span is not None else ()):
                         tmp[i] = ("e", it.value)
                 else:
                     tmp[self.const_int(self.eval(ch, sc))] = ("e", it.value)
