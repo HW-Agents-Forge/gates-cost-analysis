@@ -157,6 +157,46 @@ def _gen() -> list[tuple[str, str, str, str]]:
             _mod("  always @(posedge clk) if (rst) q <= 0; else if (en) q <= d;\n", p.replace("input clk", "input clk, rst, en")))
         add(f"dff_en_arst_w{w}", "dff", f"w={w} enable async_reset",
             _mod("  always @(posedge clk or negedge rn) if (!rn) q <= 0; else if (en) q <= d;\n", p.replace("input clk", "input clk, rn, en")))
+    # Asynchronous reset / set flops (category dff_async): active low (arstn) and active high (arstp), with and
+    # without enable, combined async + sync reset, non-zero reset value (set), and a register bank sharing one reset.
+    for pol, edge, cond in (("n", "negedge rst_n", "!rst_n"), ("p", "posedge rst", "rst")):
+        rp = "rst_n" if pol == "n" else "rst"
+        for w in (1, 8, 32):
+            p = f"input clk, {rp}, input [{w - 1}:0] d, output reg [{w - 1}:0] q"
+            pe = p.replace(f"{rp},", f"{rp}, en,")
+            if not (pol == "n" and w in (8, 32)):   # dff_arst_w8/32 and dff_en_arst_w8/32 already cover these
+                add(f"dff_arst{pol}_w{w}", "dff_async", f"w={w} async_reset active_{'low' if pol == 'n' else 'high'}",
+                    _mod(f"  always @(posedge clk or {edge}) if ({cond}) q <= 0; else q <= d;\n", p))
+                add(f"dff_arst{pol}_en_w{w}", "dff_async", f"w={w} enable async_reset active_{'low' if pol == 'n' else 'high'}",
+                    _mod(f"  always @(posedge clk or {edge}) if ({cond}) q <= 0; else if (en) q <= d;\n", pe))
+    for w in (8, 32):
+        p = f"input clk, rst_n, srst, input [{w - 1}:0] d, output reg [{w - 1}:0] q"
+        add(f"dff_arstn_srst_w{w}", "dff_async", f"w={w} async_reset sync_reset",
+            _mod("  always @(posedge clk or negedge rst_n) if (!rst_n) q <= 0; else if (srst) q <= 0; else q <= d;\n", p))
+        add(f"dff_arstn_srst_en_w{w}", "dff_async", f"w={w} enable async_reset sync_reset",
+            _mod("  always @(posedge clk or negedge rst_n) if (!rst_n) q <= 0; else if (srst) q <= 0; else if (en) q <= d;\n",
+                 p.replace("srst,", "srst, en,")))
+        ones = f"{{{w}{{1'b1}}}}"
+        pe = f"input clk, rst_n, en, input [{w - 1}:0] d, output reg [{w - 1}:0] q"
+        add(f"dff_asetn_w{w}", "dff_async", f"w={w} async_set (reset value all ones) active_low",
+            _mod(f"  always @(posedge clk or negedge rst_n) if (!rst_n) q <= {ones}; else q <= d;\n", pe.replace(" en,", "")))
+        add(f"dff_asetn_en_w{w}", "dff_async", f"w={w} enable async_set (reset value all ones) active_low",
+            _mod(f"  always @(posedge clk or negedge rst_n) if (!rst_n) q <= {ones}; else if (en) q <= d;\n", pe))
+    add("dff_arstn_val_w8", "dff_async", "w=8 async reset value 0x5A (mixed set/reset bits)",
+        _mod("  always @(posedge clk or negedge rst_n) if (!rst_n) q <= 8'h5A; else q <= d;\n",
+             "input clk, rst_n, input [7:0] d, output reg [7:0] q"))
+    add("dff_asetp_w8", "dff_async", "w=8 async_set (reset value 0xFF) active_high",
+        _mod("  always @(posedge clk or posedge rst) if (rst) q <= 8'hFF; else q <= d;\n",
+             "input clk, rst, input [7:0] d, output reg [7:0] q"))
+    for w in (8, 32):
+        regs = "".join(f"  always @(posedge clk or negedge rst_n) if (!rst_n) r{i} <= 0; else if (we{i}) r{i} <= wd;\n"
+                       for i in range(8))
+        decl = "".join(f"  reg [{w - 1}:0] r{i};\n" for i in range(8))
+        outs = ", ".join(f"output [{w - 1}:0] q{i}" for i in range(8))
+        assigns = "".join(f"  assign q{i} = r{i};\n" for i in range(8))
+        add(f"regbank8_arstn_w{w}", "dff_async", f"8 regs x w={w} enable per register, common async_reset",
+            _mod(decl + "".join(f"  wire we{i} = we[{i}];\n" for i in range(8)) + regs + assigns,
+                 f"input clk, rst_n, input [7:0] we, input [{w - 1}:0] wd, " + outs))
     add("latch_w8", "dff", "w=8 latch", _mod("  always @* if (g) q = d;\n", "input g, input [7:0] d, output reg [7:0] q"))
     for depth, w in ((4, 8), (8, 8), (16, 8)):
         add(f"shreg_d{depth}_w{w}", "shreg", f"depth={depth} w={w}",
