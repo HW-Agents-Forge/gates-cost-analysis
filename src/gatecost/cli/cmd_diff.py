@@ -10,6 +10,7 @@ from ..report import render
 from ..report.json_fmt import render_json
 from ..result import Diagnostic, DiffResult, Output
 from .cmd_cost import collect_sources
+from .notes import explain_confidence, implicit_discovery, string_param_hints, with_discovery_warning
 
 
 def _render(out: Output, settings, limit=None) -> str:
@@ -41,6 +42,12 @@ def run(args, settings, cfg, elaborate=None) -> tuple[str, int]:
             if d.affects_cost and k not in seen:
                 seen.add(k)
                 diags.append(d)
+    ignored = {(d.file, d.line, d.message) for d in diags if d.code == "IGNORED_REGION"}
+    if tree is not None:
+        for d in list(tree.diagnostics) + [x for m in tree.modules.values() for x in m.diagnostics]:
+            if d.code == "IGNORED_REGION" and (d.file, d.line, d.message) not in ignored:
+                ignored.add((d.file, d.line, d.message))
+                diags.append(d)
     code = EXIT_OK
     basis = settings.basis if settings.basis in ("typ", "max") else "typ"
     msgs = []
@@ -61,6 +68,9 @@ def run(args, settings, cfg, elaborate=None) -> tuple[str, int]:
         if k not in seen2:
             seen2.add(k)
             uniq.append(d)
+    uniq = string_param_hints(with_discovery_warning(uniq, implicit_discovery(args, settings)), settings.params)
+    res = replace(res, diagnostics_new=tuple(string_param_hints(res.diagnostics_new, settings.params)))
+    res = replace(res, confidence=explain_confidence(res.confidence, uniq + list(res.diagnostics_new)))
     status = "partial" if any(d.affects_cost for d in uniq if d.code != "BUDGET_EXCEEDED") or \
         any(d.affects_cost for d in res.diagnostics_new) else "ok"
     out = Output(command="diff", status=status,

@@ -47,7 +47,13 @@ def e_new_param_set(p):
 def e_new_module(p):
     p.write("rtl/extra.sv", "module extra (input clk, input [15:0] a, b, output reg [15:0] y);\n"
                             "  always @(posedge clk) y <= a * b;\nendmodule\n")
-    p.edit("rtl/top.sv", "  dp u_dp", "  extra u_ex (.clk(clk), .a(a[15:0]), .b(b[15:0]), .y());\n  dp u_dp")
+    p.edit("rtl/top.sv", "output [AW-1:0] q)", "output [AW-1:0] q, output [15:0] e)")
+    p.edit("rtl/top.sv", "  dp u_dp", "  extra u_ex (.clk(clk), .a(a[15:0]), .b(b[15:0]), .y(e));\n  dp u_dp")
+
+
+def e_dead_instance(p):
+    # D2: an unchanged child whose output is no longer read (stubbed in the cone run) must be pruned as in a full run
+    p.edit("rtl/top.sv", ".op(op), .y(q));", ".op(op), .y());\n  assign q = 0;")
 
 
 def e_define(p):
@@ -64,7 +70,7 @@ def e_two_files(p):
 
 
 EDITS = [e_param, e_localparam, e_mul, e_stage, e_case, e_alu_removed, e_rename, e_array, e_new_param_set,
-         e_new_module, e_define, e_reformat, e_two_files]
+         e_new_module, e_define, e_reformat, e_two_files, e_dead_instance]
 
 
 class ConeEquivalence(GitCase):

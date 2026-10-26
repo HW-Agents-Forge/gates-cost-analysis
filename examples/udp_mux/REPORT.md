@@ -8,11 +8,11 @@ A combinational UDP is lowered from its truth table instead of being a zero-cost
 
 ```console
 $ gatecost cost baseline --top mux4w --verbose
-COST 15 GE (14..21) confidence=high
+COST 9 GE (9..15) confidence=high
 TOP mux4w
-4 mux2 x4 25%
-15 mux4w 100%
-CATEGORIES seq=0 addcmp=0 mul=0 select=0 logic=15 shift=0 div=0 mem=0
+2 mux2 x4 25%
+9 mux4w 100%
+CATEGORIES seq=0 addcmp=0 mul=0 select=9 logic=0 shift=0 div=0 mem=0
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.

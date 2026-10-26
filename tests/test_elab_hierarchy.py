@@ -50,9 +50,9 @@ module top(input [3:0] d, output [3:0] y); mid m(.en(1'b1), .d(d), .y(y)); endmo
         r = elab("""
 module cell(input [3:0] d, output [3:0] q); assign q = ~d; endmodule
 module row(input [3:0] d, output [3:0] q);
-  wire [3:0] t [0:2];
-  cell c [2:0] (.d(d), .q());
-  cell last(.d(d), .q(q));
+  wire [11:0] t;
+  cell c [2:0] (.d(d), .q(t));
+  cell last(.d(d ^ t[3:0] ^ t[7:4] ^ t[11:8]), .q(q));
 endmodule
 module top(input [3:0] d, output [3:0] q, output [3:0] q2);
   row r0(.d(d), .q(q));
@@ -246,7 +246,7 @@ class Limits(unittest.TestCase):
     def test_instance_array_exceeding_limit_is_clamped(self):
         r = elab("""
 module inv(input a, output y); assign y = ~a; endmodule
-module top(input a, output y); inv u [99999:0] (.a(a), .y()); endmodule""", top="top",
+module top(input a, output y); inv u [99999:0] (.a(a), .y(y)); endmodule""", top="top",
                  limits={"max_instances": 8})
         self.assertIn("LIMIT_REACHED", codes(r))
         self.assertLessEqual(r.design.instance_counts()["inv"], 8)

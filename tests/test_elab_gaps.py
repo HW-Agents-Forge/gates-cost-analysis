@@ -22,9 +22,9 @@ module t(input [7:0] a, output [7:0] y); mid m(.a(a), .y(y)); defparam t.m.u.W =
 
     def test_defparam_selects_generate_instance(self):
         r = elab(SUB + """
-module t(input [7:0] a, output [7:0] y);
+module t(input [7:0] a, output [15:0] y);
   genvar i;
-  generate for (i = 0; i < 2; i = i + 1) begin: g sub u(.a(a), .y()); end endgenerate
+  generate for (i = 0; i < 2; i = i + 1) begin: g sub u(.a(a), .y(y[i*8 +: 8])); end endgenerate
   defparam g[1].u.W = 8;
 endmodule""", top="t")
         keys = {n.attrs["inst"]: n.attrs["module_key"] for n in top_module(r).nodes if n.op == "INST"}

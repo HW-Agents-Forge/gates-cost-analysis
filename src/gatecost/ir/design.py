@@ -1,8 +1,11 @@
 """Design: the table of Module IRs, instance counts and recursion detection (IR.md 1, 8)."""
 from __future__ import annotations
 
+import os
+
 from .analyze import analyze_ir
 from .core import ModuleIR, Node, module_key
+from .hier import analyze_hierarchy, child_key
 
 
 class Design:
@@ -15,6 +18,9 @@ class Design:
         self.modules: dict[str, ModuleIR] = {}
         self.top = top
         self.diagnostics: list = []
+        # keys of absent (stubbed or missing) modules whose cost depends on an observation context (``hier``)
+        self.unresolved_contexts: tuple[str, ...] = ()
+        self._hier_done = False
 
     @staticmethod
     def make_key(name: str, params: dict | None = None, const_ports: dict | None = None) -> str:
@@ -95,7 +101,7 @@ class Design:
         def dfs(key: str) -> None:
             state[key] = 1
             for inst in self.instances(key):
-                ck = inst.attrs.get("module_key")
+                ck = child_key(inst)
                 if ck in self.modules and not inst.tags.get("recursive") and state.get(ck, 0) == 0:
                     dfs(ck)
             state[key] = 2
@@ -107,7 +113,7 @@ class Design:
         for key in order:
             c = counts.get(key, 0)
             for inst in self.instances(key):
-                ck = inst.attrs.get("module_key")
+                ck = child_key(inst)
                 if ck in self.modules and not inst.tags.get("recursive"):
                     counts[ck] = counts.get(ck, 0) + c * int(inst.attrs.get("count", 1))
         return counts
@@ -116,12 +122,21 @@ class Design:
         out = set()
         for m in self.modules.values():
             for n in m.nodes:
-                if n.op == "INST" and n.attrs.get("module_key") not in self.modules:
-                    out.add(n.attrs.get("module_key"))
+                if n.op == "INST" and child_key(n) not in self.modules:
+                    out.add(child_key(n))
         return sorted(out)
 
     # -- analysis -----------------------------------------------------------
     def analyze(self, **kw) -> "Design":
+        """Analyze every module.  The first call carries observability across the hierarchy (``hier``: instances
+        whose outputs reach no output of the top are removed, partly observed ones use a context variant of the
+        child); later calls re-run the passes of every module in its recorded context.  ``hierarchy=False`` (or the
+        environment variable ``GATECOST_NO_HIER``, a debugging switch) analyzes every module on its own."""
+        if not self._hier_done and kw.pop("hierarchy", True) and not os.environ.get("GATECOST_NO_HIER"):
+            self._hier_done = True
+            if analyze_hierarchy(self, **kw):
+                return self
+        kw.pop("hierarchy", None)
         for key in self.keys():
             analyze_ir(self.modules[key], **kw)
         return self
@@ -135,7 +150,7 @@ def export_design(design: Design) -> dict:
     edges = []
     for key in design.keys():
         for inst in design.instances(key):
-            edges.append({"parent": key, "child": inst.attrs.get("module_key"),
+            edges.append({"parent": key, "child": child_key(inst),
                           "name": inst.attrs.get("inst"), "count": inst.attrs.get("count", 1),
                           "recursive": bool(inst.tags.get("recursive"))})
     return {"top": design.top, "instance_counts": counts, "edges": edges,

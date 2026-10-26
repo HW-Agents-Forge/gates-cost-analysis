@@ -74,19 +74,42 @@ A fused k-operand sum built by the netlist builder uses the effective width `t_i
 
 Signed comparison adds one XOR2. Reduction AND/OR costs 0.55 / 0.75 / 1.33 GE per merged input; reduction XOR costs 1.67 / 2.0 / 2.33. Bitwise operations cost `w·P[gate]`; a NOT absorbed into neighbouring logic costs 0 (typ uses `0.5·P[INV]`). The `logic` scale of typ (§5) applies to AND/OR/NAND/NOR and to reduction AND/OR, which synthesis merges into complex gates. It does not apply to XOR, XNOR and reduction XOR (they cannot be merged into AOI/OAI cells): those cost their full gate count in typ.
 
+**Nested reductions.** A RED_AND/RED_OR/RED_XOR whose input bits contain the input bits of another reduction of the same kind (`^a[15:i]` written for every `i`, as in a Gray-to-binary converter) reuses the result of the smaller one: it has `w − w_sub + 1` inputs (`w_sub` bits of the sub-reduction replaced by its result). The chain is a prefix computation, costed like the adders of §3.1. min is the serial chain (one gate per new input); typ is the chain scaled by `1 + alpha_add` (about a Brent–Kung network, twice the cells of the chain at `α = 1`); max is a Kogge–Stone network (`⌈log2 w⌉` cells per new input, at most `w − 1`). Every scenario is capped by the cost of the reduction computed alone. The node carries the tag `prefix_shared` and the facts `chained_on` (the sub-reduction) and `reduced_inputs`. `gray_to_binary` on 16 bits costs 41 GE (it cost 240 when each reduction was costed alone; Yosys 48.7).
+
 ### 3.3 Selection
 
 | Operation | min | typ | max |
 |---|---|---|---|
 | MUX k:1, binary select, width w | `(k−1)·w·1.17` (MUX4 cells) | `(k−1)·w·MUX2` | `σ·typ + ⌈w/8⌉·BUF` per select bit |
-
-2:1 mux bit identities (per bit, applied before costing; each is an exact Boolean identity): equal arms → wire; one constant arm → AND2/OR2; both constant → wire or INV(sel); arms `x` and `~x` (a NOT/`^1`/`~^0` of the other arm) → `s ? ~x : x = x ^ s` = XOR2 (2.0 GE, not MUX2 2.33); one arm equal to the 1-bit select → `s ? s : x = s | x`, `s ? x : s = s & x` → AND2/OR2. The NOT feeding such an XOR keeps its own (absorbed, 0.5·INV) cost.
 | PMUX k inputs, one-hot select (plus default) | `w·((k+1)·AOI22/2 + (h−1)·0.55)` | `w·((k+1)·AOI22/2 + (h−1)·0.75)` | `k·w·MUX2` |
 | PRIORITY chain of k | PMUX + `(k−1)·AND2` | `0.9·k·w·MUX2 + (k−1)·AND2` | `k·w·MUX2` |
 | DECODE s → 2^s | `2^s·NOR2` + predecode `2·2^(s/2)·1.33` | `2^s·AND2` + predecode | `2^s·(s−1)·AND2` |
 | DECODE, `s ≤ 4`, direct form | `2^s·NOR_s + s·INV` (`NOR_s` = NOR2/NOR3/NOR4) | same | — |
+| MUXTREE (flattened tree of MUX/PMUX/PRIORITY) | AND-OR form of the distinct leaves of each bit | chain of the distinct leaves: `(V−1)·MUX2` per bit, `AND2` per constant leaf | `σ_other·typ + BUF` |
 
-PMUX: each of the `k+1` arms (the `k` selected inputs and the default) costs half an AOI22 (an AOI22 serves two arms), and the `h = ⌈(k+1)/2⌉` AOI outputs are merged by a NAND tree whose cost per merged input is the comparator-chain cost (0.55 min, 0.75 typ). The architecture label is `aoi22` (it was `ao22`). The direct DECODE form replaces the predecoded form in min and typ when it is cheaper (label `direct_nor`).
+2:1 mux bit identities (per bit, applied before costing; each is an exact Boolean identity): equal arms → wire; one constant arm → AND2/OR2; both constant → wire or INV(sel); arms `x` and `~x` (a NOT/`^1`/`~^0` of the other arm) → `s ? ~x : x = x ^ s` = XOR2 (2.0 GE, not MUX2 2.33); one arm equal to the 1-bit select → `s ? s : x = s | x`, `s ? x : s = s & x` → AND2/OR2. The NOT feeding such an XOR keeps its own (absorbed, 0.5·INV) cost.
+
+PMUX: each of the `k+1` arms (the `k` selected inputs and the default) costs half an AOI22 (an AOI22 serves two arms), and the `h = ⌈(k+1)/2⌉` AOI outputs are merged by a NAND tree whose cost per merged input is the comparator-chain cost (0.55 min, 0.75 typ). The architecture label is `aoi22` (it was `ao22`).
+
+**Arm profile (`arms`).** A PMUX or PRIORITY node carries, for each output bit, the kind of every arm (`ArmBits`: constant 0, constant 1, a variable signal, or a variable signal shared with other arms). The formula above applies to a bit whose arms are all distinct variables. Otherwise, per bit:
+
+- an arm equal to the default is dropped (when it is selected the output is the default anyway);
+- arms that carry the same signal share one AOI input, and their selects are OR-ed once for the whole node (one merged input per extra arm);
+- `s & 0` costs nothing, `s & 1` is the select line itself (one more input of the merging tree, no AOI input);
+- a bit with one variable arm and nothing else is `sel & x`: one AND2.
+
+For the mux chain (the `max` column of PMUX and the `typ` column of PRIORITY) the same profile gives: an arm equal to the rest of the chain (`s ? x : x`) is a wire; `s1 ? x : (s2 ? x : r)` merges into `(s1 | s2) ? x : r`; a mux with one constant input is an AND2/OR2; a mux with two different constants is the select or its complement (`½·INV`).
+
+**Select trees (MUXTREE).** Lowering nested `if`/`case` statements produces trees such as `c1 ? (c2 ? a : h) : h`, in which every inner node repeats the hold value. A mux-family node (MUX, PMUX, PRIORITY) is *internal* when its output has fanout 1 and feeds a **data** input of another mux-family node (never a select, a port, or a shared node). The root of such a tree is costed once, per bit, as a select among the *distinct leaves* of that bit (net bits resolved through wiring, constants 0/1; don't-care bits are dropped); the internal nodes cost 0 (tag `mux_absorbed`). The root carries the tag `mux_tree` and `facts["mux_tree"]`.
+
+- typ: the mux chain of the `V` distinct variable leaves, `(V−1)·MUX2` per bit, plus one AND2 per constant leaf.
+- min: the AND-OR form (`_pmux_accs`): the leaf conditions of a tree are exclusive.
+- max: `typ · σ_other + BUF` on the selects.
+- Every scenario is capped by the cost of the unflattened nodes, so flattening never increases a cost.
+- The 1-bit gates that build the leaf conditions (AND2 along a path, OR2 for leaves reached by several paths) are paid once per module, shared by every tree and bit that tests the same conditions; they are charged to the roots in the order of their `named_key`.
+- In a diff, a change of an inner branch appears on the root operation.
+
+The IR pass is described in `IR.md`. The direct DECODE form replaces the predecoded form in min and typ when it is cheaper (label `direct_nor`).
 
 For `case` statements the select decode is costed separately, as `k` EQ-with-constant comparators; structural hashing shares common sub-terms.
 
@@ -140,6 +163,8 @@ Clock gating is not the default for typ because it only occurs when the flow ena
 - A synchronous read port on a flop-based array adds a register of `W` flops per read port (`R·W·DFF`, in min and typ; max scales typ). The macro formula already contains its read register.
 - **Macro** for synchronous-read memories with macros enabled in the profile. The smallest macro has `macro_min_bits` bits (default 4096) and 16 words, so a smaller memory is costed as that smallest macro (`D' = max(D, 16, ⌈macro_min_bits/W⌉)`), and **each scenario is the minimum of the flop array and the macro**: `cost = min(flops(D, W), macro(D', W))`. Both operands are non-decreasing in `D`, hence so is their minimum — there is no cliff at the threshold (127×32 and 128×32 both cost ≈ 6.9k GE; the old hard switch went 42k → 6.9k). Below ≈ 700 bits flops win, above the macro wins. Cost `c0 + c_bit·D·W + c_row·D + c_col·W` (defaults 3000, 0.6, 4, 30); min = 0.5×, max = 2×. Category `memory_macro`; confidence is capped at `low` unless the profile supplies a `(D, W) → GE` table, which is bilinearly interpolated.
 - **ROM** (`D × W` constant table; also a constant array read with a signal index, a `case` that maps constants to constants, a VHDL constant array, and an array filled by a Verilog `initial` block and never written; an array loaded with `$readmem*` is a ROM of unknown contents): constant columns cost 0; columns equal to an address bit or its complement cost 0 or INV; duplicate and complemented columns are shared. typ is the cheaper of two textbook implementations of the remaining `c` columns: **predecoder + OR planes** `1.33·(2^⌊s/2⌋ + 2^⌈s/2⌉) + Σ_col min(ones, zeros)·0.55` with `s = ⌈log2 D⌉` (only the predecoder is counted: the NAND3/NAND4 first-level gates of each plane take the predecoded lines directly, so the `2^s` word lines of a full decoder are never built; NAND4 first level plus OR tree per merged input; random contents have `D/2` set words per column), and **per-column two-level logic** `0.75 GE per literal` of a minimal sum of products (Quine–McCluskey for `log2 D ≤ 6`, `D·log2 D/6` literals for random data or larger tables). For random data this is ≈ 0.3 GE/bit for large ROMs (the previous `2.0·D/log2 D` per column gave 0.2 GE/bit, about 1.5× low). min = `0.5·typ`, max = `c·(D/2)·MUX2`. Each ROM read port is one such ROM (+ `W` flops when synchronous). A memory that is never written and not initialised is not a ROM: it is costed as an array of unknown nets.
+- **Constant-address writes.** A write port whose address is a constant drives one word: it needs no address decoder, and only a `W`-bit select on that word. With `C_w` such ports among `P_w` (attributes `const_writes`, `const_write_words` = number of distinct words), the decoder term counts the `P_w − C_w` variable ports and the select term is `(P_v − 1)·D + C_w` words (`P_v = P_w − C_w`), or `max(C_w − distinct words, 0)` when every port is constant.
+- **Net array.** An array driven only by unconditional, unclocked writes with constant addresses (`assign w[3] = x;`, an instance output bound to `w[3]`) is a bundle of nets, not a memory: attribute `wires`, architecture `net_array`, no storage and no write logic. Only reads with a variable address cost: `R·(D−1)·W·MUX2` (typ). An array of more than 4096 elements is a `MEM` only if it is a memory candidate (a variable-index procedural write, an `initial` or `$readmem` initialisation) or is indexed by a signal; otherwise it is split into per-element nets created on demand, and its cost is linear in the number of instances (a chain of 8000 instances through `w[i]`: 1 855 136 GE, 231.9 GE per instance; it was about 2.5 G GE).
 
 ## 4. Reducing over-estimation
 
@@ -148,6 +173,8 @@ Naive per-operator costing over-estimates what synthesis produces. The IR and co
 1. **Bit-level constness.** Each net carries a known-bit mask `(kmask, kval)` and a sign-replication marker. Before costing: a MUX2 with one constant input becomes AND2/OR2; identical inputs become a wire, and so do the individual bits of a MUX whose two arms resolve to the same net bit through `^ 0`, `& 1`, `| 0` or `~^ 1` (the `if (x) n = n ^ K` idiom of CRCs and LFSRs needs selectors only where `K` is 1); both inputs constant yields a wire or INV(sel); a known-zero operand bit in an ADD makes that bit a wire.
 2. **Demanded bits.** A backward pass from outputs, register D pins, and memory ports yields an MSB/LSB demand per operation. Effective ADD width is `min(demand, max(w_a', w_b') + 1)`, where `w'` strips known-zero and sign-replicated MSBs. MUL widths strip trailing zeros (they become shifts) and known-zero MSBs.
 3. **Dead and duplicate logic.** Logic without a transitive path to an output port, black box / instance, or an *observed* memory read costs 0. This holds for state too: a register (or a whole register chain or self-incrementing counter) whose value reaches no output is removed, and a memory with no observed read port is removed together with its writers. Removal is reported by the info diagnostic `UNOBSERVABLE_LOGIC` (`N unobservable registers/memories and M unobservable operations removed`, `affects_cost = false`) so that adding a counter nobody reads is understood to change nothing; operations are only counted when the designer named them (an unused `wire`), not the temporaries of lowering.  A register whose D input is a constant equal to its reset value costs 0. Structural hashing on `(op, operand ids, constants, attributes)` merges common subexpressions and equivalent flops (merged in min/typ, retained in max).
+
+   **Across instances.** Only the outputs of the *top* are roots; the outputs of a child are demanded only if the parent uses them. An instance is *prunable* when its module has no effect other than its outputs: no black box, no module missing from the design, no recursion, no `inout` port. A prunable instance is live only when at least one of its outputs is demanded (then all its inputs are demanded, as for a memory); a dead instance disappears with the parent logic that only feeds it, loops through the instance included. A live instance whose outputs are only partly demanded is costed through a *variant* of the child, keyed `key{obs:port=mask,...}`, whose output roots are restricted to the demanded bits; a fully observed instance keeps the plain key, so a design whose instance outputs are all observed costs what it did before. At most 64 variants per module key are built; beyond that the remaining instances are counted as fully observed (an over-estimate). `UNOBSERVABLE_LOGIC` also counts `N unobservable instance(s)`. `GATECOST_NO_HIER=1` restores the former behaviour (the outputs of every module are roots). Limit: an input that the child ignores is not propagated back to the parent as dead (no backward propagation from the child into the parent logic that drives that input). Examples: a loop through a child whose result only feeds the child (`dead_loop`) 469 → 0 GE; `neorv32_top` with its default configuration 35 312 → 13 GE (Yosys 6.7; see §5.3 for its reliability).
 4. **Datapath fusion.** Chains of ADD/SUB/NEG/MUL whose intermediates have fanout 1 become one `SUM` cluster: `a*b + c` folds into the multiplier reduction tree (about `w·FA`); `a+b+c+d` becomes a CSA tree plus one CPA. min and typ use the fused cost; max is the larger of two consistent scenarios: fused at the tightest timing, or not fused at moderate timing (§3.1). Stacking "no fusion" on "fastest adder" is not done: it reached ×3.5–4 the typ cost.
 5. **Resource sharing across exclusive branches.** MUX/PMUX trees built from one `if`/`case`/`?:` within one always block or assign are tagged. For leaves that are same-class arithmetic operations (MUL, DIV, ADD/SUB with `w ≥ 8`): `shared = max_i cost(op_i) + (k−1)·(w_a + w_b)·MUX2 − (k−1)·w_o·MUX2`. It applies when `shared < unshared`. Policy `resource_sharing = "auto"` uses it in typ; min uses the smaller of the two; max uses unshared. Sharing is never applied across always blocks or modules.
 6. **Enable recognition.** `if (en) q <= d;` becomes the register's enable, not a separate MUX.
@@ -161,7 +188,7 @@ Naive per-operator costing over-estimates what synthesis produces. The IR and co
 | Timing constraint → architecture | arithmetic ×1–3 | min/typ/max scenarios; fixed `α_c` |
 | Boolean optimization of glue logic | −10 to −30% | class `logic` scale (default 0.85 in typ; not applied to XOR/XNOR/RED_XOR) |
 | Buffering, sizing, hold fixing | +5–15% | global `overhead` (default 1.0, range 1.0–1.15) |
-| Hierarchy boundaries / constant propagation | design-dependent | §4.7; diagnostic when disabled |
+| Hierarchy boundaries / constant propagation | design-dependent | §4 items 3 and 7; diagnostic when disabled |
 | DFT, clock gating, retiming | ±10–20% on sequential logic | explicit policy switches |
 | Memories, ROM, DIV | ±50% or more | `quality = poor` |
 
@@ -172,6 +199,7 @@ Each operation has a typ value `typ_i`, a correlated systematic band `[lo_i, hi_
 - **Deltas are computed per scenario**: `Δ_s = Σ cost_s(after) − Σ cost_s(before)`. The tool must never compute `max(after) − min(before)`; interval subtraction inflates ranges excessively. Unchanged operations cancel exactly.
 - Range: with `lo = min_s Δ_s`, `hi = max_s Δ_s`, `σ = √(Σ σ_i²)` (changed operations only), the range is `(lo+hi)/2 ∓ √(((hi−lo)/2)² + (2σ)²)`. The systematic spread and the residual add in quadrature, not linearly. The range is centred on the scenarios and always contains `[lo, hi]`, hence `Δ_typ`. `σ = 0` gives `[lo, hi]`; `lo = hi` gives `lo ∓ 2σ`. It is never wider than the linear sum `[lo − 2σ, hi + 2σ]`. Integer arithmetic rounds the bounds outwards.
 - Matched operations (same operation before and after, resized, memories included) have a correlated residual: `σ = rms · |n_a·typ_a − n_b·typ_b|`, with the more pessimistic `rms = σ/typ` of the two sides (`n` = instance count). It falls back to `√(σ_b² + σ_a²)` if neither side has `typ > 0`. Added and removed operations keep an independent `σ`. See DIFF.md.
+- **Sign of the delta.** The range above is what is displayed and what the confidence of §5.2 uses. The *verdict* (`INCREASE`/`DECREASE`/`UNCERTAIN`) is not read from it: it uses the same formula with a `σ_sign` in which each item's `2σ_i` is capped at `0.5·|Δ_i|` (`SIGN_ERR_CAP = 500` permille), because the error of a resized operation is multiplicative on its own delta and cannot flip its sign. A verdict `INCREASE` can therefore come with a range that overlaps 0 (`DIFF.md` §7 and §9).
 
 ### 5.2 Confidence derivation
 
@@ -181,7 +209,7 @@ Let `r = (Δ_max − Δ_min) / (2 · max(|Δ_typ|, A_floor))` with `A_floor = 20
 - **medium**: no unsupported construct in the changed cone and `r ≤ 0.5`.
 - **low**: anything else. Unknown black boxes, a macro without a table, or a poor-quality share above 30% of `|Δ|` force `low`.
 
-`r` is exposed in the JSON output so the caller can see why.
+`r` is exposed in the JSON output so the caller can see why. It is computed from the displayed range, not from the capped sign range: a delta dominated by memories keeps confidence `low` even when its verdict is `INCREASE`.
 
 When `r > 0.2` and nothing else explains the level, the reason is `delta range is +/-r% of the estimate` if the range is symmetric around `typ`, else `delta range is -x%/+y% of the estimate` with `x = (typ − min)/b`, `y = (max − typ)/b`, `b = max(|typ|, 20 GE)` (so `r = (x+y)/2`). The same wording applies to `cost` and `estimate`.
 
@@ -194,8 +222,8 @@ The default profile was calibrated against one reference: Yosys 0.70 (`synth -fl
 | Scope | n | MAPE % | bias % | coverage % |
 |---|---|---|---|---|
 | all micro-benchmarks | 151 | 7.6 | −0.3 | 86 (93 at ±0.5% rounding) |
-| all 164 cases | 164 | 8.5 | +1.1 | 84 (91 at ±0.5% rounding) |
-| complete designs and corpus | 13 | 18.4 | +17.8 | 54 |
+| all 164 cases | 164 | 8.4 | +1.1 | 84 (91 at ±0.5% rounding) |
+| complete designs and corpus | 13 | 17.4 | +16.8 | 62 (69 at ±0.5% rounding) |
 
 Per category, micro-benchmarks only:
 
@@ -228,7 +256,7 @@ Coverage is 0 for `shreg` and low for `dff` for a trivial reason: `min = typ` an
 
 Reading note when comparing with Yosys: the line "of which used for sequential elements" of `stat -liberty` counts flip-flops only. The enable `MUX2` cells are classed as combinational there, whereas the `seq` category of gatecost includes them. Do not compare these two columns directly.
 
-On complete designs (examples and corpus) the estimate is high by +17.8% on average. The excess comes from patterns the IR does not recognise: a counter enable that is not merged into the incrementer (`counter`: +21%), rotations (`rol_w8`: +78%), and sign-extension flops. Fixing these is future work; the per-design figures are in the bench summary (`--frozen`).
+On complete designs (examples and corpus; 11 `design` and 2 `corpus` cases) the estimate is high by +16.8% on average (MAPE 17.4%). The excess comes from patterns the IR does not recognise: a counter enable that is not merged into the incrementer (`counter`: +21%), rotations (`rol_w8`: +78%), sign-extension flops, and the control logic of `corpus_dma_desc` (+65%) and of the pipelined FIR (+35%). Fixing these is future work; the per-design figures are in the bench summary (`python3 scripts/calibration_bench.py --frozen`).
 
 Limits of this calibration:
 
@@ -236,9 +264,28 @@ Limits of this calibration:
 - VHDL designs are not measured (Yosys has no VHDL front-end here), and four Verilog/SystemVerilog designs (`corpus_cpu_datapath`, `corpus_mac_array`, `ex_sv_features`, `ex_udp_mux`) have no frozen reference.
 - `σ` (sizing factor), `α` and the `rms` constants of §5.1 are not fitted to data; the `max` scenario and the confidence thresholds of §5.2 have not been tuned.
 - Constant multiplication (`mul_const`: −25%), rotation and a counter with enable were left out of the fit.
-- Masked merge: the idiom `q <= (q & ~m) | (d & m)` (byte write by mask) is counted as logic on top of the enable flop, about 3.7 GE per bit of excess (about +26% on a register bank with byte enables), whereas Yosys absorbs it. The form `if (be[k]) q[8*k +: 8] <= d[8*k +: 8]` is exact. The variant `q ^ ((q ^ d) & m)` has the same problem. Fix, not done: a structural peephole in the IR, `OR(AND(x, NOT m), AND(y, m))` to `MUX`.
+- Masked merge: the idiom `q <= (q & ~m) | (d & m)` (byte write by mask) and its variant `q ^ ((q ^ d) & m)` are rewritten into a 2:1 mux per bit, which the enable recognition (§4 item 6) then absorbs: the former excess (about 3.7 GE per bit, +26% on a register bank with byte enables) is gone (`ahb_regfile`: 2016 → 1602 GE). Remaining limit: the rewrite depends on the order of the sources; if the mask is assigned after the `always` block that uses it, the idiom is not recognised and the old excess comes back.
+- Cache: the cache is keyed on the tool `VERSION` (the `VERSION` file), on the sources, the defines and the profile content, not on the cost model. After a change of a formula or of an analysis pass, increment `VERSION` or run `gatecost clean`; otherwise results computed by the previous model are served.
 
 To get closer to a commercial flow that infers adder cells and Booth multipliers, override `FA` (about 5.33 for `FA_X1`), set `arch.mul.mid = "booth_wallace"` and `signed_ext = 0`.
+
+### 5.4 Validation on open-source projects
+
+The frozen reference of §5.3 holds small designs. A second check ran the tool on 13 pinned open-source projects (Verilog: picorv32, verilog-uart, verilog-axis, verilog-i2c, sha256, aes, wb2axip, serv; SystemVerilog: common_cells, ibex, pulp axi; VHDL: neorv32, open-logic), with the same Yosys 0.70 + Nangate 45 flow as ground truth (for VHDL, `ghdl --synth --out=verilog` first). The commits, tops and edits are declared in `scripts/oss/projects.json` and `scripts/oss/deltas.json`; `scripts/oss_campaign.py` fetches the projects (`fetch`), costs the tops (`smoke`) and replays the edits against Yosys (`deltas`). The projects are cloned outside the repository (`$GATECOST_OSS_DIR`, default `~/gatecost-refs/oss`), and the campaign is a maintainer tool, not part of the test suite.
+
+**Robustness.** About 400 tops (every top of several projects was swept): 0 crash, 0 `INTERNAL`, 0 timeout. Time per top 0.3 to 1.6 s, peak memory 322 MB.
+
+**Absolute cost** (typ, GE; Yosys in parentheses; current outputs of `oss_campaign.py smoke`): `picorv32` 23 567 (20 517), `picorv32_pcpi_mul` 4036 (2730), `sha256` 29 563 (24 864), `sha256_core` 19 848 (16 283), `aes_core` 42 367 (38 722), `aes_sbox` 2423 (2903; 7709 before the constant tables were read as ROMs), `axis_fifo` 4096×8 429 657 (418 007), `uart` 1458 (1155), `i2c_slave` 759 (583), `i2c_master` 1403 (1086), `i2c_init` 1481 (1140), `axis_switch` 3255 (1944), `cc_gray_to_binary` 16 bits 41 (48.7). Datapaths, FIFOs, memories and CPU blocks are within about 0.8× to 1.4× of Yosys. Control logic and FSMs are over-estimated: the FSM-heavy `i2c_*` blocks are still about +30%, `axis_switch` +67% (before the ROM, hierarchy, select-tree and prefix-reduction work of §3 and §4 the excess was ×2 to ×3: `aes_sbox` 7709, `i2c_master` 2348, `i2c_init` 3625). `neorv32_top` in its default configuration costs 13 GE (Yosys 6.7; 35 312 before the hierarchical pruning of §4), but it is not reliable for a configured top. There is no ground truth for the SystemVerilog designs that use packages and structs (`ibex`, `common_cells`, pulp `axi`): Yosys without a SystemVerilog plugin cannot read them.
+
+**Deltas.** 31 atomic edits (widen a parameter, add a register or a counter, enable a block, change a FIFO depth or width, turn an option off), each costed with `diff` and compared with the difference of the two Yosys areas (`python3 scripts/oss_campaign.py deltas`):
+
+- the Yosys delta lies inside the displayed range for 24 of 31;
+- for the 13 edits with a Yosys delta of 1000 GE or more, `typ` over Yosys is 0.97 to 1.29, with one wrong sign (a change of `axis_fifo` that removes an output stage: gatecost +1057, Yosys −2713);
+- for the smaller ones the ratio is 0.9 to 1.5 for most, and 0.3 to 0.6 where the edit touches control logic (`axis_fifo` frame mode +226 against +754) or an almost free change (`sha256_pipeline_w`: +181 against +41);
+- representative cases: `axis_fifo` depth 64 → 128 +6766 [−1506..+12637] INCREASE (Yosys +6618); `axis_fifo` 4096 → 1024 −321 626 (−312 942); `picorv32` fast multiplier enabled +11 211 (+11 537); `picorv32` 64-bit counters off −666 (−711); `neorv32` GPIO 16 → 32 bits +1356 (+1357); `aes_core` result pipeline +726 (+633); `i2c_master` prescaler 16 → 32 bits +305 (+220);
+- verdicts: 25 `INCREASE`, 5 `DECREASE`, 1 `UNCERTAIN` (`axis_fifo` width 8 → 16 at depth 64: +30 [−175..+61], Yosys +53). Before the capped sign sigma (`DIFF.md` §7) the FIFO and memory resizes were `UNCERTAIN`.
+
+**Reading.** The tool ranks changes and gets the order of magnitude right for FIFOs, memories, register banks, counters, CPU blocks and width changes. It over-estimates control logic and FSMs, and a delta that only touches such logic can be off by a factor of 2 to 3. Memory-dominated deltas have `low` confidence even when the verdict is firm.
 
 ## 6. Profile format
 

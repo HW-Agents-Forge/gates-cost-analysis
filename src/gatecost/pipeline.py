@@ -572,7 +572,9 @@ def analyze_cone(inp: Inputs, profile, top, limits, cache, ref: SideResult, name
         except TypeError:
             return None
         stubs = set(getattr(res, "stubbed", ()) or ())
-        missing = [k for k in stubs if k not in ref.tree.modules]
+        # a stub whose instance is not fully observed (ir.hier) has a context-dependent cost: elaborate it too
+        unres = set(getattr(getattr(res, "design", None), "unresolved_contexts", ()) or ())
+        missing = [k for k in stubs if k not in ref.tree.modules or k in unres]
         if not missing:
             break
         names |= {_block_name(k) for k in missing}

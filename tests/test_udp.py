@@ -52,8 +52,9 @@ class CombUdp(unittest.TestCase):
         m = top_module(elab(MUX, top="mux2"))
         for a, b, s in itertools.product((0, 1), repeat=3):
             self.assertEqual(comb(m, a=a, b=b, s=s)["o"], b if s else a, (a, b, s))
-        # minimised: the consensus term a&b is not needed
-        self.assertEqual(ops(m), {"NOT": 1, "AND": 2, "OR": 1})
+        # minimised: the consensus term a&b is not needed; the sum of products (a & ~s) | (b & s) is then the
+        # builder's masked merge, one MUX (IR.md section 4)
+        self.assertEqual(ops(m), {"MUX": 1})
 
     def test_instance_is_costed_not_a_black_box(self):
         r = elab(MUX + "module t(input a, b, s, output y); mux2 u(y, a, b, s); endmodule", top="t")

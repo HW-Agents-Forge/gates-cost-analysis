@@ -330,9 +330,15 @@ def _named_keys(m: ModuleIR, order, cons, labels, kb: KeyBuilder) -> None:
         return "rhs" if lo_first else "lhs"
 
     pmux_offs: dict = {}
+    # name -> sig map of each consumer node, built once per node: rebuilding it on every call was
+    # O(inputs) per consumer edge, i.e. quadratic on a node with thousands of inputs (wide MEM).
+    ins_by_node: dict[int, dict] = {}
 
     def role_of(item: Node, name: str, pos: int, chunk: Slice) -> str:
-        sig = dict(item.inputs)[name]
+        ins = ins_by_node.get(item.id)
+        if ins is None:
+            ins = ins_by_node[item.id] = dict(item.inputs)
+        sig = ins[name]
         if item.op in COMMUTATIVE and len(item.inputs) == 2:
             r = commutative_rank(item, name)
         elif item.op in ("PMUX", "PRIORITY") and name == "B":

@@ -81,6 +81,9 @@ Demand-driven: starts at the top module (or at the modules of the changed files,
 7. **Hierarchy.** Instances are expanded lazily with parameter and constant-port propagation (`COST_MODEL.md` §4.7). Identical `(module, parameters, constant ports)` combinations are elaborated once and shared. Instance arrays are expanded up to the limit.
 8. **Interfaces and modports.** Interfaces are flattened into their member signals at each port connection; modports only give direction. Virtual interfaces and interface arrays beyond simple cases are skipped with a diagnostic.
 9. **Memories.** An unpacked array that is indexed and written in a clocked block is a memory; the access pattern determines read and write ports, and the read style (synchronous or asynchronous).
+   - **Size threshold (4096 elements).** Up to 4096 elements, an unpacked array is a memory (`MEM`) only if it is a memory candidate: a procedural write with a variable index outside a loop, or an initialisation by an `initial` block or `$readmem`. Above 4096 elements it is also a memory when a signal indexes it anywhere. An array indexed only by constants, genvars and loop variables is split into nets (created on demand), whatever its size. Using the whole array above 4096 elements stays `LIMIT_REACHED`.
+   - **ROM from an array of nets.** A one-dimensional array declared at module level, of 8 to 4096 elements, of type `wire`, `tri`, `logic` or `uwire` without initialiser, whose every element is driven exactly once by a continuous assignment of a constant, fully defined value (`assign t[3] = 8'h2a;`) and has no other writer (no other assignment, instance port, gate terminal or implicit connection), becomes a `ROM` node for each read with a variable index. Verilog pads the contents with zeros up to `2^bits`. Reads with a constant index remain plain nets. Nothing is reported. Not handled (the array keeps its previous treatment): multidimensional arrays, arrays declared in a `generate` block, whole-array aggregate assignment, values computed by a user function.
+10. **Part-selects out of range.** A reversed or out-of-bounds part-select (`f[31:32]`) is illegal in IEEE 1800. The elaborator records an `ASSUMED` line: a reversed select is taken swapped (as Yosys does); an out-of-bounds read gives unknown bits and an out-of-bounds write is clamped to the declared range. The cost does not change.
 
 ## 3. Verilog / SystemVerilog Support Matrix
 
@@ -146,11 +149,14 @@ Each diagnostic has a stable code, a severity (`info`, `warning`, `error`), a lo
 | `LIMIT_REACHED` (unroll, generate, depth) | warning | yes |
 | `INFERRED_LATCH` | warning | no (costed) |
 | `DUPLICATE_MODULE` | warning | possibly |
-| `IGNORED_REGION` (initial blocks that do not initialise an array, assertions, ...) | info | no |
+| `IGNORED_REGION` (initial blocks that do not initialise an array, assertions, `translate_off` regions, ...) | info | no (the `agent` format summarises them in one `NOTE ignored regions: <n> (<kinds>)` line) |
 | `ARRAY_PORT_FLATTENED` (unpacked array port taken as one vector; whole-array connections wire element by element) | info | no |
 | `UNOBSERVABLE_LOGIC` | info | no (the removed logic costs 0) |
 | `INCLUDE_NOT_FOUND` | warning | possibly |
+| `DISCOVERY_DUPLICATES` (implicit discovery found several definitions of a module: variants are mixed, the last wins; pass a path, `--top` or `--filelist`) | warning | yes (confidence `low`) |
 | `INTERNAL` (an invariant breach on one module or one cost node; that part costs 0 or becomes a black box) | error | yes |
+
+Source discovery and filelists: `DISCOVERY_DUPLICATES` is added by the CLI only when the sources come from walking the project (no path, filelist or `sources`); an explicit path or filelist gives only the `DUPLICATE_MODULE` lines. A filelist expands `$VAR`, `${VAR}` and `$(VAR)` from the environment (text substitution only, nothing is executed; an undefined variable is reported). `CLI.md` has the details.
 
 Messages carry the cause where one exists:
 
@@ -185,33 +191,36 @@ All configurable in `gatecost.toml`:
 | Expression nesting depth | 500 |
 | Constant-function interpreter steps | 100,000 |
 
-## 8. Performance Requirements
+## 8. Performance Budgets
+
+gatecost serves an AI agent that estimates small, atomic modifications. The figures below are **comfort budgets, not hard constraints**: a result within about ten seconds is fine, and up to a minute is acceptable.
 
 - Lexing and parsing of at least **1 MB of RTL per second** on a modern laptop in CPython.
-- Peak memory proportional to the number of distinct `(module, parameters)` elaborations, not to the instance count.
-- Cold analysis of a design of about 100k lines in a few seconds; warm analysis of a single-file change well under one second.
+- Cold start of the order of one second at most (`DISTRIBUTION.md` §3).
+- Cold analysis of a design of about 100k lines within about **30 s**.
+- The typical case (a small modification in a medium project) in a few seconds; a warm `diff` within about **1 s**.
+- Time roughly linear in the size of the sources; peak memory proportional to the number of distinct `(module, parameters)` elaborations, not to the instance count.
 - Hot paths avoid per-character Python loops, repeated string slicing, and recursion over long lists.
 
-**Measured status** (generated designs of `tests/bench/`, CPython 3.15 on an Apple M2; `python3 -m tests.bench.run_bench --lines 10000 100000 --diff`):
+**Measured status** (generated designs of `tests/bench/`, CPython 3.15, macOS on an Apple M2; `python3 -m tests.bench.run_bench --lines 10000 100000 --diff`; figures vary by 20 to 50 % with the machine load):
 
-| | 10k lines | 100k lines | target |
-|---|---|---|---|
-| lex + parse | 0.10 s (SV), 0.12 s (VHDL) | 1.0 s (SV, 3 MB/s), 1.0 s (VHDL, 3.5 MB/s) | at least 1 MB/s: met |
-| elaboration + IR analysis (cold) | 0.65 s (SV), 0.53 s (VHDL) | 5.8 s (SV, 66k IR nodes), 5.2 s (VHDL, 44k nodes) | a few seconds: **not met** |
-| cost tree | 0.12 s | 1.2 s (SV), 0.8 s (VHDL) | |
-| IR build + analysis of one synthetic module of 100k requested nodes (75k built, 54k live) | | 0.9 s + 1.7 s | well under 1 s (`IR.md` section 11): **not met** |
-| `cost` end to end, cold cache | 0.9 s | 9.8 s (SV), 8.2 s (VHDL) | a few seconds: **not met** |
-| `diff` with a warm cache, nothing changed | 0.08 s | 0.23 s (SV), 0.17 s (VHDL) | < 0.3 s: met |
-| `diff` after a one-file edit, baseline cached | 0.26 s (SV), 0.38 s (VHDL) | 0.7 s (SV), 2.2 s (VHDL) | < 0.3 s at 100k lines: **not met** |
-| the same edit again (cached) | 0.11 s | 0.29 s (SV), 0.22 s (VHDL) | < 0.3 s: met |
+| | measured | budget |
+|---|---|---|
+| start-up, `--version` | 0.09 s cold, 0.02 s warm | of the order of 1 s |
+| `estimate` | 0.2 s cold, 0.04 s warm | of the order of 1 s |
+| `cost` of a small design | 0.35 to 0.45 s cold, 0.06 s warm | a few seconds |
+| lex + parse | 2.8 to 3.5 MB/s (about 1 s per 100k lines) | at least 1 MB/s |
+| `cost`, cold cache, 10k lines | about 1.5 s | a few seconds |
+| `cost`, cold cache, 30k lines | about 3.8 s | |
+| `cost`, cold cache, 100k lines | about 12 s, 868 MB (about 8.7 KB per SV line) | about 30 s |
+| `diff`, cold, 100k lines | about 13 s | about 30 s |
+| `diff`, warm cache, 100k lines | about 0.4 s (nothing changed or one file edited) | about 1 s |
 
-Where the time goes at 100k lines (SV, cold): elaboration and IR construction 4.0 s, IR analysis 1.9 s, cost tree 1.2 s,
-parsing 1.0 s, provenance annotation 1.0 s, cache write 0.6 s.  The profile is flat (no function above 5 %), so further
-gains need a lower per-node cost across the elaborator and the IR passes rather than a single fix.  The one-file edit
-reads only the changed files, the files that must always be read (macros, packages, interfaces, compilation-unit items)
-and the headers of the instances of the changed modules' ancestors (a per-file index stored with the baseline analysis
-supplies everything else, `SPEC.md` §12); for the generated 100k-line SV project (one top with 250 children) that
-is 253 of 351 files.  VHDL projects are always read completely.
+The budgets are met. The analysis is close to linear in the size of the sources: the quadratic term that made a flat module of 8,000 instances take 6.8 s (the role lookup of `ir/keys.py`) was removed, and the same module now takes 1.1 to 1.5 s. The profile is flat (no function above 5 %), so a further speed-up needs a lower per-node cost across the elaborator and the IR passes rather than a single fix.
+
+The one-file `diff` reads only the changed files, the files that must always be read (macros, packages, interfaces, compilation-unit items) and the headers of the instances of the changed modules' ancestors (a per-file index stored with the baseline analysis supplies everything else, `SPEC.md` §12); for the generated 100k-line SV project (one top with 250 children) that is 253 of 351 files. VHDL projects are always read completely.
+
+Memory is the limit to watch on very large inputs: about 9 KB per line of SystemVerilog at 100k lines.
 
 ## 9. Tests
 
@@ -285,6 +294,10 @@ There is no preprocessor stage. Synthesis pragma regions (`-- synopsys translate
    - Resolution functions and driver conflicts: a signal driven by several concurrent sources is reported (`MULTIPLE_DRIVERS`) and the first driver is costed.
 6. **Tri-state.** `'Z'` assignments are costed as in the Verilog front-end (mux with enable, flagged).
 7. **Memories.** Signals of array-of-vector type that are indexed with a variable address and written in a clocked process are memories (same inference as §2.5.9); constants of array type with an indexed read are ROMs.
+   - The size threshold of §2.5.9 applies to signal arrays.
+   - **ROM from a signal array.** An architecture signal of array type each of whose elements is driven exactly once by a concurrent assignment of a constant, fully defined value, with no other writer, and read with a variable index, gives a `ROM` node per read. The contents are not completed to `2^bits` (unlike Verilog). Constant-index reads stay nets. Multidimensional arrays, `generate` blocks, whole-array aggregates and user functions are not handled.
+   - **Null ranges.** A VHDL null range (`2 to 1`, `0 downto 1`) denotes no index. It is a no-op for reading and writing, without a diagnostic: slice, assignment target, aggregate choice, formal of a port map, slice of a memory. `range_span(left, right, dir)` returns `None` for a null range, and `'high`/`'low` follow the direction of the range. A genuine target slice outside the bounds of its signal gives `ASSUMED target slice a..b outside l..r; clamped`.
+   - Still open: a sequential `case` with a null range, and slices whose bounds are not constants (`UNSUPPORTED_CONSTRUCT`).
 8. **Hierarchy.** As in §2.5.7: lazy instance expansion, `(entity, architecture, generics, constant ports)` keyed sharing, constant-port propagation.
 
 ### 10.5 Support matrix

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ..result import CostResult, DiffResult, Output
 from .agent import render_agent
-from .fmt import ge, loc, sge
+from .fmt import ge, loc, note_lines, sge, warn_lines
 
 WIDTH = 100
 LEGEND = (
@@ -46,6 +46,8 @@ def render_text(out: Output, *, max_lines: int = 10, verbose: bool = False, quie
             lines.append(f"Confidence {r.confidence.level}: {c}")
         for a in r.assumed:
             lines.append(f"Assumed: {a}")
+        lines += warn_lines(tuple(out.diagnostics) + r.diagnostics_new)
+        lines += note_lines(tuple(out.diagnostics) + r.diagnostics_new)
     else:
         rows = [(str(ge(m.total.typ)), m.module, f"x{m.instances}") for m in r.modules[:max_lines]]
         lines.append("Modules")
@@ -53,4 +55,9 @@ def render_text(out: Output, *, max_lines: int = 10, verbose: bool = False, quie
         if r.by_category:
             lines += ["", "By category"]
             lines += _table([(k, str(ge(v))) for k, v in r.by_category.items()], ("CATEGORY", "GE"))
+        if r.confidence.level != "high":
+            for c in r.confidence.reasons:
+                lines.append(f"Confidence {r.confidence.level}: {c}")
+        lines += warn_lines(tuple(out.diagnostics))
+        lines += note_lines(tuple(out.diagnostics))
     return "\n".join(lines) + "\n"

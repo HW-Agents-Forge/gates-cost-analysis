@@ -121,5 +121,5 @@ ASSUMED output p width inferred as 16
 ## How to read this
 
 - `GE` is a 2-input NAND equivalent. The parentheses are the plausible range, not a statistical interval.
-- Confidence `low` or a verdict `UNCERTAIN` means the range is wider than the estimate or straddles zero: the sign of the change is not established. Use real synthesis for sign-off.
+- Confidence `low` means the range is wide relative to the estimate. A verdict `UNCERTAIN` means the sign of the change is not established; an `INCREASE` or `DECREASE` can still show a range that crosses zero, because the formula error of one resized operation cannot flip its own sign (`docs/DIFF.md` section 9). Use real synthesis for sign-off.
 - The figures are analytic estimates. The default profile is calibrated on one point only (Yosys + Nangate 45 nm, no timing constraint; see `docs/COST_MODEL.md` section 5.3), so they say little about a commercial flow or another node.

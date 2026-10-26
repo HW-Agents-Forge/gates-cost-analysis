@@ -1,0 +1,859 @@
+{
+ "comment": "Declarative before/after edits replayed by scripts/oss_campaign.py deltas. 'pre' is applied to both trees, 'edit' to the after tree only. Ops: replace [old,new] (count 1 = first occurrence, 0 = all; old must exist) and insert_before_last (code inserted before the last occurrence of the marker).",
+ "deltas": [
+  {
+   "name": "uart_tx_prescale16to32",
+   "project": "verilog-uart",
+   "srcsub": "rtl",
+   "files": [
+    "uart_tx.v"
+   ],
+   "top": "uart_tx",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "uart_tx.v": [
+     {
+      "replace": [
+       "input  wire [15:0]            prescale",
+       "input  wire [31:0]            prescale"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "reg [18:0] prescale_reg",
+       "reg [34:0] prescale_reg"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "uart_tx_add_txcount32",
+   "project": "verilog-uart",
+   "srcsub": "rtl",
+   "files": [
+    "uart_tx.v"
+   ],
+   "top": "uart_tx",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "uart_tx.v": [
+     {
+      "replace": [
+       "    output wire                   busy,",
+       "    output wire                   busy,\n    output wire [31:0]            tx_count,"
+      ],
+      "count": 1
+     },
+     {
+      "insert_before_last": "endmodule",
+      "code": "reg [31:0] tx_count_reg = 0;\nalways @(posedge clk) begin\n    if (rst) tx_count_reg <= 0;\n    else if (s_axis_tvalid && s_axis_tready) tx_count_reg <= tx_count_reg + 1;\nend\nassign tx_count = tx_count_reg;\n"
+     }
+    ]
+   }
+  },
+  {
+   "name": "uart_rx_data8to16",
+   "project": "verilog-uart",
+   "srcsub": "rtl",
+   "files": [
+    "uart_rx.v"
+   ],
+   "top": "uart_rx",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "uart_rx.v": [
+     {
+      "replace": [
+       "parameter DATA_WIDTH = 8",
+       "parameter DATA_WIDTH = 16"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo_depth4096to1024",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 1024"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo_width8to32",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DATA_WIDTH = 8,",
+       "parameter DATA_WIDTH = 32,"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo_frame_mode",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter FRAME_FIFO = 0",
+       "parameter FRAME_FIFO = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo_output_fifo",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter OUTPUT_FIFO_ENABLE = 0",
+       "parameter OUTPUT_FIFO_ENABLE = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo_depth_to_16",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 16"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sha256_pipeline_w",
+   "project": "sha256",
+   "srcsub": "src/rtl",
+   "files": [
+    "sha256_core.v",
+    "sha256_w_mem.v",
+    "sha256_k_constants.v"
+   ],
+   "top": "sha256_core",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sha256_core.v": [
+     {
+      "replace": [
+       "  wire [31 : 0] w_data;",
+       "  wire [31 : 0] w_data;\n  reg  [31 : 0] w_data_q;\n  always @(posedge clk) w_data_q <= w_data;"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "ch + w_data + k_data",
+       "ch + w_data_q + k_data"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sha256_extra_adder_rot",
+   "project": "sha256",
+   "srcsub": "src/rtl",
+   "files": [
+    "sha256_core.v",
+    "sha256_w_mem.v",
+    "sha256_k_constants.v"
+   ],
+   "top": "sha256_core",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sha256_core.v": [
+     {
+      "replace": [
+       "t1 = h_reg + sum1 + ch + w_data + k_data;",
+       "t1 = h_reg + sum1 + ch + w_data + k_data + (a_reg ^ e_reg);"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "i2c_master_prescale16to32",
+   "project": "verilog-i2c",
+   "srcsub": "rtl",
+   "files": [
+    "i2c_master.v"
+   ],
+   "top": "i2c_master",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "i2c_master.v": [
+     {
+      "replace": [
+       "input  wire [15:0] prescale",
+       "input  wire [31:0] prescale"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "reg [16:0] delay_reg = 16'd0",
+       "reg [32:0] delay_reg = 16'd0"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "delay_reg <= 16'd0",
+       "delay_reg <= 33'd0"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "delay_next = prescale << 1;",
+       "delay_next = prescale << 1;"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sfifo_depth16to256",
+   "project": "wb2axip",
+   "srcsub": "rtl",
+   "files": [
+    "sfifo.v"
+   ],
+   "top": "sfifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sfifo.v": [
+     {
+      "replace": [
+       "parameter \tLGFLEN=4",
+       "parameter \tLGFLEN=8"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sfifo_width8to32",
+   "project": "wb2axip",
+   "srcsub": "rtl",
+   "files": [
+    "sfifo.v"
+   ],
+   "top": "sfifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sfifo.v": [
+     {
+      "replace": [
+       "parameter\tBW=8",
+       "parameter\tBW=32"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "picorv32_pcpi_fast_mul_extra_ffs",
+   "project": "picorv32",
+   "srcsub": ".",
+   "files": [
+    "picorv32.v"
+   ],
+   "top": "picorv32_pcpi_fast_mul",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "picorv32.v": [
+     {
+      "replace": [
+       "parameter EXTRA_MUL_FFS = 0",
+       "parameter EXTRA_MUL_FFS = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "picorv32_counters64_off",
+   "project": "picorv32",
+   "srcsub": ".",
+   "files": [
+    "picorv32.v"
+   ],
+   "top": "picorv32",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "picorv32.v": [
+     {
+      "replace": [
+       "parameter [ 0:0] ENABLE_COUNTERS64 = 1",
+       "parameter [ 0:0] ENABLE_COUNTERS64 = 0"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "picorv32_enable_mul_div",
+   "project": "picorv32",
+   "srcsub": ".",
+   "files": [
+    "picorv32.v"
+   ],
+   "top": "picorv32",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "picorv32.v": [
+     {
+      "replace": [
+       "parameter [ 0:0] ENABLE_MUL = 0",
+       "parameter [ 0:0] ENABLE_MUL = 1"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "parameter [ 0:0] ENABLE_DIV = 0",
+       "parameter [ 0:0] ENABLE_DIV = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "picorv32_enable_fast_mul",
+   "project": "picorv32",
+   "srcsub": ".",
+   "files": [
+    "picorv32.v"
+   ],
+   "top": "picorv32",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "picorv32.v": [
+     {
+      "replace": [
+       "parameter [ 0:0] ENABLE_FAST_MUL = 0",
+       "parameter [ 0:0] ENABLE_FAST_MUL = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "picorv32_dbg_last_addr",
+   "project": "picorv32",
+   "srcsub": ".",
+   "files": [
+    "picorv32.v"
+   ],
+   "top": "picorv32",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "picorv32.v": [
+     {
+      "replace": [
+       "\toutput reg [31:0] mem_addr,",
+       "\toutput reg [31:0] mem_addr,\n\toutput reg [31:0] dbg_last_addr,\n\toutput dbg_same_addr,"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "assign mem_xfer = (mem_valid && mem_ready) || (mem_la_use_prefetched_high_word && mem_do_rinst);",
+       "assign mem_xfer = (mem_valid && mem_ready) || (mem_la_use_prefetched_high_word && mem_do_rinst);\n\talways @(posedge clk) if (mem_valid && mem_ready) dbg_last_addr <= mem_addr;\n\tassign dbg_same_addr = (mem_addr == dbg_last_addr);"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "aes_core_result_pipeline",
+   "project": "aes",
+   "srcsub": "src/rtl",
+   "files": [
+    "aes_core.v",
+    "aes_encipher_block.v",
+    "aes_decipher_block.v",
+    "aes_key_mem.v",
+    "aes_sbox.v",
+    "aes_inv_sbox.v"
+   ],
+   "top": "aes_core",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "aes_core.v": [
+     {
+      "replace": [
+       "assign result       = muxed_new_block;",
+       "reg [127:0] result_q;\n  always @(posedge clk) result_q <= muxed_new_block;\n  assign result       = result_q;"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "neorv32_pwm_add_wrap_counter16",
+   "project": "neorv32",
+   "srcsub": "rtl/core",
+   "files": [
+    "*.vhd"
+   ],
+   "top": "neorv32_pwm",
+   "lang": "vhdl",
+   "params": [
+    "NUM_CHANNELS=4"
+   ],
+   "edit": {
+    "neorv32_pwm.vhd": [
+     {
+      "replace": [
+       "  signal dir, cmp_zero, cmp_top : std_ulogic;",
+       "  signal dir, cmp_zero, cmp_top : std_ulogic;\n  signal wrapc : std_ulogic_vector(15 downto 0);"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "  rdata_o <= (top & cmp) when (cs_i = '1') else (others => '0');",
+       "  rdata_o <= ((top xor wrapc) & cmp) when (cs_i = '1') else (others => '0');\n\n  wrap_counter: process(clk_i)\n  begin\n    if rising_edge(clk_i) then\n      if (en_i = '0') then\n        wrapc <= (others => '0');\n      elsif (clken_i = '1') and (cmp_top = '1') then\n        wrapc <= std_ulogic_vector(unsigned(wrapc) + 1);\n      end if;\n    end if;\n  end process;"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "vhdl_work": "neorv32"
+  },
+  {
+   "name": "axis_fifo64_frame_mode",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "pre": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 64"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter FRAME_FIFO = 0",
+       "parameter FRAME_FIFO = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo64_output_fifo",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "pre": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 64"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter OUTPUT_FIFO_ENABLE = 0",
+       "parameter OUTPUT_FIFO_ENABLE = 1"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo64_width8to16",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "pre": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 64"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DATA_WIDTH = 8,",
+       "parameter DATA_WIDTH = 16,"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo64_depth64to128",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "pre": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 64"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 64",
+       "parameter DEPTH = 128"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "axis_fifo64_user_enable_off",
+   "project": "verilog-axis",
+   "srcsub": "rtl",
+   "files": [
+    "axis_fifo.v"
+   ],
+   "top": "axis_fifo",
+   "lang": "verilog",
+   "params": [],
+   "pre": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter DEPTH = 4096",
+       "parameter DEPTH = 64"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "axis_fifo.v": [
+     {
+      "replace": [
+       "parameter USER_ENABLE = 1",
+       "parameter USER_ENABLE = 0"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sfifo_depth16to32",
+   "project": "wb2axip",
+   "srcsub": "rtl",
+   "files": [
+    "sfifo.v"
+   ],
+   "top": "sfifo",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sfifo.v": [
+     {
+      "replace": [
+       "parameter \tLGFLEN=4",
+       "parameter \tLGFLEN=5"
+      ],
+      "count": 1
+     }
+    ]
+   }
+  },
+  {
+   "name": "sha256_add_blockcount64",
+   "project": "sha256",
+   "srcsub": "src/rtl",
+   "files": [
+    "sha256_core.v",
+    "sha256_w_mem.v",
+    "sha256_k_constants.v"
+   ],
+   "top": "sha256_core",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "sha256_core.v": [
+     {
+      "replace": [
+       "output wire           digest_valid",
+       "output wire           digest_valid,\n                   output wire [63 : 0]  block_count"
+      ],
+      "count": 1
+     },
+     {
+      "insert_before_last": "endmodule",
+      "code": "  reg [63:0] block_count_reg;\n  always @(posedge clk or negedge reset_n) if (!reset_n) block_count_reg <= 0; else if (ready_flag && init) block_count_reg <= block_count_reg + 1;\n  assign block_count = block_count_reg;\n"
+     }
+    ]
+   }
+  },
+  {
+   "name": "i2c_master_add_timeout16",
+   "project": "verilog-i2c",
+   "srcsub": "rtl",
+   "files": [
+    "i2c_master.v"
+   ],
+   "top": "i2c_master",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "i2c_master.v": [
+     {
+      "replace": [
+       "    output wire        busy,",
+       "    output wire        busy,\n    output wire        timeout_err,"
+      ],
+      "count": 1
+     },
+     {
+      "insert_before_last": "endmodule",
+      "code": "reg [15:0] to_cnt = 16'd0; reg to_flag = 1'b0;\nalways @(posedge clk) begin\n    if (rst || !busy) begin to_cnt <= 16'd0; to_flag <= 1'b0; end\n    else begin to_cnt <= to_cnt + 16'd1; if (to_cnt == 16'hffff) to_flag <= 1'b1; end\nend\nassign timeout_err = to_flag;\n"
+     }
+    ]
+   }
+  },
+  {
+   "name": "uart_tx_prescale_x2_mult",
+   "project": "verilog-uart",
+   "srcsub": "rtl",
+   "files": [
+    "uart_tx.v"
+   ],
+   "top": "uart_tx",
+   "lang": "verilog",
+   "params": [],
+   "edit": {
+    "uart_tx.v": [
+     {
+      "replace": [
+       "(prescale << 3)-1;",
+       "(prescale * 8) - 1 + (prescale * prescale[3:0]);"
+      ],
+      "count": 1
+     },
+     {
+      "replace": [
+       "reg [18:0] prescale_reg",
+       "reg [35:0] prescale_reg"
+      ],
+      "count": 0
+     }
+    ]
+   }
+  },
+  {
+   "name": "neorv32_gpio_16to32",
+   "project": "neorv32",
+   "srcsub": "rtl/core",
+   "files": [
+    "*.vhd"
+   ],
+   "top": "neorv32_gpio",
+   "lang": "vhdl",
+   "params": [
+    "GPIO_DIR=false"
+   ],
+   "pre": {
+    "neorv32_gpio.vhd": [
+     {
+      "replace": [
+       "GPIO_NUM : natural range 0 to 32;",
+       "GPIO_NUM : natural range 0 to 32 := 16;"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "neorv32_gpio.vhd": [
+     {
+      "replace": [
+       ":= 16;",
+       ":= 32;"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "vhdl_work": "neorv32"
+  },
+  {
+   "name": "neorv32_regfile_E_to_I",
+   "project": "neorv32",
+   "srcsub": "rtl/core",
+   "files": [
+    "*.vhd"
+   ],
+   "top": "neorv32_cpu_regfile",
+   "lang": "vhdl",
+   "params": [
+    "ARCHSEL=0"
+   ],
+   "pre": {
+    "neorv32_cpu_regfile.vhd": [
+     {
+      "replace": [
+       "AWIDTH  : natural range 4 to 5;",
+       "AWIDTH  : natural range 4 to 5 := 4;"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "edit": {
+    "neorv32_cpu_regfile.vhd": [
+     {
+      "replace": [
+       ":= 4;",
+       ":= 5;"
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "vhdl_work": "neorv32"
+  }
+ ]
+}

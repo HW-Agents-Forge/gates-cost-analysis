@@ -19,6 +19,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from . import REPO_ROOT
+from .envsub import expand_env
 from .errors import GatecostError
 from .discovery import ALWAYS_EXCLUDED, RTL_EXT, discover
 from .result import Diagnostic
@@ -122,7 +123,7 @@ def parse_filelist(text: str, base: Path, root: Path, depth: int = 0) -> tuple[l
     nested: list[Path] = []
 
     def res(tok: str) -> Path:
-        p = Path(tok)
+        p = Path(expand_env(tok)[0])
         if p.is_absolute():
             return p
         return base / p

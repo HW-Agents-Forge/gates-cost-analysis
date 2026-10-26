@@ -1,0 +1,291 @@
+{
+ "comment": "Pinned open-source projects (URL + exact commit). Cloned by 'oss_campaign.py fetch' under $GATECOST_OSS_DIR (default ~/gatecost-refs/oss)/<dir>/repo. Smoke targets: top, sources (repo-relative files/dirs) or filelist (this repository, paths relative to the repo or to filelist_base), incdirs, params, root.",
+ "projects": [
+  {
+   "name": "picorv32",
+   "url": "https://github.com/YosysHQ/picorv32.git",
+   "commit": "ef203c2b0a3fb793280f5114941416c425c5b461",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "picorv32",
+     "sources": [
+      "picorv32.v"
+     ]
+    },
+    {
+     "top": "picorv32_axi",
+     "sources": [
+      "picorv32.v"
+     ]
+    },
+    {
+     "top": "picorv32_pcpi_mul",
+     "sources": [
+      "picorv32.v"
+     ]
+    }
+   ],
+   "dir": "picorv32"
+  },
+  {
+   "name": "verilog-uart",
+   "url": "https://github.com/alexforencich/verilog-uart.git",
+   "commit": "1b867e53af738e4a8bc7c839ca2f1c07f40382dc",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "uart",
+     "sources": [
+      "rtl"
+     ]
+    },
+    {
+     "top": "uart_rx",
+     "sources": [
+      "rtl"
+     ]
+    }
+   ],
+   "dir": "verilog-uart"
+  },
+  {
+   "name": "verilog-axis",
+   "url": "https://github.com/alexforencich/verilog-axis.git",
+   "commit": "48ff7a7e2ef782cf778d47910cf85835c64b1bce",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "axis_fifo",
+     "sources": [
+      "rtl/axis_fifo.v"
+     ]
+    },
+    {
+     "top": "axis_adapter",
+     "sources": [
+      "rtl/axis_adapter.v"
+     ]
+    },
+    {
+     "top": "axis_arb_mux",
+     "sources": [
+      "rtl"
+     ]
+    }
+   ],
+   "dir": "verilog-axis"
+  },
+  {
+   "name": "verilog-i2c",
+   "url": "https://github.com/alexforencich/verilog-i2c.git",
+   "commit": "a65be4045e898a52e791c6ee71f8f79a7cd2e129",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "i2c_master",
+     "sources": [
+      "rtl/i2c_master.v"
+     ]
+    },
+    {
+     "top": "i2c_slave",
+     "sources": [
+      "rtl/i2c_slave.v"
+     ]
+    },
+    {
+     "top": "i2c_init",
+     "sources": [
+      "rtl"
+     ]
+    }
+   ],
+   "dir": "verilog-i2c"
+  },
+  {
+   "name": "sha256",
+   "url": "https://github.com/secworks/sha256.git",
+   "commit": "837c5cc396f001d18f2c765721c585716eb439ae",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "sha256",
+     "sources": [
+      "src/rtl"
+     ]
+    },
+    {
+     "top": "sha256_core",
+     "sources": [
+      "src/rtl"
+     ]
+    }
+   ],
+   "dir": "sha256"
+  },
+  {
+   "name": "aes",
+   "url": "https://github.com/secworks/aes.git",
+   "commit": "80dc4718e1dcbbdb4b0dd1bdb393d8f7b98981dc",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "aes_core",
+     "sources": [
+      "src/rtl"
+     ]
+    },
+    {
+     "top": "aes_sbox",
+     "sources": [
+      "src/rtl"
+     ]
+    }
+   ],
+   "dir": "aes"
+  },
+  {
+   "name": "wb2axip",
+   "url": "https://github.com/ZipCPU/wb2axip.git",
+   "commit": "2e8d3bc2d26ddc33d1881022a2a2b9d3f0c16b9b",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "sfifo",
+     "sources": [
+      "rtl/sfifo.v"
+     ]
+    },
+    {
+     "top": "axixbar",
+     "sources": [
+      "rtl"
+     ]
+    }
+   ],
+   "dir": "wb2axip"
+  },
+  {
+   "name": "serv",
+   "url": "https://github.com/olofk/serv.git",
+   "commit": "f200eb2ed7b69ac1c6b8eddd47654522aeee5ce8",
+   "lang": "verilog",
+   "smoke": [
+    {
+     "top": "serv_top",
+     "sources": [
+      "rtl"
+     ]
+    }
+   ],
+   "dir": "serv"
+  },
+  {
+   "name": "common_cells",
+   "url": "https://github.com/pulp-platform/common_cells.git",
+   "commit": "e73baaec2ca665cd80c3c384e9258e35242b829c",
+   "lang": "systemverilog",
+   "smoke": [
+    {
+     "top": "cc_gray_to_binary",
+     "sources": [
+      "src"
+     ],
+     "incdirs": [
+      "include"
+     ],
+     "params": [
+      "Width=16"
+     ]
+    },
+    {
+     "top": "cc_stream_fifo",
+     "sources": [
+      "src"
+     ],
+     "incdirs": [
+      "include"
+     ]
+    }
+   ],
+   "dir": "common_cells"
+  },
+  {
+   "name": "ibex",
+   "url": "https://github.com/lowRISC/ibex.git",
+   "commit": "a896ef22777a40ad3f5a2a3b97fecd5116480c4c",
+   "lang": "systemverilog",
+   "smoke": [
+    {
+     "top": "ibex_top",
+     "filelist": "scripts/oss/filelists/ibex.f"
+    }
+   ],
+   "dir": "ibex"
+  },
+  {
+   "name": "axi",
+   "url": "https://github.com/pulp-platform/axi.git",
+   "commit": "70b8e54fd460e3308e58be596ceb3566a6e3576e",
+   "lang": "systemverilog",
+   "smoke": [
+    {
+     "top": "axi_cut",
+     "sources": [
+      "src/axi_pkg.sv",
+      "src/axi_cut.sv"
+     ],
+     "incdirs": [
+      "include"
+     ]
+    }
+   ],
+   "dir": "axi"
+  },
+  {
+   "name": "neorv32",
+   "url": "https://github.com/stnolting/neorv32.git",
+   "commit": "7d48364855ca6c8491bd7f2683ad3ddf1c90b5a6",
+   "lang": "vhdl",
+   "smoke": [
+    {
+     "top": "neorv32_gpio",
+     "sources": [
+      "rtl/core"
+     ],
+     "root": "rtl/core",
+     "params": [
+      "GPIO_NUM=16"
+     ]
+    },
+    {
+     "top": "neorv32_top",
+     "sources": [
+      "rtl/core"
+     ],
+     "root": "rtl/core"
+    }
+   ],
+   "dir": "neorv32"
+  },
+  {
+   "name": "open-logic",
+   "url": "https://github.com/open-logic/open-logic.git",
+   "commit": "10d65bee58be4a69d2434f4807732abc74c4d436",
+   "lang": "vhdl",
+   "smoke": [
+    {
+     "top": "olo_base_fifo_sync",
+     "filelist": "scripts/oss/filelists/open-logic.f",
+     "filelist_base": "src",
+     "params": [
+      "Width_g=8",
+      "Depth_g=16"
+     ]
+    }
+   ],
+   "dir": "open-logic"
+  }
+ ]
+}

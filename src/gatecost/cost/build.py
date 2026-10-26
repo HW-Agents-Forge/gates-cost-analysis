@@ -18,6 +18,7 @@ from .. import _gc
 from ..result import Confidence, Diagnostic, Ge3
 from .acc import OpCost, zero
 from .delta import confidence
+from .logic import reduce_chain_op
 from .ops import cost_op
 from .profile import Profile
 from .sharing import shared_leaf_cost
@@ -77,11 +78,73 @@ def _inp(node: dict, name: str) -> dict | None:
     return None
 
 
+def _arm_profiles(nd: dict, k: int, w: int, irn: Any = None) -> list | None:
+    """Per-bit arm profiles of a PMUX / PRIORITY node (``cost_op`` attribute ``arms``), or None when every arm
+    of every costed bit is a distinct variable (the plain formula) or the export does not describe the node.
+
+    Arms whose select is known to be 0 are dropped (``k_eff``); a costed bit is a demanded output bit that is not
+    known.  The profile of a bit lists the kinds of its arms in order and then of its default: 0 / 1 constant,
+    2 a variable seen once in the bit, ``3, 4, ...`` a variable bit that several arms of this bit carry (the same
+    net bit, numbered by first occurrence).  The identity of the bits comes from the IR node ``irn`` (without it
+    only constants are recognised)."""
+    A, B, S = _inp(nd, "A"), _inp(nd, "B"), _inp(nd, "S")
+    if A is None or B is None or S is None or not nd["outputs"]:
+        return None
+    W = nd["outputs"][0]["width"]
+    kall = nd["attrs"].get("k", k)
+    if B["width"] != kall * W or A["width"] != W or S["width"] != kall:
+        return None
+    sk, sv = S.get("known_mask") or 0, S.get("known_val") or 0
+    live = [j for j in range(kall) if not ((sk >> j) & 1 and not (sv >> j) & 1)]
+    if len(live) != k:
+        return None
+    e = nd["eff"]
+    dm = int(e.get("demand", (1 << W) - 1))
+    km = int((e.get("known") or (0, 0))[0])
+    free = dm & ~km & ((1 << W) - 1)
+    ak, av, bk, bv = (A.get("known_mask") or 0, A.get("known_val") or 0,
+                      B.get("known_mask") or 0, B.get("known_val") or 0)
+    atoms_a = atoms_b = None
+    if irn is not None:
+        sa, sb = irn.input("A"), irn.input("B")
+        if sa is not None and sb is not None and sa.width == W and sb.width == kall * W:
+            atoms_a = [(net.id, i) if net is not None else None for net, i in sa.bits()]
+            atoms_b = [(net.id, i) if net is not None else None for net, i in sb.bits()]
+
+    def kind(mk: int, mv: int, i: int) -> int:
+        return (mv >> i) & 1 if (mk >> i) & 1 else 2
+
+    hist: dict[tuple[int, ...], int] = {}
+    n = 0
+    for b in range(W):
+        if not (free >> b) & 1:
+            continue
+        kinds = [kind(bk, bv, j * W + b) for j in live] + [kind(ak, av, b)]
+        if atoms_a is not None:
+            ids = [atoms_b[j * W + b] for j in live] + [atoms_a[b]]
+            seen: dict[tuple, int] = {}
+            for x, kd in zip(ids, kinds):
+                if kd == 2 and x is not None:
+                    seen[x] = seen.get(x, 0) + 1
+            cls: dict[tuple, int] = {}
+            for i, (x, kd) in enumerate(zip(ids, kinds)):
+                if kd == 2 and x is not None and seen[x] > 1:
+                    if x not in cls:
+                        cls[x] = 3 + len(cls)
+                    kinds[i] = cls[x]
+        t = tuple(kinds)
+        hist[t] = hist.get(t, 0) + 1
+        n += 1
+    if n != w or all(2 == x for kinds in hist for x in kinds):
+        return None
+    return [[list(kinds), hist[kinds]] for kinds in sorted(hist)]
+
+
 # ---------------------------------------------------------------------------------------
 # per-node costing
 
-def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
-    """(cost, description, effective widths, facts, extra tags) of one exported node."""
+def _cost_node(nd: dict, p: Profile, irn: Any = None) -> tuple[OpCost, str, tuple, dict, list]:
+    """(cost, description, effective widths, facts, extra tags) of one exported node (``irn``: its IR node)."""
     op = nd["op"]
     e = nd["eff"]
     w = e.get("w", 0)
@@ -211,7 +274,11 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
         if w <= 0 or k <= 0:
             return zero("select", "medium"), f"{op} 0 w0", (0, 0), facts, tags
         facts["struct"] = {"k": k}
-        return cost_op(op, {"k": k, "w": w}, p), f"{op} {k} w{w}", (w,), facts, tags
+        at: dict = {"k": k, "w": w}
+        arms = _arm_profiles(nd, k, w, irn)
+        if arms is not None:
+            at["arms"] = arms
+        return cost_op(op, at, p), f"{op} {k} w{w}", (w,), facts, tags
     if op == "DECODE":
         s = e.get("n", 0)
         if s <= 0 or w <= 0:
@@ -261,11 +328,20 @@ def _cost_node(nd: dict, p: Profile) -> tuple[OpCost, str, tuple, dict, list]:
             if sync:
                 oc = oc + cost_op("DFF", {"n": wd * R}, p)
             return oc, f"ROM {d}x{wd}", (d, wd), facts, tags
+        ins = nd["inputs"]
+        waddr = [i for i in ins if i["name"].startswith("w") and i["name"].endswith("_addr")]
+        cwa = [i.get("const") for i in waddr if i.get("is_const")]
+        # unclocked, unconditional, constant-address drives only: the array is a bundle of nets
+        wires = (bool(waddr) and len(cwa) == len(waddr)
+                 and not any(i["name"].startswith("w") and i["name"].endswith(("_clk", "_en", "_be"))
+                             for i in ins))
         oc = cost_op("MEM", {"depth": d, "width": wd, "rports": max(a.get("rports", 1), 1),
                              "wports": max(a.get("wports", 1), 1), "sync_read": sync,
-                             "const_reads": sum(1 for i in nd["inputs"]
+                             "const_reads": sum(1 for i in ins
                                                 if i["name"].endswith("_addr") and i["name"].startswith("r")
-                                                and i.get("is_const"))}, p)
+                                                and i.get("is_const")),
+                             "const_writes": len(cwa), "const_write_words": len(set(cwa)),
+                             "wires": wires}, p)
         return oc, f"MEM {d}x{wd}", (d, wd), facts, tags
     if op == "SUM":
         return _cost_sum(nd, p)
@@ -306,6 +382,122 @@ def _cost_sum(nd: dict, p: Profile):
     oc = cost_op("MAC", {"n": n, "m": mm, "c": w, "signed": bool(mul.get("signed")), "extra": max(0, nT - 1)}, p)
     facts["struct"] = {"k": k, "mul": [n, mm]}
     return oc, f"MAC {n}x{mm} +{nT}", (w,), facts, tags
+
+
+# ---------------------------------------------------------------------------------------
+# nested reductions
+
+_REDUCE = ("RED_AND", "RED_OR", "RED_XOR")
+_CHAIN_BUDGET = 1 << 21          # subset tests per module (deterministic cut-off on pathological inputs)
+
+
+def _reduction_chains(items: dict[int, _Item], nodes: dict[int, Any], p: Profile) -> None:
+    """A reduction whose operand bits contain all the operand bits of another reduction of the same kind reuses its
+    result: ``^a[15:i]`` is ``^a[15:i+1] ^ a[i]``.  It keeps ``w - w_sub + 1`` inputs instead of ``w`` (effective
+    widths), ``w_sub`` being the widest such sub-reduction that is itself costed, and is costed as one stage of a
+    prefix computation (``reduce_chain_op``).  A chain ``z[i] = ^a[W-1:i]`` (Gray to binary, prefix OR) therefore
+    costs about ``(1 + alpha)(W - 1)`` gates in typ, not ``W(W-1)/2``.  Exact (associativity); only bit-identical
+    operands are recognised (same net bits, no duplicated bit)."""
+    cand = [it for it in items.values() if it.node["op"] in _REDUCE and it.cost.typ > 0]
+    if len(cand) < 2 or not nodes:
+        return
+    sets: dict[int, frozenset] = {}
+    for it in cand:
+        n = nodes.get(it.node["id"])
+        sig = n.input("A") if n is not None else None
+        if sig is None:
+            continue
+        atoms = [(net.id, i) for net, i in sig.bits() if net is not None]
+        s = frozenset(atoms)
+        if len(s) == len(atoms) and len(s) >= 2:
+            sets[it.node["id"]] = s
+    budget = _CHAIN_BUDGET
+    for op in _REDUCE:
+        group = sorted((it for it in cand if it.node["op"] == op and it.node["id"] in sets),
+                       key=lambda it: (len(sets[it.node["id"]]), it.node["id"]))
+        by_atom: dict[tuple, list[int]] = {}
+        width = {it.node["id"]: it.node["eff"].get("w", 0) for it in group}
+        for it in group:
+            nid = it.node["id"]
+            s = sets[nid]
+            hits: dict[int, int] = {}
+            for a in s:
+                lst = by_atom.get(a)
+                if lst:
+                    budget -= len(lst)
+                    for y in lst:
+                        hits[y] = hits.get(y, 0) + 1
+            if budget < 0:
+                return
+            best = None
+            for y, h in hits.items():
+                if h == len(sets[y]) and len(sets[y]) < len(s):
+                    key = (width[y], -y)
+                    if best is None or key > best[0]:
+                        best = (key, y)
+            for a in s:
+                by_atom.setdefault(a, []).append(nid)
+            if best is None:
+                continue
+            y = best[1]
+            w = width[nid]
+            n_in = w - width[y] + 1
+            if n_in >= w:
+                continue
+            kind = "XOR" if op == "RED_XOR" else "AND"
+            it.cost = reduce_chain_op(kind, n_in, w, p)
+            it.facts["chained_on"] = y
+            it.facts["reduced_inputs"] = n_in
+            it.tags.append("prefix_shared")
+
+
+# ---------------------------------------------------------------------------------------
+# select trees
+
+def _apply_mux_trees(items: dict[int, _Item], trees: list[dict], p: Profile) -> None:
+    """Nested mux-family nodes flattened per bit (``ir.muxtree``): the root carries the cost of a select of the
+    distinct leaves of every bit (``MUXTREE``), each scenario capped by the sum of the unflattened costs of the tree
+    (so flattening never increases a cost); the absorbed nodes cost 0 (tag ``mux_absorbed``) and are listed as the
+    root's members.  A select gate (a path condition) used by several trees -- the signals assigned by one ``if`` /
+    ``case`` test the same conditions -- is costed once, on the first tree by root named key that uses it."""
+    claimed: set[int] = set()
+
+    def order(t: dict) -> tuple:
+        it = items.get(t["root"])
+        return (tuple(it.node.get("named_key") or ()) if it is not None else (), t["root"])
+
+    for t in sorted(trees, key=order):
+        root = items.get(t["root"])
+        if root is None:
+            continue
+        absorbed = [items[i] for i in t["nodes"] if i in items]
+        orig = root.cost
+        for it in absorbed:
+            orig = orig + it.cost
+        gates = t.get("gates")
+        if gates is None:                                # no gate identities: nothing shared
+            own, n_and, n_or = [], int(t.get("sel_and", 0)), int(t.get("sel_or", 0))
+        else:
+            own = [g for g in gates if g[0] not in claimed]
+            n_and, n_or = sum(g[1] for g in own), sum(g[2] for g in own)
+        flat = cost_op("MUXTREE", {"bits": t["bits"], "sel_and": n_and, "sel_or": n_or}, p)
+        pick = {s: getattr(flat, s) < getattr(orig, s) for s in ("min", "typ", "max")}
+        if not any(pick.values()):
+            continue
+        claimed.update(g[0] for g in own)
+        arch = {s: (flat.arch[s] if pick[s] else orig.arch.get(s, "")) for s in ("min", "typ", "max")}
+        root.cost = OpCost(min(flat.min, orig.min), min(flat.typ, orig.typ), min(flat.max, orig.max), arch,
+                           dict(flat.breakdown if pick["typ"] else orig.breakdown), root.cost.category,
+                           root.cost.quality, root.cost.flags)
+        root.members = tuple(sorted(set(root.members) | {it.node["id"] for it in absorbed}))
+        root.facts["mux_tree"] = {"absorbed": len(absorbed), "sel_and": n_and, "sel_or": n_or,
+                                  "leaves": [list(b) for b in t["bits"]]}
+        root.tags.append("mux_tree")
+        for it in absorbed:
+            c = it.cost
+            if c.min or c.typ or c.max:          # kept (at 0) for attribution, like a shared_zeroed leaf
+                it.cost = OpCost(0, 0, 0, c.arch, {}, c.category, c.quality, c.flags)
+                it.tags.append("mux_absorbed")
 
 
 # ---------------------------------------------------------------------------------------
@@ -368,6 +560,7 @@ def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
     unsupported = any(d.affects_cost for d in diags)
     if mod["is_blackbox"] or mod["limit_reached"]:
         unsupported = True
+    irnodes: dict[int, Any] = ir.node_by_id() if ir is not None else {}
     nodes = []
     for nd in mod["nodes"]:
         if nd["op"] == "SUM" and not fusion and nd.get("members"):
@@ -395,7 +588,7 @@ def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
             items[nd["id"]] = _Item(nd, oc, d, (), (), {"name": name, "count": cnt}, tags)
             continue
         try:
-            oc, desc, effw, facts, tags = _cost_node(nd, profile)
+            oc, desc, effw, facts, tags = _cost_node(nd, profile, irnodes.get(nd["id"]))
         except (ValueError, KeyError, ArithmeticError) as exc:
             # A node the cost model cannot handle (unknown op, missing or invalid attribute) is an
             # invariant breach between the IR and the cost model; report it on that node, cost it
@@ -416,13 +609,15 @@ def _cost_module(key: str, mod: dict, ir, profile: Profile, root, fusion: bool):
         items[nd["id"]] = _Item(nd, oc, desc, effw, decl, facts, tags)
         if nd["op"] == "SUM":
             items[nd["id"]].members = tuple(m["id"] for m in nd.get("members", ()))
+    _reduction_chains(items, irnodes, profile)
+    _apply_mux_trees(items, mod.get("mux_trees") or [], profile)
     _apply_sharing(items, mod["share_sets"], profile)
     rms = {q: profile.F[f"rms_{q}"] for q in ("good", "medium", "poor")}
     ops: list[CostOp] = []
     for nid in sorted(items):
         it = items[nid]
         c = it.cost
-        keep = c.min or c.typ or c.max or "shared_zeroed" in it.tags
+        keep = c.min or c.typ or c.max or "shared_zeroed" in it.tags or "mux_absorbed" in it.tags
         if not keep:
             continue
         nd = it.node

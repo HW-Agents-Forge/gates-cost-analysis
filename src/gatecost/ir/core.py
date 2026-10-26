@@ -87,7 +87,7 @@ INPUT_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 #: Attributes that do not take part in hash-consing / identity.
-NON_IDENTITY_ATTRS = frozenset({"merge_count", "inst", "mem_name", "recursive"})
+NON_IDENTITY_ATTRS = frozenset({"merge_count", "inst", "mem_name", "recursive", "ctx_key"})
 
 ARITH_FUSABLE = frozenset({"ADD", "SUB", "NEG", "MUL"})
 
@@ -222,11 +222,16 @@ class ModuleIR:
         self.limit_reached: str | None = None
         self.analyzed = False
         self.share_sets: list[dict] = []
+        # select trees flattened per bit (``muxtree.mark_mux_trees``; plain data, annotation only)
+        self.mux_trees: list[dict] = []
         self.canonical_hash: bytes | None = None
         self.conns_by_net: dict[int, list[Conn]] = {}
         self.conn_keys: dict[int, bytes] = {}
         # state elements / operations that reach no output and were removed (cost 0); see ``UNOBSERVABLE_LOGIC``
-        self.unobservable = {"regs": 0, "ops": 0}
+        self.unobservable = {"regs": 0, "ops": 0, "insts": 0}
+        # observability context (``hier.analyze_hierarchy``): output port name -> demanded bit mask; ``None`` means
+        # every output bit is observed (the default, and always the case for the top)
+        self.port_demand: dict[str, int] | None = None
 
     # -- lookups ---------------------------------------------------------
     def port(self, name: str) -> Net:

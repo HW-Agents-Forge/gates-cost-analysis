@@ -9,7 +9,7 @@ from gatecost.ir import Builder, Design, LowerBlock, SigSpec, mask
 from .base import BaseEv
 from .decls import pack
 from .expr import ElabError
-from .scan import mem_names_of
+from .scan import dyn_index_names_of, mem_names_of
 from .symbols import BIT, ISym, KSym, PSym, PType, Scope, TSym, V, VSym, vec
 
 
@@ -244,6 +244,8 @@ class ModElab(BaseEv):
         self.defparams = dict(hdr.inherited)        # {'inst.path.param': V}
         self.refs = None
         self.mem_names = None
+        self.dyn_names = None
+        self._rom_pn = None
         self.item_idx = -1
         self.allow_implicit = False
         self.key = b.module.key
@@ -263,6 +265,119 @@ class ModElab(BaseEv):
                             and type(n.call.args[1]) is A.Ident:
                         names.add(n.call.args[1].name)
         self.mem_names = names
+
+    def dyn_index_names(self) -> set:
+        if self.dyn_names is None:
+            self.dyn_names = dyn_index_names_of(self.ctx.scan(self.mod))
+        return self.dyn_names
+
+    # ------------------------------------------------------------------ net arrays filled with constants
+    ROM_MIN_ENTRIES = 8
+    _ROM_NET_TYPES = (None, "wire", "tri", "logic", "uwire")
+
+    def net_array_rom(self, sym: VSym) -> list | None:
+        """ROM contents for a variable-index read of the unpacked net array ``sym``, or None.
+
+        The array qualifies when it is a 1-D module-level array of ``ROM_MIN_ENTRIES``..4096 elements, every
+        element is driven exactly once by a top-level ``assign arr[CONST] = CONST;`` (constant, fully defined
+        index and value) and nothing else in the module can write it (no other continuous or procedural
+        assignment, instance or gate terminal, implicit/wildcard port connection, declaration initialiser).
+        The element nets stay as they are (constant-index reads keep using them); only variable-index reads
+        become a ``ROM`` node instead of a MUX tree with constant leaves.  Computed once per symbol."""
+        r = sym.rom
+        if r is None:
+            r = False
+            if (not sym.local and not sym.is_port and sym.mem is None and sym.elems is not None
+                    and len(sym.udims) == 1 and self.root.syms.get(sym.name) is sym):
+                old_scope = self.scope
+                self.scope = self.root
+                try:
+                    r = self._net_array_rom(sym) or False
+                except ElabError:
+                    r = False
+                finally:
+                    self.scope = old_scope
+            sym.rom = r
+        return r or None
+
+    def _rom_pure(self, e) -> bool:
+        """Expression made only of literals and constants of the module scope (evaluation creates no logic)."""
+        for x in A.walk(e):
+            c = type(x)
+            if c is A.Ident:
+                s = self.root.lookup(x.name)
+                if s is None or s.kind != "param":
+                    return False
+            elif c is A.Call:
+                return False
+        return True
+
+    def _rom_port_names(self) -> tuple:
+        """``(implicitly connected names, wildcard connection present)`` over every instance of the module."""
+        pn = self._rom_pn
+        if pn is None:
+            names, wild = set(), False
+            for it in self.mod.items:
+                for x in A.walk(it):
+                    if type(x) is A.PortConn:
+                        if x.kind == "wildcard":
+                            wild = True
+                        elif x.kind == "implicit" and x.name:
+                            names.add(x.name)
+            pn = self._rom_pn = (names, wild)
+        return pn
+
+    def _net_array_rom(self, sym: VSym) -> list | None:
+        name = sym.name
+        (dl, dr), = sym.udims
+        lo, n = min(dl, dr), abs(dl - dr) + 1
+        if n < self.ROM_MIN_ENTRIES or n > 4096:
+            return None
+        sc = self.ctx.scan(self.mod)
+        idxs = sc.refs.get(name)
+        if not idxs:
+            return None
+        names, wild = self._rom_port_names()
+        if wild or name in names:
+            return None
+        lval = sc.lval_nodes
+        items = self.mod.items
+        w = sym.pt.w
+        contents: list = [None] * n
+        seen = 0
+        for k in sorted(idxs):
+            it = items[k]
+            c = type(it)
+            if c is A.ContAssign:
+                lhs = it.lhs
+                if type(lhs) is A.Index and type(lhs.base) is A.Ident and lhs.base.name == name:
+                    if not self._rom_pure(lhs.index) or not self._rom_pure(it.rhs):
+                        return None
+                    i = self.cint(lhs.index)
+                    if i is None or not lo <= i < lo + n or contents[i - lo] is not None:
+                        return None
+                    cv = self.assign_val(it.rhs, w, sym.pt).const_value()
+                    if cv is None or cv.xmask:
+                        return None
+                    contents[i - lo] = cv.value
+                    seen += 1
+                    continue
+            elif c is A.NetDecl or c is A.VarDecl:
+                if it.name == name:
+                    if it.init is not None or (c is A.NetDecl and it.net_type not in self._ROM_NET_TYPES):
+                        return None
+                    continue
+            for x in A.walk(it):            # any other item may only read the array
+                cx = type(x)
+                if cx is A.Ident:
+                    if x.name == name and id(x) in lval:
+                        return None
+                elif cx is A.Instance or cx is A.GateInst or cx is A.CallStmt:     # outputs / task arguments
+                    if any(type(y) is A.Ident and y.name == name for y in A.walk(x)):
+                        return None
+        if seen != n:
+            return None
+        return contents
 
     # ------------------------------------------------------------------ driver
     def run(self):
@@ -403,7 +518,9 @@ class ModElab(BaseEv):
                 total *= abs(l - r) + 1
             if self.mem_names is None:
                 self.compute_mem_names()
-            if total > 1 and (name in self.mem_names or total > 4096):
+            # above 4096 elements an array is a MEM unless it is only reached through constant indices: a bundle
+            # of nets (``w[i]`` chaining instances) stays scalarised, elements created on demand
+            if total > 1 and (name in self.mem_names or (total > 4096 and name in self.dyn_index_names())):
                 sym.mem = self.b.memory(self.path + name, total, pt.w, origin=self.org(self._cur.loc if self._cur else None))
             else:
                 sym.elems = {}

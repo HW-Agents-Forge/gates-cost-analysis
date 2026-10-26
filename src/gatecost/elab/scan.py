@@ -106,3 +106,13 @@ def mem_names_of(sc: ModScan) -> set:
         elif names & sc.loopvars and id(n) in sc.lval_nodes:
             loopw.add(n.base.name)
     return (dyn - loopw) & sc.procw
+
+
+def dyn_index_names_of(sc: ModScan) -> set:
+    """Arrays indexed somewhere (read or write) by an expression naming a signal (not only loop variables)."""
+    sig_minus = sc.sig_names - sc.loopvars
+    out = set()
+    for n in sc.index_nodes:
+        if n.base.name not in out and any(type(x) is A.Ident and x.name in sig_minus for x in A.walk(n.index)):
+            out.add(n.base.name)
+    return out

@@ -100,7 +100,7 @@ class VSym:
     """Signal (net / variable / port / array of them)."""
 
     __slots__ = ("name", "pt", "udims", "net", "elems", "mem", "direction", "is_port", "local",
-                 "wired", "const_sig", "hier")
+                 "wired", "const_sig", "hier", "rom")
     kind = "var"
 
     def __init__(self, name, pt, udims=(), net=None):
@@ -116,6 +116,7 @@ class VSym:
         self.wired = None
         self.const_sig = None
         self.hier = ""
+        self.rom = None          # net array filled by constant assigns: ROM contents (list), False if not, None unknown
 
 
 class FSym:

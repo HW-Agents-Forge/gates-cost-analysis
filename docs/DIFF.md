@@ -124,6 +124,7 @@ All deltas are computed **per scenario** (`min`, `typ`, `max`) as in `COST_MODEL
 
 The residual of a **matched** pair (same operation before and after, resized, memories included) is correlated: `σ = rms · |n_a·typ_a − n_b·typ_b|`, with the more pessimistic `rms = σ/typ` of the two sides (fallback to `√(σ_b² + σ_a²)` if neither side has `typ > 0`). When the canonical hash is identical and only the instance count changes, `σ = σ_i · |n_a − n_b|`. Added and removed operations keep an independent `σ`. Contributor ranges therefore do not sum to the total's range, which is narrower; the total range is authoritative.
 
+**Sign sigma.** The displayed range and the confidence use the `σ` above. The verdict (§9) uses a second, smaller one, `sign_sigma`, because the formula error of one item is multiplicative on its own delta (`σ_i = rms · |Δ_i|`) and cannot turn the sign of that delta: a resized operation, or an added or removed one, keeps its sign whatever its quality class. Each item's `2σ_i` is therefore capped at `SIGN_ERR_CAP = 500` permille of `|Δ_i|` (`2σ_i ≤ 0.5 · |Δ_i|`); the capped items still combine in quadrature with the others and with the unchanged scenario spread. An item whose `σ_i` already exceeds half of `|Δ_i|` (an error model outside the calibrated classes) is not capped. Only `poor` classes (`2 · rms = 1`, memories above all) are affected; `good` and `medium` items are below the cap. The cap changes neither the displayed range `min..max` nor the confidence.
 ## 8. Presentation Rules
 
 The differ hands the reporters a ranked list of contributors, which the `agent` format (`SPEC.md` §8.1) truncates:
@@ -141,11 +142,12 @@ The differ computes a verdict consumed by all reporters:
 | Verdict | Condition |
 |---|---|
 | `NO_CHANGE` | Canonical cost trees are identical (formatting or comment-only edit, file move, or reordering). |
-| `NEGLIGIBLE` | `|Δ_typ| < threshold_ge` and the range includes zero. |
-| `INCREASE` / `DECREASE` | `|Δ_typ|` above the threshold and the range excludes zero. |
-| `UNCERTAIN` | The range includes zero but `|Δ_typ|` exceeds the threshold (the sign is not established). |
+| `NEGLIGIBLE` | `|Δ_typ| < threshold_ge`. |
+| `INCREASE` / `DECREASE` | `|Δ_typ|` above the threshold and the **sign range** excludes zero. The sign range is the range of §7 computed with `sign_sigma` instead of `σ`: scenario spread plus the capped item errors. |
+| `UNCERTAIN` | `|Δ_typ|` above the threshold but the sign range includes zero: deltas of opposite signs whose net is small against them, a scenario spread that crosses zero, or an item whose `σ` exceeds 50% of its own delta. |
 | `NOT_COMPARABLE` | The sources could not be analyzed on one of the two sides, or the configuration mismatch of §1 prevents a meaningful delta. |
 
+The verdict is therefore **not** "the displayed range contains 0". An `INCREASE` or `DECREASE` can show a range that overlaps 0 (the range reflects the uncertainty on the size, the verdict the certainty on the sign), and the confidence is unchanged: a delta dominated by memories stays `low`. Example: `axis_fifo` `DEPTH` 64 → 128 reads `+6766 [-1506..+12637] INCREASE` (Yosys +6618), and the `fifo_depth` example (`examples/fifo_depth/REPORT.md`, `D` 16 → 64: `+4117 [-838..+7680]`) is an `INCREASE`; both were `UNCERTAIN` when the verdict was read from the displayed range. An agent must still quote the range and the confidence (`OUTPUT.md` §5).
 ## 10. Edge Cases
 
 | Situation | Behavior |

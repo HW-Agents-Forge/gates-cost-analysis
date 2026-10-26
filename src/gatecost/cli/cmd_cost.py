@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .. import REPO_ROOT
@@ -16,9 +17,11 @@ from ..cost import (
 )
 from ..cost.tree import DesignCostTree
 from ..discovery import RTL_EXT, discover, language_of
+from ..envsub import expand_env
 from ..errors import EXIT_BUDGET, EXIT_OK, GatecostError
 from ..report import render
 from ..report.json_fmt import render_json
+from .notes import cone_filter, cost_wording, explain_confidence, implicit_discovery, string_param_hints, with_discovery_warning
 from ..result import CostResult, Diagnostic, Ge3, ModuleCost, Output
 
 SEARCHED = "*.v *.sv *.vh *.svh *.vhd *.vhdl"
@@ -60,8 +63,12 @@ def parse_filelist(path: Path, root: Path, *, _seen=None, _depth=0) -> tuple[lis
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     base = path.parent
 
+    undefined: dict[str, int] = {}     # variable name -> number of entries that could not be expanded
+
     def resolve(tok: str) -> Path:
-        tok = os.path.expandvars(tok)
+        tok, missing = expand_env(tok)
+        for name in missing:
+            undefined[name] = undefined.get(name, 0) + 1
         p = Path(tok)
         if p.is_absolute():
             return p
@@ -108,9 +115,16 @@ def parse_filelist(path: Path, root: Path, *, _seen=None, _depth=0) -> tuple[lis
             if p.suffix.lower() in RTL_EXT:
                 if p.is_file():
                     files.append(p)
+                elif expand_env(t)[1]:
+                    pass                    # reported once per variable below
                 else:
                     diags.append(Diagnostic("FILE_NOT_FOUND", f"filelist {path.name}: {t} not found", "warning", True,
                                             "after", None, None))
+    for name, n in sorted(undefined.items()):
+        diags.append(Diagnostic(
+            "FILE_NOT_FOUND", f"filelist {path.name}: environment variable {name} is not defined, {n} "
+            f"entr{'y' if n == 1 else 'ies'} skipped (export it, e.g. {name}=<project root>, before running gatecost)",
+            "warning", True, "after", None, None))
     return files, inc, defs, diags
 
 
@@ -285,7 +299,10 @@ def run(args, settings, cfg) -> tuple[str, int]:
             code = EXIT_BUDGET
             diags.append(Diagnostic("BUDGET_EXCEEDED", f"total {round(value / 1000)} GE ({basis}) exceeds budget "
                                     f"{settings.budget:g} GE", "error", True, "after"))
-    diags = _dedupe(diags)
+    diags, out_of_cone = cone_filter(tree, _dedupe(diags))
+    diags = string_param_hints(diags, settings.params)
+    diags = tuple(with_discovery_warning(diags, implicit_discovery(args, settings)))
+    result = replace(result, confidence=cost_wording(explain_confidence(result.confidence, diags)))
     status = "partial" if any(d.affects_cost for d in diags if d.code != "BUDGET_EXCEEDED") else "ok"
     from ..params import params_json
 
@@ -293,5 +310,6 @@ def run(args, settings, cfg) -> tuple[str, int]:
                "sources": len(files)}
     out = Output(command="cost", status=status, profile={"name": profile.name, "nand2_area_um2": profile.nand2_area_um2},
                  config=cfg_out, result=result, diagnostics=diags,
-                 meta={"elapsed_ms": round((time.perf_counter() - t0) * 1000), "cache": cache.state})
+                 meta={"elapsed_ms": round((time.perf_counter() - t0) * 1000), "cache": cache.state,
+                       **({"diagnostics_out_of_cone": out_of_cone} if out_of_cone else {})})
     return _render(out, settings), code
