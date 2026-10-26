@@ -16,7 +16,14 @@ GE = area / area of ``NAND2_X1`` read from the liberty file.
 
 Usage::
 
-    python3 scripts/yosys_area.py design.v --top T [--liberty LIB] [--abc-delay PS] [--timeout S] [--json]
+    python3 scripts/yosys_area.py design.v [more.v ...] --top T [-I DIR]... [-D NAME[=VAL]]... [--param NAME=VALUE]...
+        [--filelist FILE.f]... [--liberty LIB] [--abc-delay PS] [--timeout S] [--json]
+
+``--param`` is applied with ``chparam`` after ``read_verilog`` and before ``hierarchy -top`` (the only order in which
+Yosys re-elaborates the top with the new value; a quoted value uses ``-set-string``). A design that synthesises to no
+cell at all (stat prints no "Chip area" line) is 0 GE with a note. A filelist holds one source per line plus
+``+incdir+DIR``, ``+define+NAME[=VAL]``, ``-I DIR``, ``-f FILE`` (nested), ``//`` or ``#`` comments; relative paths
+resolve against the filelist's directory, ``$VAR``/``${VAR}`` are expanded from the environment.
 
 Stdlib only; the result is deterministic for a given Yosys build.
 """
@@ -26,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -50,6 +58,7 @@ class AreaResult:
     sequential_um2: float | None
     nand2_area_um2: float
     yosys_version: str
+    note: str | None = None
 
 
 def liberty_path(explicit: str | None = None) -> Path:
@@ -78,6 +87,78 @@ def parse_stat(output: str) -> tuple[float, float | None]:
     return area, (float(seq[-1]) if seq else None)
 
 
+def parse_stat_or_empty(output: str) -> tuple[float, float | None, str | None]:
+    """Like :func:`parse_stat`, but a stat report listing a module with no "Chip area" line (a design with no cell,
+    e.g. pure wiring or fully optimised away) is ``(0.0, None, note)``. Text with no module header still raises."""
+    try:
+        area, seq = parse_stat(output)
+    except ValueError:
+        if re.search(r"^=== .+ ===\s*$", output, re.M):
+            return 0.0, None, "design has no cells after synthesis (zero area)"
+        raise
+    return area, seq, None
+
+
+def parse_filelist(path: Path, _seen: frozenset[Path] = frozenset()) -> tuple[list[Path], list[Path], list[str]]:
+    """(sources, include dirs, defines) of a ``.f`` file; nested ``-f``/``-F`` are followed (cycles ignored)."""
+    path = Path(path).resolve()
+    if path in _seen:
+        return [], [], []
+    seen = _seen | {path}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise YosysError(f"cannot read filelist {path}: {exc}") from None
+    base = path.parent
+    files: list[Path] = []
+    incs: list[Path] = []
+    defs: list[str] = []
+
+    def res(x: str) -> Path:
+        q = Path(os.path.expandvars(x))
+        return q if q.is_absolute() else (base / q)
+
+    for raw in text.splitlines():
+        line = re.sub(r"//.*$", "", raw).strip()
+        if not line or line.startswith("#"):
+            continue
+        toks = shlex.split(line)
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if t.startswith("+incdir+"):
+                incs += [res(x) for x in t[8:].split("+") if x]
+            elif t.startswith("+define+"):
+                defs += [x for x in t[8:].split("+") if x]
+            elif t in ("-f", "-F", "-I", "-incdir") and i + 1 < len(toks):
+                i += 1
+                if t in ("-f", "-F"):
+                    f2, i2, d2 = parse_filelist(res(toks[i]), seen)
+                    files += f2
+                    incs += i2
+                    defs += d2
+                else:
+                    incs.append(res(toks[i]))
+            elif t.startswith("-I") and len(t) > 2:
+                incs.append(res(t[2:]))
+            elif t.startswith("-") or t.startswith("+"):
+                pass  # unknown tool option: ignored
+            else:
+                files.append(res(t))
+            i += 1
+    return files, incs, defs
+
+
+def _chparam_cmd(top: str, param: str) -> str:
+    name, sep, value = param.partition("=")
+    if not sep or not name.strip():
+        raise YosysError(f"bad --param {param!r}: expected NAME=VALUE")
+    name, value = name.strip(), value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return f"chparam -set-string {name} {shlex.quote(value[1:-1])} {top}"
+    return f"chparam -set {name} {shlex.quote(value)} {top}"
+
+
 def yosys_version(yosys: str = "yosys") -> str:
     try:
         out = subprocess.run([yosys, "-V"], capture_output=True, text=True, timeout=30).stdout.strip()
@@ -86,11 +167,14 @@ def yosys_version(yosys: str = "yosys") -> str:
     return out
 
 
-def build_script(files: list[Path], top: str, liberty: Path, abc_delay: int | None, stat_out: Path, sv: bool = True) -> str:
+def build_script(files: list[Path], top: str, liberty: Path, abc_delay: int | None, stat_out: Path, sv: bool = True,
+                 *, incdirs: list[Path] | None = None, defines: list[str] | None = None,
+                 params: list[str] | None = None) -> str:
     abc = f"abc -liberty {liberty}" + (f" -D {abc_delay}" if abc_delay else "")
+    opts = [f"-I{Path(d).resolve()}" for d in incdirs or []] + [f"-D{d}" for d in defines or []]
     srcs = " ".join(str(f) for f in files)
-    return "; ".join([
-        f"read_verilog {'-sv ' if sv else ''}{srcs}",
+    read = "read_verilog " + " ".join(([] if not sv else ["-sv"]) + opts + [srcs])
+    return "; ".join([read] + [_chparam_cmd(top, p) for p in params or []] + [
         f"hierarchy -check -top {top}",
         f"synth -flatten -top {top}",
         f"dfflibmap -liberty {liberty}",
@@ -101,7 +185,8 @@ def build_script(files: list[Path], top: str, liberty: Path, abc_delay: int | No
 
 
 def synthesize(files: list[Path], top: str, liberty: Path | None = None, *, abc_delay: int | None = None,
-               timeout: float = 600.0, yosys: str = "yosys") -> AreaResult:
+               timeout: float = 600.0, yosys: str = "yosys", incdirs: list[Path] | None = None,
+               defines: list[str] | None = None, params: list[str] | None = None) -> AreaResult:
     lib = liberty_path(str(liberty) if liberty else None)
     if not lib.is_file():
         raise YosysError(f"liberty file not found: {lib} (set GATECOST_LIBERTY or --liberty)")
@@ -112,7 +197,7 @@ def synthesize(files: list[Path], top: str, liberty: Path | None = None, *, abc_
         # Plain Verilog files that fail as SystemVerilog (e.g. ``bit`` used as an identifier) are retried as Verilog-2005.
         modes = [True] + ([False] if all(f.suffix == ".v" for f in files) else [])
         for i, sv in enumerate(modes):
-            script = build_script(files, top, lib, abc_delay, stat_out, sv)
+            script = build_script(files, top, lib, abc_delay, stat_out, sv, incdirs=incdirs, defines=defines, params=params)
             try:
                 proc = subprocess.run([yosys, "-q", "-p", script], capture_output=True, text=True, timeout=timeout, cwd=tmp)
             except subprocess.TimeoutExpired:
@@ -126,30 +211,43 @@ def synthesize(files: list[Path], top: str, liberty: Path | None = None, *, abc_
                 errs = [ln for ln in lines if "ERROR" in ln] or lines[-1:]
                 raise YosysError(f"yosys failed (exit {proc.returncode}) on {top}: {errs[0].strip()}\n" + "\n".join(lines[-8:]))
         try:
-            area, seq = parse_stat(stat_out.read_text(encoding="utf-8"))
+            area, seq, note = parse_stat_or_empty(stat_out.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise YosysError(f"cannot parse stat output for {top}: {exc}") from None
-    return AreaResult(area, area / nand2, seq, nand2, yosys_version(yosys))
+    return AreaResult(area, area / nand2, seq, nand2, yosys_version(yosys), note)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("files", nargs="+", type=Path)
+    ap.add_argument("files", nargs="*", type=Path)
     ap.add_argument("--top", required=True)
+    ap.add_argument("-I", "--incdir", action="append", default=[], type=Path, metavar="DIR")
+    ap.add_argument("-D", "--define", action="append", default=[], metavar="NAME[=VAL]")
+    ap.add_argument("--param", action="append", default=[], metavar="NAME=VALUE", help="chparam on the top before hierarchy")
+    ap.add_argument("--filelist", "-f", action="append", default=[], type=Path, metavar="FILE.f")
     ap.add_argument("--liberty", type=Path)
     ap.add_argument("--abc-delay", type=int, metavar="PS", help="abc -D (ps); default: no timing constraint")
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     try:
-        res = synthesize(args.files, args.top, args.liberty, abc_delay=args.abc_delay, timeout=args.timeout)
+        files, incs, defs = list(args.files), list(args.incdir), list(args.define)
+        for fl in args.filelist:
+            f2, i2, d2 = parse_filelist(fl)
+            files += f2
+            incs += i2
+            defs += d2
+        if not files:
+            raise YosysError("no source file (give FILES or --filelist)")
+        res = synthesize(files, args.top, args.liberty, abc_delay=args.abc_delay, timeout=args.timeout,
+                         incdirs=incs, defines=defs, params=args.param)
     except YosysError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     if args.json:
         print(json.dumps(asdict(res), indent=2))
     else:
-        print(f"area_um2={res.area_um2:.3f} ge={res.ge:.2f}")
+        print(f"area_um2={res.area_um2:.3f} ge={res.ge:.2f}" + (f" note={res.note}" if res.note else ""))
     return 0
 
 
