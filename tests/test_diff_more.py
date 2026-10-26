@@ -234,6 +234,49 @@ class LineView(unittest.TestCase):
         self.assertEqual((e["line"], e["location_side"]), (5, "after"))
 
 
+class SignVerdict(unittest.TestCase):
+    """The formula error of an item is multiplicative on its own delta: it cannot flip the sign (D3)."""
+
+    @staticmethod
+    def mem(typ, tgt="m", line=1, widths=(8, 64), spread=(1.0, 1.0)):
+        c = Ge3(round(typ * 1000 * spread[0]), typ * 1000, round(typ * 1000 * spread[1]))
+        return op("MEM", typ, tgt=tgt, line=line, widths=widths, quality="poor", cost=c, sigma=c.typ // 2)
+
+    def v(self, ob, oa):
+        return diff_trees(flat(ob), flat(oa))
+
+    def test_resized_poor_op_keeps_its_sign(self):
+        for before, after, verdict in ((1000, 2000, "INCREASE"), (2000, 1000, "DECREASE")):
+            r = self.v([self.mem(before)], [self.mem(after, widths=(8, 128))])
+            self.assertEqual(r.verdict, verdict)
+            # the honest range (2 sigma = |delta|) still reaches zero: it is not hidden
+            self.assertTrue(r.delta.min <= 0 if verdict == "INCREASE" else r.delta.max >= 0)
+
+    def test_displayed_range_still_contains_zero(self):
+        r = self.v([self.mem(1000)], [self.mem(2000, widths=(8, 128))])
+        self.assertEqual(r.verdict, "INCREASE")
+        self.assertLessEqual(r.delta.min, 0)
+        self.assertEqual(r.confidence.level, "low")
+
+    def test_opposite_items_of_similar_size_stay_uncertain(self):
+        r2 = self.v([self.mem(1000, tgt="a"), self.mem(1000, tgt="b", line=2)],
+                    [self.mem(1500, tgt="a", widths=(8, 128)), self.mem(600, tgt="b", line=2, widths=(8, 56))])
+        self.assertEqual(r2.verdict, "UNCERTAIN")      # +500 against -400: net +100 is within the item errors
+
+    def test_unmatched_add_and_remove_stay_uncertain(self):
+        r = self.v([self.mem(1000, tgt="old")], [self.mem(1100, tgt="new", line=7, widths=(4, 4))])
+        self.assertEqual(r.verdict, "UNCERTAIN")
+
+    def test_scenario_spread_crossing_zero_stays_uncertain(self):
+        ob = op("MEM", 1000, tgt="m", widths=(8, 64), quality="poor", cost=Ge3(1_000_000, 1_000_000, 1_000_000), sigma=0)
+        oa = op("MEM", 1100, tgt="m", widths=(8, 128), quality="poor", cost=Ge3(500_000, 1_100_000, 1_700_000), sigma=0)
+        self.assertEqual(self.v([ob], [oa]).verdict, "UNCERTAIN")
+
+    def test_error_model_beyond_the_calibrated_classes_is_not_capped(self):
+        wide = op("DIV", 6, tgt="d", line=9, sigma=5000, quality="poor")
+        self.assertEqual(self.v([op("AND", 10, tgt="z")], [op("AND", 10, tgt="z"), wide]).verdict, "UNCERTAIN")
+
+
 class Verdicts(unittest.TestCase):
     def v(self, ob, oa, **kw):
         return diff_trees(flat(ob), flat(oa), **kw)

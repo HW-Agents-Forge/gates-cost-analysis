@@ -1,6 +1,8 @@
 """Number and string formatting shared by the human and agent reporters."""
 from __future__ import annotations
 
+import re
+
 from ..result import Diagnostic, Ge3
 
 
@@ -43,3 +45,38 @@ def warn_lines(diags: tuple[Diagnostic, ...], limit: int = 5) -> list[str]:
     if len(sel) > limit:
         lines.append(f"WARN TRUNCATED - +{len(sel) - limit} more (use --format json)")
     return lines
+
+
+_KIND_CUT = re.compile(r"(?::| ignored| excluded| \(| is | contains| without| with delay|').*$")
+_KIND_TAIL = re.compile(r"(?: (?:statement|block|declaration|region))+$")
+MAX_NOTE_KINDS = 4
+
+
+def ignored_kind(message: str) -> str:
+    """Short name of what an ``IGNORED_REGION`` message skipped (``initial``, ``assert``, ``class``...)."""
+    k = _KIND_TAIL.sub("", _KIND_CUT.sub("", message.strip().lower()).strip()).strip()
+    return k or "other"
+
+
+def note_lines(diags: tuple[Diagnostic, ...]) -> list[str]:
+    """One compact NOTE line summarising the ``IGNORED_REGION`` diagnostics (none: no line)."""
+    kinds: dict[str, int] = {}
+    seen: set = set()
+    n = 0
+    for d in diags:
+        if d.code != "IGNORED_REGION":
+            continue
+        key = (d.file, d.line, d.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        n += 1
+        k = ignored_kind(d.message)
+        kinds[k] = kinds.get(k, 0) + 1
+    if not n:
+        return []
+    ordered = sorted(kinds, key=lambda k: (-kinds[k], k))
+    shown = ", ".join(ordered[:MAX_NOTE_KINDS])
+    if len(ordered) > MAX_NOTE_KINDS:
+        shown += f", +{len(ordered) - MAX_NOTE_KINDS} more"
+    return [f"NOTE ignored regions: {n} ({shown})"]

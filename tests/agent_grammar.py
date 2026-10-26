@@ -26,6 +26,7 @@ _RE = {
     "WHY": re.compile(r"^WHY (high|medium|low): (\S.*)$"),
     "WARN": re.compile(r"^WARN ([A-Z_]+) (\S+) (\S.*)$"),
     "ASSUMED": re.compile(r"^ASSUMED (\S.*)$"),
+    "NOTE": re.compile(r"^NOTE ignored regions: (\d+) \(([a-z_$][^(),]*(?:, [^(),]+)*)\)$"),
     "ERROR": re.compile(r"^ERROR ([A-Z_]+) (\S.*)$"),
     "CONTRIB": re.compile(rf"^({_S}) (\S+?):(\d+) ([a-z]+) (\S.*?)(?: x(\d+))?(?: cause=([a-z]+):(\S+))?$"),
     "MODULE": re.compile(r"^MODULE (\S+) x(\d+)->x(\d+) intrinsic=([+-]?\d+) multiplicity=([+-]?\d+)$"),
@@ -72,7 +73,7 @@ class Parsed:
 
 def _classify(line: str, first: bool, mode: str) -> Record:
     order = ["DELTA", "DELTA_NA", "ERROR", "COST", "ESTIMATE", "COMPARE", "SNAPSHOT"] if first else [
-        "TOP_DIFF", "TOP", "OTHERS", "WHY", "WARN", "ASSUMED", "MODULE", "CATEGORIES", "STRUCT", "OP", "ARCH",
+        "TOP_DIFF", "TOP", "OTHERS", "WHY", "WARN", "ASSUMED", "NOTE", "MODULE", "CATEGORIES", "STRUCT", "OP", "ARCH",
         "BREAKDOWN", "BEST", "CONTRIB", "COST_MODULE", "ALT"]
     for k in order:
         m = _RE[k].match(line)
@@ -109,7 +110,7 @@ def parse(text: str, *, max_lines: int | None = None) -> Parsed:
 
 
 _ORDER = {"TOP_DIFF": 1, "TOP": 1, "CONTRIB": 2, "OTHERS": 3, "MODULE": 4, "CATEGORIES": 5, "STRUCT": 6, "WHY": 7,
-          "WARN": 8, "ASSUMED": 9}
+          "WARN": 8, "ASSUMED": 9, "NOTE": 10}
 
 
 def _check_diff(out: Parsed, kinds: list, max_lines) -> None:

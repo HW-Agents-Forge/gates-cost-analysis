@@ -827,6 +827,33 @@ def _config_diffs(b: DesignCostTree, a: DesignCostTree) -> list[str]:
     return out
 
 
+SIGN_ERR_CAP = 500  # permille: the formula error of one item never flips its own sign (2 sigma_i <= 0.5 |delta_i|)
+
+
+def sign_sigma(items: list[Item], sq_total: int) -> int:
+    """Residual sigma (milli-GE) used for the *sign* verdict, never for the displayed range.
+
+    The formula error of an item is multiplicative on its own delta (``sigma_i = rms * |delta_i|``): a resized or
+    added/removed operation keeps its sign, whatever its quality class (a cost is >= 0), so ``2 sigma_i`` is capped
+    at ``SIGN_ERR_CAP`` permille of ``|delta_i|``.  Items still combine in quadrature, and the scenario spread is
+    kept as is, so a net delta that is small against large items of opposite signs stays ambiguous.  Only ``poor``
+    classes (``2 * rms = 1``) are affected; ``good``/``medium`` items are below the cap, and an item whose sigma
+    exceeds half of its own delta (an uncalibrated error model) is not capped.
+    """
+    cap = SIGN_ERR_CAP
+    rest = sq_total
+    capped = 0
+    for i in items:
+        rest -= i.sq
+        mag = abs(i.d.typ)
+        if isqrt(i.sq) > mag // 2 + 1:      # sigma beyond 50% of the item: outside the calibrated classes, keep it
+            capped += i.sq
+            continue
+        lim = (mag * cap) // 2000
+        capped += min(i.sq, lim * lim)
+    return isqrt(max(rest, 0) + capped)
+
+
 def not_comparable(reason: str, top: str | None = None, **kw) -> DiffResult:
     return DiffResult("NOT_COMPARABLE", Confidence("low", (reason,)), top=top, **kw)
 
@@ -945,7 +972,8 @@ def diff_trees(
     else:
         conf = _confidence(rng_d, contributions, flags, unsupported)
         t = abs(dtot.typ)
-        incl0 = rng_d.min <= 0 <= rng_d.max
+        rng_v = delta_range(dtot, sign_sigma(items, d.sq_total))
+        incl0 = rng_v.min <= 0 <= rng_v.max
         if t < thr:
             verdict = "NEGLIGIBLE"
         elif incl0:

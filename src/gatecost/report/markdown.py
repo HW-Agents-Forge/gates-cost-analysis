@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from ..result import DiffResult, Output
 from .agent import render_agent
-from .fmt import ge, loc, pct, sge
+from .fmt import ge, loc, note_lines, pct, sge, warn_lines
 
 MAX_CHARS = 60_000
 FOOTNOTE = "_Figures are estimates for ranking options and judging orders of magnitude, not synthesis results._"
@@ -34,6 +34,10 @@ def render_markdown(out: Output, *, max_lines: int = 10) -> str:
         lines.append(f"| | | | _{max(hidden, 0) + r.others_count} more_ |")
     for reason in r.confidence.reasons:
         lines += ["", f"**Confidence {r.confidence.level}:** {_esc(reason)}"]
+    for w in warn_lines(tuple(out.diagnostics) + r.diagnostics_new):
+        lines += ["", f"**{_esc(w)}**"]
+    for note in note_lines(tuple(out.diagnostics) + r.diagnostics_new):
+        lines += ["", f"_{_esc(note)}_"]
     if r.by_module or r.by_category:
         lines += ["", "<details><summary>Details</summary>", ""]
         if r.by_category:

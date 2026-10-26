@@ -10,7 +10,7 @@ from ..result import (
     Output,
     SnapshotResult,
 )
-from .fmt import ge, loc, pct, rng, sge, warn_lines
+from .fmt import ge, loc, note_lines, pct, rng, sge, warn_lines
 
 
 def _why(conf) -> list[str]:
@@ -57,6 +57,7 @@ def _diff(r: DiffResult, diags, max_lines: int, verbose: bool, quiet: bool) -> l
     lines += _why(r.confidence)
     lines += warn_lines(tuple(diags) + r.diagnostics_new)
     lines += [f"ASSUMED {a}" for a in r.assumed]
+    lines += note_lines(tuple(diags) + r.diagnostics_new)
     return lines
 
 
@@ -75,6 +76,7 @@ def _cost(r: CostResult, diags, max_lines: int, quiet: bool) -> list[str]:
     lines += _why(r.confidence)
     lines += warn_lines(tuple(diags))
     lines += [f"ASSUMED {a}" for a in r.assumed]
+    lines += note_lines(tuple(diags))
     return lines
 
 
