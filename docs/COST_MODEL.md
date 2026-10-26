@@ -189,12 +189,12 @@ Limits that remain: a delta made of a single operation of medium quality cannot 
 
 ### 5.3 Validation
 
-The default profile was calibrated against one reference: Yosys 0.70 (`synth -flatten`, `dfflibmap`, `abc -liberty`, no timing constraint, `opt_clean -purge`, `stat -liberty`) mapped on the Nangate 45 nm Open Cell Library (typical corner, X1 cells), areas converted to GE with `NAND2_X1 = 0.798 µm²`. The reference is frozen in `tests/reference/yosys_nangate45.csv` (144 cases; Yosys 0.70+post sha `0c11ea09`, 2026-10-25); `scripts/calibration_bench.py` regenerates the 131 micro-benchmarks and compares them with the estimate (see `CONTRIBUTING.md`). Error = `(typ − yosys) / yosys`; coverage = share of cases where the Yosys area lies in `[min, max]`.
+The default profile was calibrated against one reference: Yosys 0.70 (`synth -flatten`, `dfflibmap`, `abc -liberty`, no timing constraint, `opt_clean -purge`, `stat -liberty`) mapped on the Nangate 45 nm Open Cell Library (typical corner, X1 cells), areas converted to GE with `NAND2_X1 = 0.798 µm²`. The reference is frozen in `tests/reference/yosys_nangate45.csv` (164 cases; Yosys 0.70+post sha `0c11ea09`, 2026-10-26); `scripts/calibration_bench.py` regenerates the 151 micro-benchmarks and compares them with the estimate (see `CONTRIBUTING.md`). Error = `(typ − yosys) / yosys`; coverage = share of cases where the Yosys area lies in `[min, max]`.
 
 | Scope | n | MAPE % | bias % | coverage % |
 |---|---|---|---|---|
-| all micro-benchmarks | 131 | 8.2 | +0.1 | 87 (92 at ±0.5% rounding) |
-| all 144 cases | 144 | 9.1 | +1.7 | 84 (90 at ±0.5% rounding) |
+| all micro-benchmarks | 151 | 7.6 | −0.3 | 86 (93 at ±0.5% rounding) |
+| all 164 cases | 164 | 8.5 | +1.1 | 84 (91 at ±0.5% rounding) |
 | complete designs and corpus | 13 | 18.4 | +17.8 | 54 |
 
 Per category, micro-benchmarks only:
@@ -214,12 +214,21 @@ Per category, micro-benchmarks only:
 | div | 4 | 7.2 | +1.3 | 100 |
 | sum | 3 | 4.0 | +4.0 | 0 |
 | dff | 13 | 1.3 | −0.1 | 69 |
+| dff_async | 20 | 3.7 | −2.8 | 80 |
 | shreg | 3 | 0.1 | +0.1 | 0 |
 | counter | 3 | 20.9 | +20.9 | 67 |
 | mem | 5 | 0.9 | +0.9 | 100 |
 | rom | 2 | 4.2 | +3.8 | 100 |
 
-Coverage is 0 for `shreg` and low for `dff` for a trivial reason: `min = typ` and the estimate is 0.06% above the Yosys area (`DFF = 5.67` against 5.667 measured), so the Yosys area falls just below `min` (at ±0.5% rounding they are covered). For `sum` the estimate is 4% high and `min` is above the Yosys area. In `bitwise`, XOR is exact, AND/OR are 15% low because of the glue-logic scale of 0.85 (an intended reduction that Yosys does not realise on isolated gates) and an isolated NOT is 50% low (the model costs an absorbed NOT at `0.5·INV`, §3.2; Yosys places one inverter per bit). On complete designs (examples and corpus) the estimate is high by +17.8% on average. The excess comes from patterns the IR does not recognise: a counter enable that is not merged into the incrementer (`counter`: +21%), rotations (`rol_w8`: +78%), and sign-extension flops. Fixing these is future work; the per-design figures are in the bench summary (`--frozen`).
+Coverage is 0 for `shreg` and low for `dff` for a trivial reason: `min = typ` and the estimate is 0.06% above the Yosys area (`DFF = 5.67` against 5.667 measured), so the Yosys area falls just below `min` (at ±0.5% rounding they are covered). For `sum` the estimate is 4% high and `min` is above the Yosys area. In `bitwise`, XOR is exact, AND/OR are 15% low because of the glue-logic scale of 0.85 (an intended reduction that Yosys does not realise on isolated gates) and an isolated NOT is 50% low (the model costs an absorbed NOT at `0.5·INV`, §3.2; Yosys places one inverter per bit). Asynchronous reset and set (`dff_async`, 20 cases: active-low and active-high, with and without enable, async plus sync reset, a mixed reset value, and a bank of 8 registers):
+
+- Active-low reset or set maps to `DFFR_X1` / `DFFS_X1` at 6.667 GE per bit; an enable adds a `MUX2` (2.333 GE per bit). gatecost is exact on these.
+- Active-high: Yosys adds one `INV_X1` per bit, not shared (+0.667 GE per bit). gatecost does not model it on purpose: it is an artefact of `dfflibmap`, and a real flow puts one inverter at the head of the reset tree. The error is −7 to −9% on these cases.
+- Async plus sync reset together: −4% without enable, +3 to +6% with enable. This is within the targeted noise.
+
+Reading note when comparing with Yosys: the line "of which used for sequential elements" of `stat -liberty` counts flip-flops only. The enable `MUX2` cells are classed as combinational there, whereas the `seq` category of gatecost includes them. Do not compare these two columns directly.
+
+On complete designs (examples and corpus) the estimate is high by +17.8% on average. The excess comes from patterns the IR does not recognise: a counter enable that is not merged into the incrementer (`counter`: +21%), rotations (`rol_w8`: +78%), and sign-extension flops. Fixing these is future work; the per-design figures are in the bench summary (`--frozen`).
 
 Limits of this calibration:
 
@@ -227,6 +236,7 @@ Limits of this calibration:
 - VHDL designs are not measured (Yosys has no VHDL front-end here), and four Verilog/SystemVerilog designs (`corpus_cpu_datapath`, `corpus_mac_array`, `ex_sv_features`, `ex_udp_mux`) have no frozen reference.
 - `σ` (sizing factor), `α` and the `rms` constants of §5.1 are not fitted to data; the `max` scenario and the confidence thresholds of §5.2 have not been tuned.
 - Constant multiplication (`mul_const`: −25%), rotation and a counter with enable were left out of the fit.
+- Masked merge: the idiom `q <= (q & ~m) | (d & m)` (byte write by mask) is counted as logic on top of the enable flop, about 3.7 GE per bit of excess (about +26% on a register bank with byte enables), whereas Yosys absorbs it. The form `if (be[k]) q[8*k +: 8] <= d[8*k +: 8]` is exact. The variant `q ^ ((q ^ d) & m)` has the same problem. Fix, not done: a structural peephole in the IR, `OR(AND(x, NOT m), AND(y, m))` to `MUX`.
 
 To get closer to a commercial flow that infers adder cells and Booth multipliers, override `FA` (about 5.33 for `FA_X1`), set `arch.mul.mid = "booth_wallace"` and `signed_ext = 0`.
 

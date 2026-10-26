@@ -44,8 +44,8 @@ python3 scripts/calibration_bench.py --freeze                  # rewrite tests/r
   `abc -liberty` (no `-D`, so no timing constraint), `opt_clean -purge` and `stat -liberty`. GE is the area divided
   by the `NAND2_X1` area read from the liberty file. The liberty path comes from `--liberty` or `GATECOST_LIBERTY`;
   the default is `~/gatecost-refs/nangate45/NangateOpenCellLibrary_typical.lib`, outside the repository.
-- `tests/reference/yosys_nangate45.csv` holds 144 frozen cases (header: Yosys 0.70+post sha `0c11ea09`,
-  2026-10-25). Only `--freeze` writes it, never by hand; refreeze when Yosys, the library or the RTL of a case
+- `tests/reference/yosys_nangate45.csv` holds 164 frozen cases (header: Yosys 0.70+post sha `0c11ea09`,
+  2026-10-26). Only `--freeze` writes it, never by hand; refreeze when Yosys, the library or the RTL of a case
   changes, and say so in the commit.
 - `tests/test_calibration_reference.py` checks the parsing, the frozen file and a representative subset of the
   micro-benchmarks (within 12% of Yosys). After a change of the cost model, run the bench with `--frozen` and

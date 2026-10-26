@@ -2,7 +2,7 @@
 # yosys: Yosys 0.70+post (git sha1 0c11ea098be065e585a90a06e7b7da49936cf231, Release, AppleClang clang++ 21.0.0.21000334)
 # liberty: NangateOpenCellLibrary_typical.lib (NangateOpenCellLibrary typical, 45 nm), NAND2_X1 = 0.798 um2
 # command: read_verilog -sv (plain .v files that fail are retried without -sv); hierarchy -check -top T; synth -flatten -top T; dfflibmap -liberty LIB; abc -liberty LIB; opt_clean -purge; stat -liberty LIB
-# date: 2026-10-25
+# date: 2026-10-26
 # memories/ROM have no macro in this liberty: mapped to flip-flops + logic. VHDL designs are not measured.
 name,design,top,category,params,area_um2,ge,nand2_area_um2
 add_const_w16,tests/reference/designs/add_const_w16,t,add,w=16 const=0x1234,36.442,45.6667,0.798
@@ -24,6 +24,24 @@ decode_s3,tests/reference/designs/decode_s3,t,decode,sel=3,10.640,13.3333,0.798
 decode_s5,tests/reference/designs/decode_s5,t,decode,sel=5,50.274,63.0000,0.798
 dff_arst_w32,tests/reference/designs/dff_arst_w32,t,dff,w=32 async_reset,170.240,213.3333,0.798
 dff_arst_w8,tests/reference/designs/dff_arst_w8,t,dff,w=8 async_reset,42.560,53.3333,0.798
+dff_arstn_en_w1,tests/reference/designs/dff_arstn_en_w1,t,dff_async,w=1 enable async_reset active_low,7.182,9.0000,0.798
+dff_arstn_srst_en_w32,tests/reference/designs/dff_arstn_srst_en_w32,t,dff_async,w=32 enable async_reset sync_reset,248.976,312.0000,0.798
+dff_arstn_srst_en_w8,tests/reference/designs/dff_arstn_srst_en_w8,t,dff_async,w=8 enable async_reset sync_reset,63.840,80.0000,0.798
+dff_arstn_srst_w32,tests/reference/designs/dff_arstn_srst_w32,t,dff_async,w=32 async_reset sync_reset,212.800,266.6667,0.798
+dff_arstn_srst_w8,tests/reference/designs/dff_arstn_srst_w8,t,dff_async,w=8 async_reset sync_reset,53.200,66.6667,0.798
+dff_arstn_val_w8,tests/reference/designs/dff_arstn_val_w8,t,dff_async,w=8 async reset value 0x5A (mixed set/reset bits),42.560,53.3333,0.798
+dff_arstn_w1,tests/reference/designs/dff_arstn_w1,t,dff_async,w=1 async_reset active_low,5.320,6.6667,0.798
+dff_arstp_en_w1,tests/reference/designs/dff_arstp_en_w1,t,dff_async,w=1 enable async_reset active_high,7.714,9.6667,0.798
+dff_arstp_en_w32,tests/reference/designs/dff_arstp_en_w32,t,dff_async,w=32 enable async_reset active_high,246.848,309.3333,0.798
+dff_arstp_en_w8,tests/reference/designs/dff_arstp_en_w8,t,dff_async,w=8 enable async_reset active_high,61.712,77.3333,0.798
+dff_arstp_w1,tests/reference/designs/dff_arstp_w1,t,dff_async,w=1 async_reset active_high,5.852,7.3333,0.798
+dff_arstp_w32,tests/reference/designs/dff_arstp_w32,t,dff_async,w=32 async_reset active_high,187.264,234.6667,0.798
+dff_arstp_w8,tests/reference/designs/dff_arstp_w8,t,dff_async,w=8 async_reset active_high,46.816,58.6667,0.798
+dff_asetn_en_w32,tests/reference/designs/dff_asetn_en_w32,t,dff_async,w=32 enable async_set (reset value all ones) active_low,229.824,288.0000,0.798
+dff_asetn_en_w8,tests/reference/designs/dff_asetn_en_w8,t,dff_async,w=8 enable async_set (reset value all ones) active_low,57.456,72.0000,0.798
+dff_asetn_w32,tests/reference/designs/dff_asetn_w32,t,dff_async,w=32 async_set (reset value all ones) active_low,170.240,213.3333,0.798
+dff_asetn_w8,tests/reference/designs/dff_asetn_w8,t,dff_async,w=8 async_set (reset value all ones) active_low,42.560,53.3333,0.798
+dff_asetp_w8,tests/reference/designs/dff_asetp_w8,t,dff_async,w=8 async_set (reset value 0xFF) active_high,46.816,58.6667,0.798
 dff_en_arst_w32,tests/reference/designs/dff_en_arst_w32,t,dff,w=32 enable async_reset,229.824,288.0000,0.798
 dff_en_arst_w8,tests/reference/designs/dff_en_arst_w8,t,dff,w=8 enable async_reset,57.456,72.0000,0.798
 dff_en_srst_w32,tests/reference/designs/dff_en_srst_w32,t,dff,w=32 enable sync_reset,229.824,288.0000,0.798
@@ -113,6 +131,8 @@ red_or_w8,tests/reference/designs/red_or_w8,t,reduce,w=8,3.458,4.3333,0.798
 red_xor_w32,tests/reference/designs/red_xor_w32,t,reduce,w=32,49.476,62.0000,0.798
 red_xor_w64,tests/reference/designs/red_xor_w64,t,reduce,w=64,100.548,126.0000,0.798
 red_xor_w8,tests/reference/designs/red_xor_w8,t,reduce,w=8,11.172,14.0000,0.798
+regbank8_arstn_w32,tests/reference/designs/regbank8_arstn_w32,t,dff_async,"8 regs x w=32 enable per register, common async_reset",1838.592,2304.0000,0.798
+regbank8_arstn_w8,tests/reference/designs/regbank8_arstn_w8,t,dff_async,"8 regs x w=8 enable per register, common async_reset",459.648,576.0000,0.798
 rol_w16,tests/reference/designs/rol_w16,t,shift,w=16 rotate left,218.386,273.6667,0.798
 rol_w32,tests/reference/designs/rol_w32,t,shift,w=32 rotate left,546.364,684.6667,0.798
 rol_w64,tests/reference/designs/rol_w64,t,shift,w=64 rotate left,1286.376,1612.0000,0.798
