@@ -8,10 +8,10 @@ Adding a case arm that contains a multiplier; the contributor points at the new 
 
 ```console
 $ gatecost cost baseline --top alu --verbose
-COST 714 GE (629..1255) confidence=medium
+COST 702 GE (617..1238) confidence=medium
 TOP alu
-714 alu 100%
-CATEGORIES seq=0 addcmp=235 mul=0 select=143 logic=68 shift=268 div=0 mem=0
+702 alu 100%
+CATEGORIES seq=0 addcmp=235 mul=0 select=130 logic=68 shift=268 div=0 mem=0
 WHY medium: delta range is -12%/+76% of the estimate
 ```
 
@@ -19,14 +19,14 @@ WHY medium: delta range is -12%/+76% of the estimate
 
 ```console
 $ gatecost diff --before baseline --after with_mul --top alu --verbose
-DELTA +1036 GE (+500..+1655) +145.0% verdict=INCREASE confidence=low
-TOP alu before=714 after=1750
+DELTA +1024 GE (+494..+1653) +146.0% verdict=INCREASE confidence=low
+TOP alu before=702 after=1726
 +1009 alu.sv:13 added MUL 16x16
-+25 alu.sv:14 structure PMUX 8 w16 (structure changed)
++14 alu.sv:14 structure PMUX 8 w16 (structure changed)
 OTHERS 1 net=+2
-MODULE alu{W=16} x1->x1 intrinsic=+1036 multiplicity=0
-CATEGORIES addcmp=+2 mul=+1009 select=+25
-WHY low: delta range is -52%/+60% of the estimate
+MODULE alu{W=16} x1->x1 intrinsic=+1024 multiplicity=0
+CATEGORIES addcmp=+2 mul=+1009 select=+14
+WHY low: delta range is -52%/+61% of the estimate
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.

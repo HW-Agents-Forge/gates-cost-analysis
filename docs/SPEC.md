@@ -16,7 +16,7 @@ The tool is a fast, explainable estimator. It does not perform logic synthesis. 
 | ID | Goal |
 |----|------|
 | G1 | Report the gate-equivalent (GE) delta between two states of an RTL design, in total, per module, and per source line. |
-| G2 | Run in well under one second on typical designs; no daemon, no heavy elaboration. |
+| G2 | Answer in seconds on typical designs (comfort budgets for agent use, section 12); no daemon, no heavy elaboration. |
 | G3 | Produce output that is directly consumable by an LLM agent: stable JSON and a compact, token-efficient text form. |
 | G4 | Be honest about uncertainty: every figure has a range and a confidence level; unsupported constructs are reported, never silently ignored. |
 | G5 | Depend on nothing but the Python standard library. No Yosys, no synthesis tool, no compiled extension. |
@@ -284,9 +284,9 @@ The repository **is** the agent skill. A project adopts it with `git submodule a
 
 ## 12. Performance and Caching
 
-- Targets on a modern laptop: a cold analysis of a design of roughly 100k lines of RTL in a few seconds; a warm `diff` of a single-module change in well under one second (under 300 ms for a design of that size); a small design in under 300 ms cold.
+- Budgets on a modern laptop. They are comfort budgets for use by an AI agent that estimates small, atomic modifications, not hard constraints: a result within ten seconds is fine, and up to a minute is acceptable. Cold start of the order of one second; a cold analysis of a design of roughly 100k lines of RTL within about 30 s (about 12 s measured); the typical case (a small modification in a medium project) in a few seconds; a warm `diff` within about 1 s. Time is roughly linear in the size of the sources.
 - Parsing and elaboration results are cached on disk, keyed by a hash of file contents, defines, and include contents. The cache lives in `<project>/.gatecost/` or in the user cache directory, never in the tool's own directory. It is purely an optimization: removing it, or running with `--no-cache`, never changes results.
-- Start-up: under 300 ms cold and 100 ms warm for a small design, with lazy imports and a shared bytecode cache.
+- Start-up: of the order of 0.1 to 0.5 s cold and under 0.1 s warm for a small design (measured: `--version` 0.09 s / 0.02 s, `estimate` 0.2 s / 0.04 s, `cost` of a small design 0.35 to 0.45 s / 0.06 s), with lazy imports and a shared bytecode cache.
 - Analysis is restricted to the cone of the changed files when the baseline is a snapshot or git reference, then expanded only as far as hierarchy and parameters require.
 - Cache entries are JSON.  A cost tree is stored as a small entry (one header per module with its name, canonical hash, instance edges, diagnostics and cost sums) plus a content-checked *operations pack* (`.gcp`) holding the operations of the modules written by that analysis; entries of later analyses refer to the packs of the modules they share, and a reader fetches the operations of a module only when it looks at them (the differ looks only at modules whose canonical hash or instance count changed).  A tree whose pack is missing or damaged is a miss.
 - A full analysis of a Verilog/SystemVerilog project also stores a per-file index (the modules each file defines and the module names they instantiate, whether the file must always be read, its `ifdef` names and its parse diagnostics).  The changed-cone analysis then parses only the changed files, the files that must always be read, the ancestors of the changed modules and the direct children of those, and takes everything else from the index and the baseline tree; it falls back to reading every file when a module is defined twice, when the root set would change, or when any file is not plain Verilog/SystemVerilog.

@@ -33,6 +33,7 @@ OTHERS <count> net=<signed GE>                                                  
 WHY <level>: <reason text>                                                           (when confidence is not high)
 WARN <code> <file>:<line> <message>                                                  (0 to M times)
 ASSUMED <message>                                                                    (0 to K times)
+NOTE ignored regions: <N> (<kind>, <kind>, ...)                                      (optional, last line)
 ```
 
 - `DELTA`: total change of the typical scenario, its range (`min..max` from `COST_MODEL.md` §5.1), and the percentage relative to `before`. When `before` is zero the percentage is `n/a`.
@@ -40,8 +41,9 @@ ASSUMED <message>                                                               
 - **Contributor lines** follow `DIFF.md` §8: grouped by cause, sorted by absolute delta, at most `--max-lines` entries (default 10). The description is a fixed template: `MUL 16x16`, `ADD w8->w12`, `DFF x36 (register stage)`, `MUX 4:1 w32`, `config W 16->32 (14 ops)`.
 - `OTHERS`: the contributors folded under the report threshold or beyond `--max-lines`; omitted when there are none.
 - `WHY`: present when confidence is `medium` or `low`; it names the dominant reasons in a single line (a range reason reads `+/-r%` when the range is symmetric around `typ`, `-x%/+y%` otherwise), for example `WHY low: 1 unsupported construct in the changed cone; 62% of delta in div class (poor model quality)`.
-- `WARN`: only diagnostics flagged `affects_cost` (`FRONTEND.md` §6) and diagnostics that changed between the two sides. At most 5 lines; an extra line `WARN ... +N more (use --format json)` indicates truncation.
+- `WARN`: only diagnostics flagged `affects_cost` (`FRONTEND.md` §6) and diagnostics that changed between the two sides. At most 5 lines; an extra line `WARN ... +N more (use --format json)` indicates truncation. When implicit discovery (no path, no `--filelist`, no `sources` in the project file) mixes several definitions of the same module, the first line is `WARN DISCOVERY_DUPLICATES <file>:<line> implicit discovery mixes variants: <n> duplicate definition(s) (module 'X', ...) across <files>; last wins, kept <files>; pass a path, --top or --filelist`, followed by the `DUPLICATE_MODULE` lines it explains. The confidence then says `WHY low: 1 DUPLICATE_MODULE diagnostic (module defined in several files; the last definition wins, the design may mix variants)` (with several unsupported constructs: `..., including k DUPLICATE_MODULE`). Do not run `gatecost` without a path in a directory that holds several variants of a design.
 - `ASSUMED`: assumptions applied by the front-end that affect the changed cone (for example `ASSUMED parameter DEPTH unresolved, default 32 used`).
+- `NOTE`: one line, always the last, summarising the `IGNORED_REGION` diagnostics (regions the tool skipped on purpose: `initial` blocks that initialise nothing, assertions, `$error` in a generate, ...): their count and at most 4 kinds, most frequent first, then `+N more`. Absent when no region is ignored and with `--quiet`. It is cost-neutral information, not a warning: it only tells the reader that some code was not modelled. `NOTE` ranks after `ASSUMED` in line order.
 
 ### 2.3 Examples
 
@@ -106,8 +108,10 @@ COST <typ> GE (<min>..<max>) confidence=<LEVEL>
 TOP <module>
 <GE> <module> [x<instances>] <share>%        (top N modules by cost)
 CATEGORIES seq=<GE> addcmp=<GE> mul=<GE> select=<GE> logic=<GE> shift=<GE> div=<GE> mem=<GE>
-WHY ... / WARN ... / ASSUMED ...                (as for diff)
+WHY ... / WARN ... / ASSUMED ... / NOTE ...    (as for diff)
 ```
+
+`cost` has no changed cone: its confidence reason reads `N unsupported constructs in the analyzed design`. Only the diagnostics of the analyzed cone are listed: those of a source file that hosts no module instantiated under the top (for example the `IGNORED_REGION` of the hundreds of modules a large repository holds besides the one analyzed) are dropped when they cannot change the cost; the JSON `meta.diagnostics_out_of_cone` counts them. Every `affects_cost` diagnostic stays visible, wherever it comes from, and so do diagnostics without a file or in a header file.
 
 `estimate`:
 
@@ -142,7 +146,7 @@ SNAPSHOT saved id=<short hash> files=<count> modules=<count>
 |---|---|
 | `--max-lines N` | Maximum number of contributor lines (default 10). |
 | `--verbose` | Adds, after the contributors: `MODULE` lines (intrinsic and multiplicity per changed module), a `CATEGORIES` line (per-category delta), and `STRUCT` lines (modules or instances added or removed). |
-| `--quiet` | Prints only the `DELTA` line (and `ERROR`). |
+| `--quiet` | Prints only the `DELTA` line (and `ERROR`); no `NOTE`. |
 
 ## 3. The `json` Format
 
@@ -210,6 +214,8 @@ Every JSON output is one object:
 - `cause` is `null` or an object `{"kind": "parameter" | "constant" | "define", "name": "W", "file": ..., "line": ..., "from": "16", "to": "32"}`.
 - `children` lists the grouped operations of a cause-grouped contributor, with the same fields as a contributor.
 - `by_category` values are `typ` deltas.
+- `verdict` is derived with the capped sign sigma of `DIFF.md` §7 and §9: `delta.ge.min .. delta.ge.max` may include 0 while the verdict is `INCREASE` or `DECREASE`.
+- `diagnostics` lists, besides the cost-affecting ones, the `IGNORED_REGION` diagnostics of the "after" tree.
 - Array lengths are not truncated in `json`; `--max-lines` does not apply (an explicit `--limit` may be given).
 
 ### 3.3 `cost` result
@@ -259,7 +265,7 @@ Every JSON output is one object:
 }
 ```
 
-`side` is `before`, `after`, or `both`. Codes are stable identifiers (`FRONTEND.md` §6, §10.6; `DIFF.md` §1 and §10).
+`side` is `before`, `after`, or `both`. Codes are stable identifiers (`FRONTEND.md` §6, §10.6; `DIFF.md` §1 and §10). `DISCOVERY_DUPLICATES` (`warning`, `affects_cost`) is emitted first when implicit discovery mixes variants of a module (§2.2). For `cost`, `meta.diagnostics_out_of_cone` (integer, present when non-zero) counts the cost-neutral diagnostics dropped because their file is outside the cone of the top (§2.4).
 
 ### 3.6 Published schema
 
@@ -267,8 +273,8 @@ The repository ships `schema/gatecost-result.schema.json`, a JSON Schema (draft 
 
 ## 4. The `text` and `markdown` Formats
 
-- `text`: the `agent` content laid out as aligned columns with section titles, a legend for reasons, and, with `--verbose`, the per-module and per-category tables. Width is capped at 100 columns.
-- `markdown`: a summary header (verdict, delta, range, confidence), a table of contributors (`Δ GE | location | reason | description`), a collapsible details block for module and category breakdowns, and a footnote stating that the figures are estimates. It is intended for pull-request comments and never exceeds 60,000 characters.
+- `text`: the `agent` content laid out as aligned columns with section titles, a legend for reasons, and, with `--verbose`, the per-module and per-category tables. Width is capped at 100 columns. It prints the confidence reasons (`Confidence <level>: ...`, also for `cost`), the `WARN` lines and the `NOTE` line, as `agent` does.
+- `markdown`: a summary header (verdict, delta, range, confidence), a table of contributors (`Δ GE | location | reason | description`), the confidence reasons, the `WARN` lines (bold) and the `NOTE` line (italic), a collapsible details block for module and category breakdowns, and a footnote stating that the figures are estimates. For `cost` it wraps the `agent` text. It is intended for pull-request comments and never exceeds 60,000 characters.
 
 ## 5. Interpretation Guide for Agents
 
@@ -277,7 +283,7 @@ The shipped `SKILL.md` contains this guidance:
 1. Quote the `typ` figure with its range, never the figure alone: "about +340 GE (between +280 and +410)".
 2. State the confidence. When `confidence=low`, repeat the `WHY` line to the user and avoid precise-sounding conclusions.
 3. When a `WARN` or `ASSUMED` line is present, mention it: it means part of the change was not costed or was costed under an assumption.
-4. A `verdict=UNCERTAIN` means the sign of the change is not established; say so.
+4. A `verdict=UNCERTAIN` means the sign of the change is not established; say so. An `INCREASE` or `DECREASE` with a range that crosses 0 is a firm sign with an uncertain size: say "increases, by about +6800 (between -1500 and +12600)" and repeat the confidence.
 5. A `verdict=NO_CHANGE` means the edit does not alter the hardware as the tool models it; do not describe it as a saving.
 6. Explain contributors in the user's terms (location and reason), not in tool terminology.
 7. To compare design alternatives before writing code, use `estimate`, then `diff` after editing.

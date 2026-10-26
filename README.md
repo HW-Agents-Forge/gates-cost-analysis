@@ -2,7 +2,7 @@
 
 # gatecost
 
-**How many gates does this RTL change cost?** Answered in under a second, without a synthesis tool.
+**How many gates does this RTL change cost?** Answered in seconds, without a synthesis tool.
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
@@ -47,7 +47,19 @@ Use `.github/skills/` for Copilot or `.opencode/skills/` for OpenCode. To skip p
 
 These are analytic estimates for ranking options, not synthesis results. Dividers, memories and ROMs are the least accurate. Use synthesis for sign-off.
 
-Calibration status: the default profile (`generic-asic`) is calibrated on one point, Yosys 0.70 with the Nangate 45 nm library (X1 cells), without a timing constraint. On 151 generated micro-benchmarks the typ estimate has a MAPE of 7.6 % and no bias; over all 164 frozen cases the MAPE is 8.5 % and the `[min, max]` range contains the Yosys area in 84 % of the cases (91 % with a rounding margin of 0.5 %). On 13 complete designs (examples and corpus) the MAPE is 18.4 % with a bias of +17.8 %: the tool over-estimates because the IR does not recognise some patterns (counter enable not merged, rotation, sign-extension flops). Known limit: a masked-merge write `q <= (q & ~m) | (d & m)` is counted as logic on top of the enable flop (about +26% on a register bank with byte enables); `if (be[k]) q[8*k +: 8] <= ...` is exact. Not covered: other technology nodes and commercial flows, VHDL (not measured), the confidence thresholds, and the constants `sigma` and `alpha`. Details and how to rerun: [`docs/COST_MODEL.md`](docs/COST_MODEL.md) section 5.3, [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Calibration status: the default profile (`generic-asic`) is calibrated on one point, Yosys 0.70 with the Nangate 45 nm library (X1 cells), without a timing constraint. Over the 164 frozen cases the typ estimate has a MAPE of 8.4 % and a bias of +1.1 %, and the `[min, max]` range contains the Yosys area in 84 % of the cases. On the 11 complete designs of that set the MAPE is 14.5 % with a bias of +13.9 %: the tool over-estimates because the IR does not recognise some patterns (counter enable not merged, rotation). Details and how to rerun: [`docs/COST_MODEL.md`](docs/COST_MODEL.md) section 5.3, [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Validation on open-source code (maintainers' campaign, `scripts/oss_campaign.py`, pinned commits): 13 projects, about 400 tops, 0 crash, 0 `INTERNAL`, 0 timeout. On 31 atomic modifications checked against Yosys, the order of magnitude holds for small changes (FIFOs, memories, registers, counters, CPU): ratios of 0.8 to 1.4 on the large deltas.
+
+Honest limits:
+
+- Control logic and FSMs are still over-estimated, by about 30 %.
+- ROMs and memories are good to about 50 %.
+- A verdict can have a range that crosses 0: the sign is reliable, the magnitude is not.
+- There is no ground truth for SystemVerilog with packages, and VHDL is checked through GHDL only.
+- Not covered: other technology nodes and commercial flows, the confidence thresholds, and the constants `sigma` and `alpha`.
+
+Speed (CPython 3.15, laptop): start-up 0.1 s, a small design 0.4 s cold, 10 000 lines about 1.5 s, 100 000 lines about 12 s cold (about 0.9 GB), and a warm `diff` well under a second. These are comfort budgets for agent use, not guarantees.
 
 ## Docs
 

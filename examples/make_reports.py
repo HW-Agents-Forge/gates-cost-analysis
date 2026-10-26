@@ -21,7 +21,7 @@ EXAMPLES = [
     ("alu_multiplier", "alu", "with_mul", "16-bit ALU, one more operation (a multiplier)",
      "Adding a case arm that contains a multiplier; the contributor points at the new line."),
     ("fifo_depth", "fifo", "deeper", "register-array FIFO, depth 16 -> 64",
-     "Memory-dominated designs: the confidence is `low` and the verdict may be `UNCERTAIN`."),
+     "Memory-dominated designs: the confidence is `low` and the range is wide, but the verdict is `INCREASE`: the error of a resized memory cannot flip its sign (`DIFF.md` §9)."),
     ("fir_pipeline", "fir", "pipelined", "4-tap FIR, registering the products",
      "A pipeline stage costs flip-flops; the sum of the registered products is cheaper than the products' sum."),
     ("uart_tx", "uart_tx", None, "UART transmitter",

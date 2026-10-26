@@ -33,7 +33,16 @@ python3 <skill-dir>/scripts/gatecost <command>
 | No git: record the state, edit, compare | `snapshot`, then `diff --since-snapshot` |
 | Total size of the design and largest modules | `cost` |
 
-Run from the project directory. Sources, the top module, and includes are found automatically; add `--top <module>` only if the tool asks for it. Add `--max-lines N` for more detail.
+Run from the project directory. Sources, the top module, and includes are found automatically. Add `--max-lines N` for more detail.
+
+Be precise when a folder holds several variants of a design (baseline and optimized copies, per-board trees): pass a path, `--top <module>` and, if needed, `--param NAME=VALUE`. Without them the tool mixes the variants (`WARN DISCOVERY_DUPLICATES`, `confidence=low`), and the figure is not the one you want:
+
+```bash
+python3 <skill-dir>/scripts/gatecost cost rtl/fifo.sv --top fifo --param DEPTH=64
+python3 <skill-dir>/scripts/gatecost diff rtl --top fifo
+```
+
+Time: a small design takes well under a second; allow seconds for a medium project and up to about 30 s for 100 000 lines on a cold cache. A second run on the same project is much faster.
 
 Other commands: `profiles` lists cost profiles, `init` writes a `gatecost.toml`, `clean` removes caches, `help` lists all options.
 
@@ -49,6 +58,7 @@ DELTA +342 GE (+281..+410) +1.2% verdict=INCREASE confidence=medium
 - Following lines: `<delta> <file>:<line> <reason> <what>` sorted by impact. `OTHERS` is the sum of small items.
 - `WHY` explains a confidence below `high`. `WARN` lists code that could not be costed. `ASSUMED` lists assumptions made, for example a parameter taken from its default.
 - `estimate` prints `ESTIMATE <typ> GE (<min>..<max>) confidence=<level>`; `estimate` with `--compare` prints one line per alternative, then `BEST <A|B> saves <GE> GE ... ranges=<overlap|disjoint>`; `overlap` means the preference is uncertain, so say so. `cost` prints `COST <typ> GE (<min>..<max>) confidence=<level>`, then the largest modules.
+- `NOTE ignored regions: <n> (<kinds>)` says that code was left out on purpose (`initial` blocks, assertions, `translate_off`, ...); it does not lower the confidence.
 - Verdicts: `INCREASE`, `DECREASE`, `NEGLIGIBLE`, `NO_CHANGE` (the edit does not change the hardware as modeled: formatting, comments, renames), `UNCERTAIN` (the sign is not established), `NOT_COMPARABLE`.
 
 ## How to answer the user
@@ -57,8 +67,9 @@ DELTA +342 GE (+281..+410) +1.2% verdict=INCREASE confidence=medium
 2. State the confidence. If it is `low`, repeat the `WHY` line and avoid precise conclusions.
 3. Mention any `WARN` or `ASSUMED` line: part of the change was not costed, or was costed under an assumption.
 4. Explain the main contributors in the user's terms (file, line, what changed), not tool terms.
-5. Do not present `NO_CHANGE` as a saving, and do not present `UNCERTAIN` as an increase or a decrease.
-6. These are estimates for ranking options and judging orders of magnitude. For sign-off decisions, recommend real synthesis.
+5. A verdict `INCREASE` or `DECREASE` can come with a range that crosses 0, for example `+40 GE (-10..+120)`. The sign is established; the size is not. Say that the direction is sure and the magnitude uncertain.
+6. Do not present `NO_CHANGE` as a saving, and do not present `UNCERTAIN` as an increase or a decrease.
+7. These are estimates for ranking options and judging orders of magnitude. For sign-off, timing closure or any decision that costs money, run a real synthesis (Yosys, a commercial flow); do not rely on this figure.
 
 ## When something goes wrong
 

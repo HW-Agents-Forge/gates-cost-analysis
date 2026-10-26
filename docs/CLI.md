@@ -11,7 +11,8 @@ This document defines every command, option, the `estimate` input language, and 
 - A usage error prints one line in the active output format (`ERROR BAD_ARGUMENT <message>` in `agent` format) and exits with code 2. It never prints a stack trace.
 - `gatecost --version` prints `gatecost <VERSION>`; `gatecost help [command]` prints a short, stable help text (at most 25 lines per command) that lists the options of the command with one line each.
 - **Precedence** of settings: command line > `gatecost.toml` > environment variables > built-in defaults.
-- Environment variables (all optional): `GATECOST_PROFILE`, `GATECOST_CACHE_DIR`, `GATECOST_NO_CACHE=1`, `GATECOST_FORMAT`.
+- Environment variables (all optional): `GATECOST_PROFILE`, `GATECOST_CACHE_DIR`, `GATECOST_NO_CACHE=1`, `GATECOST_FORMAT`. Debugging switches: `GATECOST_NO_HIER=1` costs every module on its own, with the outputs of every module as roots, instead of pruning logic that does not reach an output of the top (`COST_MODEL.md` §4); `GATECOST_ELAB_DEBUG=1` re-raises internal exceptions.
+- Filelists also read the environment, see `--filelist` below.
 - `NO_COLOR` is honored (the `text` format uses color only on a terminal; `agent`, `json`, and `markdown` never do).
 
 ## 2. Commands
@@ -31,12 +32,12 @@ This document defines every command, option, the `estimate` input language, and 
 
 | Option | Meaning |
 |---|---|
-| `PATH ...` | Restrict the **source set** to these files or directories (default: discovery per `DISTRIBUTION.md` §4). For `diff`, the whole source set is still used to resolve the hierarchy when the paths are a subset; only changes inside the paths are reported. |
-| `--top MODULE` | Top module or entity. |
+| `PATH ...` | Restrict the **source set** to these files or directories (default: discovery per `DISTRIBUTION.md` §4). For `diff`, the whole source set is still used to resolve the hierarchy when the paths are a subset; only changes inside the paths are reported. Without a path, `--filelist` or `sources`, the tool walks the project: do not run it that way in a directory that holds several variants of a design (`DISCOVERY_DUPLICATES`, `OUTPUT.md` §2.2). |
+| `--top MODULE` | Top module or entity. With `cost`, cost-neutral diagnostics of source files outside the cone of the top are not listed; `meta.diagnostics_out_of_cone` (JSON) counts them, and every diagnostic that affects the cost stays visible. |
 | `--define NAME[=VALUE]` | Preprocessor define (Verilog/SystemVerilog) or constant override for conditional elaboration; repeatable. |
 | `--param NAME=VALUE` | Value of a parameter (Verilog/SystemVerilog) or generic (VHDL, case-insensitive) of the **top** unit; repeatable. Without it a parameter keeps its default, and one without a default is assumed to be 32 (`UNRESOLVED_PARAM`). See §2.1.1. |
 | `--incdir DIR` | Include directory; repeatable. |
-| `--filelist FILE` | Read sources, include directories and defines from a `.f` filelist; repeatable. |
+| `--filelist FILE` | Read sources, include directories and defines from a `.f` filelist; repeatable. In paths, include directories and nested filelists, `$VAR`, `${VAR}` and `$(VAR)` are replaced by the value of the environment variable. Nothing is executed: `$(cmd arg)` is not a variable. An undefined variable gives one `FILE_NOT_FOUND` warning that names it and counts the entries skipped. `+define+` values are not expanded. |
 | `--profile NAME\|PATH` | Cost profile (default `generic-asic`). |
 | `--config FILE` | Use this project file instead of searching for `gatecost.toml`. |
 | `--root DIR` | Project root (default: detected, see `DISTRIBUTION.md` §4). |
@@ -50,6 +51,8 @@ This document defines every command, option, the `estimate` input language, and 
 #### 2.1.1 `--param` values
 
 `VALUE` is typed: an integer (decimal, `0x`, `0b`, `0o`, underscores allowed, optionally signed), a based Verilog literal (`8'h1f`, `4'sb1010`; its width is kept, truncating the value to it), a real (`0.5`, `1e-3`), a boolean (`true`/`false`, for VHDL `boolean` generics and 0/1 Verilog parameters) or a string (`fast`; quote it, e.g. `'"123"'`, to keep text that looks like another type). The value reaches the top unit unchanged: a `real` Verilog parameter keeps its real value, a VHDL `string` generic gets the characters.
+
+A VHDL generic of type `string` (or any array type) needs the quoted form: `--param NAME='"2"'` gives the characters `2`, whereas `--param NAME=2` is the number 2. When a numeric value was given for such a generic, the `UNSUPPORTED_CONSTRUCT` warning (`generic 'NAME' skipped (conversion of a scalar to an array type)`) ends with the hint `quote the value, e.g. --param NAME='"2"'`.
 
 A name that the top unit does not declare is ignored with a warning `UNKNOWN_PARAMETER` (`unknown parameter 'X' of top 'T'; known: A, B`); a malformed argument (`--param W`, `--param 1x=3`) is `BAD_ARGUMENT`. Only top-level parameters can be set (hierarchical names are rejected); parameters of instantiated modules come from the instantiations. With several top candidates and no `--top`, a name is applied to every candidate that declares it. The values take part in every cache key, appear in the JSON `config.params`, and are compared by `diff` (`CONFIG_MISMATCH`). `snapshot` records them like the defines.
 
@@ -118,6 +121,8 @@ gatecost clean [--global] [--snapshots]
 ```
 
 Removes `<project>/.gatecost/cache` (and `.gatecost/snapshots` with `--snapshots`); with `--global`, also the user cache directory.
+
+The cache key contains the tool `VERSION` (the `VERSION` file) but not the cost model. The key does hash the sources, the defines and the profile content. After changing a formula, the elaborator or the IR passes without changing `VERSION`, stale entries are still served: increment `VERSION` or run `gatecost clean` (or use `--no-cache`).
 
 ### 2.8 `validate-output`
 

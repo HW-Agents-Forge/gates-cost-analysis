@@ -14,6 +14,7 @@ TOP top
 CATEGORIES seq=57 addcmp=33 mul=386 select=0 logic=0 shift=0 div=0 mem=7
 WHY medium: only 19% of delta in good-quality classes
 ASSUMED array parameter 'Rst' of 3 elements (unpacked dimension taken from the pattern)
+NOTE ignored regions: 1 (elaboration system task $error)
 ```
 
 The figures are analytic estimates, not synthesis results; see the limits in the top-level README.
