@@ -1,36 +1,36 @@
 ---
 name: run-tests
-description: Lance les tests de gatecost (unittest, stdlib) au bon niveau : un module pendant l'itération, la suite complète avant de conclure, plus benchmarks, smoke et mypy en option. À utiliser dès qu'il faut vérifier un changement de code.
+description: Runs the gatecost tests (unittest, stdlib) at the right level: one module while iterating, the full suite before concluding, plus optional benchmarks, smoke, and mypy. Use whenever a code change needs verifying.
 ---
 
 # run-tests
 
-Tout se lance depuis la racine du dépôt avec `PYTHONPATH=src`. Il n'y a rien à installer.
+Everything runs from the repository root with `PYTHONPATH=src`. There is nothing to install.
 
-## Choisir le niveau
+## Choose the level
 
-| Besoin | Commande |
+| Need | Command |
 |---|---|
-| Un module (itération) | `PYTHONPATH=src python3 -m unittest tests.test_cost_formulas` |
-| Un seul test | `PYTHONPATH=src python3 -m unittest tests.test_cli -k launcher` |
-| Suite complète (avant de conclure) | `PYTHONPATH=src python3 -m unittest discover -s tests -t .` |
-| Docs / SKILL.md / lint stdlib | `PYTHONPATH=src python3 -m unittest tests.test_docs_sync tests.test_agent_grammar` |
-| Budgets de performance | `GATECOST_BENCH=1 PYTHONPATH=src python3 -m unittest tests.test_bench` |
-| Type check (optionnel) | `mypy --strict src` |
-| RTL réel (optionnel) | `python3 tests/smoke/run_smoke.py CORPUS_DIR --json` |
+| One module (iteration) | `PYTHONPATH=src python3 -m unittest tests.test_cost_formulas` |
+| A single test | `PYTHONPATH=src python3 -m unittest tests.test_cli -k launcher` |
+| Full suite (before concluding) | `PYTHONPATH=src python3 -m unittest discover -s tests -t .` |
+| Docs / SKILL.md / stdlib lint | `PYTHONPATH=src python3 -m unittest tests.test_docs_sync tests.test_agent_grammar` |
+| Performance budgets | `GATECOST_BENCH=1 PYTHONPATH=src python3 -m unittest tests.test_bench` |
+| Type check (optional) | `mypy --strict src` |
+| Real RTL (optional) | `python3 tests/smoke/run_smoke.py CORPUS_DIR --json` |
 
-## Quel module pour quel sous-système
+## Which module for which subsystem
 
-- front-end : `test_verilog_fuzz`, `test_udp`, `test_elab_vhdl_*`, corpus `tests/corpus/`
-- élaboration : `test_elab_*` (`regressions`, `widths`, `hierarchy`, `params`, `speed`, `invariance`)
-- IR : `test_ir_*`
-- coût : `test_cost_*`
-- diff / rapports / CLI : `test_diff_*`, `test_report`, `test_cli`, `test_e2e_*`, `test_snapshot`, `test_baseline`
-- docs : `test_docs_sync`, `test_agent_grammar`
+- front-end: `test_verilog_fuzz`, `test_udp`, `test_elab_vhdl_*`, corpus `tests/corpus/`
+- elaboration: `test_elab_*` (`regressions`, `widths`, `hierarchy`, `params`, `speed`, `invariance`)
+- IR: `test_ir_*`
+- cost: `test_cost_*`
+- diff / reports / CLI: `test_diff_*`, `test_report`, `test_cli`, `test_e2e_*`, `test_snapshot`, `test_baseline`
+- docs: `test_docs_sync`, `test_agent_grammar`
 
-## Règles
+## Rules
 
-- Le projet doit passer sur Python 3.11 (plus ancien supporté) et sur la dernière version ; si un seul interpréteur est disponible, dis-le dans le compte rendu.
-- Certains modules (fuzz, speed, campaign) sont lents : ne les relance en entier qu'une fois en fin de travail.
-- Si un test échoue, rapporte-le avec sa sortie ; n'ignore, ne désactive ni ne saute jamais un test pour obtenir du vert.
-- Les golden files ne se régénèrent que par un script explicite, jamais automatiquement.
+- The project must pass on Python 3.11 (oldest supported) and on the latest version; if only one interpreter is available, say so in the report.
+- Some modules (fuzz, speed, campaign) are slow: rerun them in full only once, at the end of the work.
+- If a test fails, report it with its output; never ignore, disable, or skip a test to get a green result.
+- Golden files are regenerated only by an explicit script, never automatically.

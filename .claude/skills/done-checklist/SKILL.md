@@ -1,25 +1,25 @@
 ---
 name: done-checklist
-description: Liste de contrôle « définition de done » de gatecost à passer avant de conclure un changement ou d'ouvrir une PR (spec, tests, deux interpréteurs, benchmark, docs, pas de dépendance, pas d'écriture hors zones autorisées). À utiliser en fin de tâche.
+description: gatecost "definition of done" checklist to run before concluding a change or opening a PR (spec, tests, two interpreters, benchmark, docs, no dependency, no writes outside allowed areas). Use at the end of a task.
 ---
 
 # done-checklist
 
-Source : `CONTRIBUTING.md` § Definition of done et `docs/IMPLEMENTATION.md` §5. Dérouler chaque point et répondre honnêtement ; un point non vérifié est signalé comme tel.
+Source: `CONTRIBUTING.md` § Definition of done and `docs/IMPLEMENTATION.md` §5. Go through each item and answer honestly; an unverified item is reported as such.
 
-1. **Spec** : le comportement suit les sections de `docs/` citées, ou la spec est mise à jour dans le même changement avec la raison.
-2. **Tests** : tests des sections concernées + un test de régression pour chaque défaut corrigé.
-3. **Suite complète** : `PYTHONPATH=src python3 -m unittest discover -s tests -t .` verte. Python 3.11 et dernière version si disponibles (CI : Linux + macOS × 3.11 / 3.x). Benchmark de démarrage dans son budget (`GATECOST_BENCH=1 … tests.test_bench`) si le chemin de démarrage ou des boucles chaudes ont changé.
-4. **Docs** : `SKILL.md`, `README.md`, `docs/` conformes à l'outil ; `tests.test_docs_sync` passe.
-5. **Hygiène** :
-   - aucune nouvelle dépendance, stdlib seulement, syntaxe ≤ 3.11 ;
-   - aucune écriture dans le répertoire du skill (seulement `<projet>/.gatecost/` ou le cache utilisateur) ;
-   - sortie déterministe (pas de `hash()`, d'ordre de dict, de timestamp) ;
-   - erreurs en diagnostics, pas d'exception entre étapes ;
-   - golden files non régénérés automatiquement.
-6. **Statut** : table de `docs/IMPLEMENTATION.md` mise à jour si une étape a changé d'état.
-7. **Revue de diff** : relire `git diff` en cherchant ce que la CI rejetterait (types, lint stdlib, fichiers temporaires, `__pycache__`).
+1. **Spec**: the behavior follows the cited sections of `docs/`, or the spec is updated in the same change with the reason.
+2. **Tests**: tests for the sections concerned + a regression test for each fixed defect.
+3. **Full suite**: `PYTHONPATH=src python3 -m unittest discover -s tests -t .` is green. Python 3.11 and the latest version if available (CI: Linux + macOS × 3.11 / 3.x). Startup benchmark within its budget (`GATECOST_BENCH=1 … tests.test_bench`) if the startup path or hot loops changed.
+4. **Docs**: `SKILL.md`, `README.md`, `docs/` match the tool; `tests.test_docs_sync` passes.
+5. **Hygiene**:
+   - no new dependency, stdlib only, syntax ≤ 3.11;
+   - no writes to the skill directory (only `<project>/.gatecost/` or the user cache);
+   - deterministic output (no `hash()`, dict ordering, timestamps);
+   - errors as diagnostics, no exceptions between stages;
+   - golden files not regenerated automatically.
+6. **Status**: table in `docs/IMPLEMENTATION.md` updated if a step changed state.
+7. **Diff review**: reread `git diff` looking for what CI would reject (types, stdlib lint, temporary files, `__pycache__`).
 
-Optionnel : `mypy --strict src`, smoke sur corpus RTL.
+Optional: `mypy --strict src`, smoke run on an RTL corpus.
 
-Compte rendu final : ce qui est fait et vérifié, ce qui ne l'est pas, avec la sortie des tests en cas d'échec.
+Final report: what is done and verified, what is not, with the test output in case of failure.

@@ -1,17 +1,17 @@
 ---
 name: perf-optimizer
-description: Profile et optimise les performances du pipeline (complexité quadratique, temps de démarrage, grands designs). À utiliser quand une analyse est lente ou après un changement touchant des boucles sur les largeurs/tableaux/netlists.
+description: Profiles and optimizes pipeline performance (quadratic complexity, startup time, large designs). Use when an analysis is slow or after a change touching loops over widths/arrays/netlists.
 model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 
-Budgets : démarrage 300 ms à froid / 100 ms à chaud (`GATECOST_BENCH=1`), analyse linéaire en la taille du design (cf. `docs/SPEC.md` §12, `docs/FRONTEND.md` §8).
+Budgets: startup 300 ms cold / 100 ms warm (`GATECOST_BENCH=1`), analysis linear in design size (see `docs/SPEC.md` §12, `docs/FRONTEND.md` §8).
 
-Méthode :
-1. Mesure avant de toucher : `GATECOST_BENCH=1 PYTHONPATH=src python3 -m unittest tests.test_bench`, `python3 -m tests.bench.run_bench`, et `python3 -X importtime` pour le démarrage (imports paresseux via `_lazy.py`).
-2. Profile avec `cProfile` sur un design généré (`tests/bench/gen_design.py`, `ir_gen.py`) ; identifie le point chaud réel.
-3. Corrige la complexité algorithmique d'abord (ex. `LowerBlock.finish` rendu linéaire en largeur de net), pas de micro-optimisations illisibles.
-4. La sortie doit rester strictement identique (déterminisme) : lance la suite complète, notamment `test_perf_structure.py`, `test_elab_speed.py` et les golden.
-5. Rapporte avant/après avec les chiffres.
+Method:
+1. Measure before touching anything: `GATECOST_BENCH=1 PYTHONPATH=src python3 -m unittest tests.test_bench`, `python3 -m tests.bench.run_bench`, and `python3 -X importtime` for startup (lazy imports via `_lazy.py`).
+2. Profile with `cProfile` on a generated design (`tests/bench/gen_design.py`, `ir_gen.py`); identify the real hot spot.
+3. Fix algorithmic complexity first (e.g. `LowerBlock.finish` made linear in net width), not unreadable micro-optimizations.
+4. Output must stay strictly identical (determinism): run the full suite, in particular `test_perf_structure.py`, `test_elab_speed.py` and the golden files.
+5. Report before/after with the figures.
 
-Contraintes : stdlib uniquement, pas de cache qui change les résultats, pas de dépendance.
+Constraints: stdlib only, no cache that changes results, no dependencies.

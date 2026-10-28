@@ -1,40 +1,40 @@
 ---
 name: add-hdl-construct
-description: Ajoute le support d'une construction Verilog/SystemVerilog/VHDL à gatecost, du lexer/parser jusqu'au coût : tokens, AST, élaboration, IR, tests Verilog/VHDL, table de couverture. À utiliser quand une construction produit UNSUPPORTED_CONSTRUCT ou est ignorée à tort.
+description: Adds support for a Verilog/SystemVerilog/VHDL construct to gatecost, from lexer/parser to cost: tokens, AST, elaboration, IR, Verilog/VHDL tests, coverage table. Use when a construct produces UNSUPPORTED_CONSTRUCT or is wrongly ignored.
 ---
 
 # add-hdl-construct
 
-Une construction traverse le pipeline `frontend → elab → ir → cost`. Procéder dans cet ordre et ne passer à l'étape suivante que lorsque la précédente est testée.
+A construct goes through the `frontend → elab → ir → cost` pipeline. Proceed in that order and move to the next step only once the previous one is tested.
 
-## 0. Cadrer
+## 0. Scope
 
-- Lire la ligne correspondante de la table de couverture dans `docs/FRONTEND.md` (état actuel, sémantique attendue).
-- Décider du modèle matériel : que synthétise cette construction (logique combinatoire, registre, mémoire, rien) ? Si ce n'est pas synthétisable (testbench, assertions), elle doit être ignorée silencieusement, sans diagnostic bruyant.
+- Read the matching row of the coverage table in `docs/FRONTEND.md` (current state, expected semantics).
+- Decide on the hardware model: what does this construct synthesize (combinational logic, register, memory, nothing)? If it is not synthesizable (testbench, assertions), it must be ignored silently, without a noisy diagnostic.
 
 ## 1. Front-end (`src/gatecost/frontend/`)
 
-- Lexer/préprocesseur si nouveau token ou directive.
-- AST (`verilog/ast.py`, `vhdl/nodes.py`) : dataclasses figées/slotted.
-- Parser avec récupération d'erreurs : un fragment mal formé ne doit pas empêcher d'analyser le code voisin.
+- Lexer/preprocessor if there is a new token or directive.
+- AST (`verilog/ast.py`, `vhdl/nodes.py`): frozen/slotted dataclasses.
+- Parser with error recovery: a malformed fragment must not prevent analysis of the surrounding code.
 
-## 2. Élaboration (`src/gatecost/elab/`)
+## 2. Elaboration (`src/gatecost/elab/`)
 
-- Règles de largeur et de signe de la construction, évaluation constante si besoin.
-- Abaissement vers l'IR en utilisant les opérations existantes du catalogue (`docs/IR.md` §2–3) ; n'ajouter une opération IR qu'en dernier recours, avec son entrée dans `IR.md`, son coût dans `COST_MODEL.md`, et ses cas dans `tests/ir_sim.py`.
-- Valeur non résolue : défaut documenté + diagnostic (`ASSUMED` / `UNRESOLVED_PARAM`).
+- Width and sign rules for the construct, constant evaluation if needed.
+- Lower to the IR using the existing operations of the catalog (`docs/IR.md` §2–3); add an IR operation only as a last resort, with its entry in `IR.md`, its cost in `COST_MODEL.md`, and its cases in `tests/ir_sim.py`.
+- Unresolved value: documented default + diagnostic (`ASSUMED` / `UNRESOLVED_PARAM`).
 
 ## 3. Tests
 
-- Parser/élaborateur pour le langage concerné (`tests/test_elab_*.py`, `tests/test_elab_vhdl_*.py`).
-- Si la construction existe dans les deux langages, un test d'équivalence (`test_elab_vhdl_equiv.py`) : mêmes coûts pour le même matériel.
-- Invariance : reformater ou renommer ne change pas le résultat.
-- Fuzz/mutation du module concerné ; vitesse sur une grande instance (pas de quadratique).
+- Parser/elaborator for the language concerned (`tests/test_elab_*.py`, `tests/test_elab_vhdl_*.py`).
+- If the construct exists in both languages, an equivalence test (`test_elab_vhdl_equiv.py`): same costs for the same hardware.
+- Invariance: reformatting or renaming does not change the result.
+- Fuzz/mutation of the module concerned; speed on a large instance (no quadratic behavior).
 
 ## 4. Documentation
 
-Passer la ligne de `docs/FRONTEND.md` à « supporté », mettre à jour `docs/IMPLEMENTATION.md` si une étape change d'état (skill `docs-sync`).
+Switch the `docs/FRONTEND.md` row to "supported", and update `docs/IMPLEMENTATION.md` if a step changes state (skill `docs-sync`).
 
-## 5. Clore
+## 5. Close
 
-Suite complète (skill `run-tests`) puis `done-checklist`.
+Full suite (skill `run-tests`), then `done-checklist`.

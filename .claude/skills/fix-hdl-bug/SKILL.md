@@ -1,46 +1,46 @@
 ---
 name: fix-hdl-bug
-description: Workflow pour corriger un bug de gatecost révélé par du RTL réel (crash INTERNAL, mauvaise largeur, construction non supportée, estimation aberrante, lenteur) : réduire, test rouge, correction ciblée, régression, suite complète. À utiliser pour tout rapport de bug sur une entrée Verilog/SystemVerilog/VHDL.
+description: Workflow to fix a gatecost bug revealed by real RTL (INTERNAL crash, wrong width, unsupported construct, absurd estimate, slowness): reduce, red test, targeted fix, regression, full suite. Use for any bug report on Verilog/SystemVerilog/VHDL input.
 ---
 
 # fix-hdl-bug
 
-## 1. Reproduire
+## 1. Reproduce
 
 ```bash
-python3 scripts/gatecost cost --no-cache --format json   # ou diff, depuis le répertoire du RTL fautif
+python3 scripts/gatecost cost --no-cache --format json   # or diff, from the faulty RTL's directory
 ```
 
-Repérer le symptôme : `ERROR INTERNAL` / traceback (toujours un bug), `UNSUPPORTED_CONSTRUCT` fréquent, résultat absurde, délai anormal.
+Identify the symptom: `ERROR INTERNAL` / traceback (always a bug), frequent `UNSUPPORTED_CONSTRUCT`, absurd result, abnormal delay.
 
-## 2. Réduire
+## 2. Reduce
 
-Réduire le RTL au plus petit fragment qui déclenche le symptôme (supprimer modules, signaux, branches tant que le symptôme persiste). Un fragment inline convient souvent : `estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32`.
+Reduce the RTL to the smallest fragment that triggers the symptom (remove modules, signals, branches as long as the symptom persists). An inline fragment is often enough: `estimate --rtl "assign y = a*b + c;" --widths a=16,b=16,c=32`.
 
-## 3. Localiser la couche responsable
+## 3. Locate the responsible layer
 
-| Symptôme | Couche | Agent |
+| Symptom | Layer | Agent |
 |---|---|---|
-| Erreur de syntaxe, token, préprocesseur | `frontend/` | `frontend-dev` |
-| Largeur/signe, paramètres, hiérarchie, boucle combinatoire fausse, invariant IR violé | `elab/` | `elaborator-dev` |
-| Réduction fausse, known-bits, partage | `ir/` | `ir-analysis-dev` |
-| Chiffre absurde pour une opération correcte | `cost/` | `cost-model-dev` |
-| Delta ou verdict faux, format | `diff/`, `report/` | `diff-report-dev` |
-| Temps de calcul | tout le pipeline | `perf-optimizer` |
+| Syntax error, token, preprocessor | `frontend/` | `frontend-dev` |
+| Wrong width/sign, parameters, hierarchy, combinational loop, violated IR invariant | `elab/` | `elaborator-dev` |
+| Wrong reduction, known-bits, sharing | `ir/` | `ir-analysis-dev` |
+| Absurd figure for a correct operation | `cost/` | `cost-model-dev` |
+| Wrong delta or verdict, format | `diff/`, `report/` | `diff-report-dev` |
+| Compute time | whole pipeline | `perf-optimizer` |
 
-## 4. Test rouge d'abord
+## 4. Red test first
 
-Ajouter le fragment réduit comme test dans le module du sous-système (modèle : `tests/test_elab_regressions.py` : helper `run(text)` + assertion sur les codes de diagnostic ou le chiffre). Le lancer et constater qu'il échoue pour la bonne raison.
+Add the reduced fragment as a test in the subsystem's module (model: `tests/test_elab_regressions.py`: `run(text)` helper + assertion on the diagnostic codes or the figure). Run it and confirm it fails for the right reason.
 
-## 5. Corriger
+## 5. Fix
 
-- Cause racine, pas de rustine sur le symptôme.
-- Pas de levée d'exception à travers les étapes : produire un diagnostic.
-- Sortie déterministe ; pas de dépendance ajoutée.
+- Root cause, not a patch on the symptom.
+- No exceptions raised across stages: produce a diagnostic.
+- Deterministic output; no dependency added.
 
-## 6. Vérifier
+## 6. Verify
 
-1. Le test de régression passe.
-2. Le module du sous-système passe, puis la suite complète (skill `run-tests`).
-3. Si la correction change un comportement documenté, mettre à jour `docs/` dans le même changement (skill `docs-sync`).
-4. Compte rendu : cause racine, fichier:ligne, test ajouté, ce qui n'a pas pu être vérifié.
+1. The regression test passes.
+2. The subsystem's module passes, then the full suite (skill `run-tests`).
+3. If the fix changes documented behavior, update `docs/` in the same change (skill `docs-sync`).
+4. Report: root cause, file:line, test added, what could not be verified.

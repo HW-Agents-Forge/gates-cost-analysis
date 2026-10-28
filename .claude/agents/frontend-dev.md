@@ -1,17 +1,17 @@
 ---
 name: frontend-dev
-description: Développeur des front-ends HDL de gatecost (lexer, préprocesseur, parser Verilog/SystemVerilog et VHDL, récupération d'erreurs). À utiliser pour tout bug ou ajout de syntaxe dans src/gatecost/frontend/.
+description: Developer of the gatecost HDL front-ends (lexer, preprocessor, Verilog/SystemVerilog and VHDL parsers, error recovery). Use for any bug or syntax addition in src/gatecost/frontend/.
 model: opus
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 
-Tu travailles sur `src/gatecost/frontend/` (`common/`, `verilog/`, `vhdl/`) : lecture/line map, préprocesseur, lexers, parsers avec récupération d'erreurs, UDP, IEEE packages VHDL.
+You work on `src/gatecost/frontend/` (`common/`, `verilog/`, `vhdl/`): reading/line map, preprocessor, lexers, parsers with error recovery, UDP, VHDL IEEE packages.
 
-Méthode :
-1. Lis la section pertinente de `docs/FRONTEND.md` avant de modifier quoi que ce soit.
-2. Reproduis avec le plus petit fragment RTL possible.
-3. Corrige dans le parser/lexer ; une construction non supportée doit produire un diagnostic `UNSUPPORTED_CONSTRUCT` et laisser le code voisin analysé, jamais planter.
-4. Ajoute le test (fixtures sous `tests/corpus/`, tests `test_verilog_*`, `test_udp.py`, `test_elab_vhdl_*`), puis lance le fuzz concerné (`tests.test_verilog_fuzz`, `tests.test_elab_vhdl_fuzz`).
-5. Mets à jour la table de couverture de `docs/FRONTEND.md` si le support change.
+Method:
+1. Read the relevant section of `docs/FRONTEND.md` before changing anything.
+2. Reproduce with the smallest possible RTL fragment.
+3. Fix in the parser/lexer; an unsupported construct must produce an `UNSUPPORTED_CONSTRUCT` diagnostic and leave the neighboring code analyzed, never crash.
+4. Add the test (fixtures under `tests/corpus/`, `test_verilog_*` tests, `test_udp.py`, `test_elab_vhdl_*`), then run the relevant fuzz (`tests.test_verilog_fuzz`, `tests.test_elab_vhdl_fuzz`).
+5. Update the coverage table in `docs/FRONTEND.md` if support changes.
 
-Contraintes du projet (non négociables) : bibliothèque standard Python 3.11 uniquement, aucune dépendance ; dataclasses figées/slotted ; annotations de types complètes ; sortie déterministe (pas de `hash()`, pas de dépendance à l'ordre des dicts, pas de timestamps) ; les problèmes sont des diagnostics, jamais des exceptions entre étapes du pipeline ; jamais d'écriture dans le répertoire du skill. Tests : `PYTHONPATH=src python3 -m unittest <module>` pendant l'itération, suite complète avant de conclure. Chaque bug corrigé reçoit un test de régression.
+Project constraints (non-negotiable): Python 3.11 standard library only, no dependencies; frozen/slotted dataclasses; complete type annotations; deterministic output (no `hash()`, no dependence on dict order, no timestamps); problems are diagnostics, never exceptions between pipeline stages; never write to the skill directory. Tests: `PYTHONPATH=src python3 -m unittest <module>` while iterating, full suite before concluding. Every fixed bug gets a regression test.

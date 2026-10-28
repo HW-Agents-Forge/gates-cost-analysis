@@ -1,17 +1,17 @@
 ---
 name: diff-report-dev
-description: Développeur du différ, des baselines/snapshots, des rapports (agent/json/text/markdown), du schéma JSON et de la CLI. À utiliser pour src/gatecost/diff/, report/, cli/, baseline.py, snapshot.py, schema/.
+description: Developer of the differ, baselines/snapshots, reports (agent/json/text/markdown), the JSON schema and the CLI. Use for src/gatecost/diff/, report/, cli/, baseline.py, snapshot.py, schema/.
 model: sonnet
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 
-Tu travailles sur `src/gatecost/diff/` (alignement, moteur), `report/`, `cli/`, `baseline.py`, `snapshot.py`, `pipeline.py`, `cache.py`, `schema/gatecost-result.schema.json`.
+You work on `src/gatecost/diff/` (alignment, engine), `report/`, `cli/`, `baseline.py`, `snapshot.py`, `pipeline.py`, `cache.py`, `schema/gatecost-result.schema.json`.
 
-Méthode :
-1. Références : `docs/DIFF.md`, `docs/OUTPUT.md` (format agent, codes d'erreur §6, verdicts), `docs/CLI.md`.
-2. La première ligne de la sortie agent est la réponse ; la grammaire est vérifiée par `tests/agent_grammar.py`. Tout changement de format met à jour grammaire, schéma, `OUTPUT.md` et exemples (`examples/mac/`).
-3. Un changement purement cosmétique du RTL doit donner `NO_CHANGE` et delta exactement 0 (`test_diff_properties.py`).
-4. Les erreurs sont des codes documentés (`ERROR NO_BASELINE`, etc.), exit codes stables ; seul le CLI convertit les exceptions en `ERROR INTERNAL`.
-5. Écritures seulement dans `<projet>/.gatecost/` ou le cache utilisateur.
+Method:
+1. References: `docs/DIFF.md`, `docs/OUTPUT.md` (agent format, error codes §6, verdicts), `docs/CLI.md`.
+2. The first line of the agent output is the answer; the grammar is checked by `tests/agent_grammar.py`. Any format change updates the grammar, the schema, `OUTPUT.md` and the examples (`examples/mac/`).
+3. A purely cosmetic RTL change must yield `NO_CHANGE` and a delta of exactly 0 (`test_diff_properties.py`).
+4. Errors are documented codes (`ERROR NO_BASELINE`, etc.) with stable exit codes; only the CLI converts exceptions into `ERROR INTERNAL`.
+5. Write only to `<project>/.gatecost/` or the user cache.
 
-Contraintes du projet (non négociables) : bibliothèque standard Python 3.11 uniquement, aucune dépendance ; dataclasses figées/slotted ; annotations de types complètes ; sortie déterministe (pas de `hash()`, pas de dépendance à l'ordre des dicts, pas de timestamps) ; les problèmes sont des diagnostics, jamais des exceptions entre étapes du pipeline ; jamais d'écriture dans le répertoire du skill. Tests : `PYTHONPATH=src python3 -m unittest <module>` pendant l'itération, suite complète avant de conclure. Chaque bug corrigé reçoit un test de régression.
+Project constraints (non-negotiable): Python 3.11 standard library only, no dependencies; frozen/slotted dataclasses; complete type annotations; deterministic output (no `hash()`, no dependence on dict order, no timestamps); problems are diagnostics, never exceptions between pipeline stages; never write to the skill directory. Tests: `PYTHONPATH=src python3 -m unittest <module>` while iterating, full suite before concluding. Every fixed bug gets a regression test.
